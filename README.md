@@ -1,8 +1,8 @@
 # ProxyWatch
 
-ProxyWatch is a Windows behavioral network inspection tool that identifies potential tunneling, proxying, and reverse-control patterns by correlating TCP tables with running processes. It operates without kernel drivers, ETW, or packet inspection. All detection is based on TCP state, process context, and heuristic scoring.
+ProxyWatch is a Windows behavioral network inspection tool that identifies potential tunneling, proxying, and control‑channel activity by correlating network state with running processes. It operates without kernel drivers, ETW, or packet inspection. Detection is based on TCP/UDP state, process context, and heuristic scoring.
 
-ProxyWatch can run continuously in a TUI, classify roles (e.g., reverse-tunnel, proxy-listener), and let you manually terminate a process from the inspector.
+ProxyWatch can run continuously in a TUI, classify roles (e.g., susp‑tun, reverse‑proxy), and let you manually terminate a process from the inspector.
 
 ---
 
@@ -17,7 +17,7 @@ ProxyWatch can run continuously in a TUI, classify roles (e.g., reverse-tunnel, 
 | **Client listener detection** | detects loopback/bound SOCKS-like behavior |
 | **Lateral movement hints**   | flags internal connections to common lateral ports |
 | **Short-lived connection capture** | burst sampling improves visibility of fast scans |
-| **TUI + inspector**          | interactive view with per-process details |
+| **TUI + inspector**          | interactive view with per-process details (TCP + UDP) |
 | **Manual kill (inspector)**  | terminate the inspected process with one keypress |
 | **Run once or continuous**   | suitable for terminal usage, scripting, or monitoring |
 | **No admin installation required** | uses standard Win32 APIs |
@@ -26,19 +26,23 @@ ProxyWatch can run continuously in a TUI, classify roles (e.g., reverse-tunnel, 
 
 ## Roles
 
-ProxyWatch assigns a best-fit role per process:
+ProxyWatch assigns a best‑fit role per process:
 
-| Role                    | Meaning |
-|-------------------------|---------|
-| `reverse-control`       | Persistent outbound control channel (idle) |
-| `reverse-transport`     | Reverse-control + active local forwarding |
-| `reverse-tunnel`        | Multiple outbound targets, no listener |
-| `proxy-listener`        | Listener with clients + outbound forwarding |
-| `listener-with-clients` | Local clients without outbound |
-| `listener-with-outbound`| Listener, no clients, outbound activity |
-| `listener-only`         | Listener without traffic |
-| `outbound-only`         | Outbound activity only |
-| `no-network-activity`   | Nothing interesting |
+| Role                     | Meaning |
+|--------------------------|---------|
+| `susp-tun`               | Control channel with tunnel evidence (loopback transport or internal scan activity) |
+| `susp-beacon`            | Periodic short‑lived outbound beacons (e.g., ~60s callbacks) |
+| `susp-session`           | Control channel without proxying evidence |
+| `reverse-proxy`          | Control channel with proxied outbound activity |
+| `reverse-transport`      | Control channel + active local forwarding (loopback) |
+| `reverse-control`        | Persistent outbound control channel (idle) |
+| `reverse-tunnel`         | Multiple outbound targets, no listener |
+| `proxy-listener`         | Listener with clients + outbound forwarding |
+| `listener-with-clients`  | Local clients without outbound |
+| `listener-with-outbound` | Listener, no clients, outbound activity |
+| `listener-only`          | Listener without traffic |
+| `outbound-only`          | Outbound activity only |
+| `no-network-activity`    | Nothing interesting |
 
 ---
 
@@ -64,6 +68,8 @@ proxywatch.exe -once
 ### Useful flags
 - `-roles`: comma-separated list of roles to display (e.g., `reverse-proxy,reverse-control`)
 - `-interval`: refresh interval (e.g., `250ms`, `1s`)
+- `-incremental`: reuse classification for unchanged PIDs (faster, slightly less accurate)
+- `-json`: write pretty JSON snapshots to a file (use `-` for stdout)
 ---
 
 ## How It Works (High-Level)
@@ -75,6 +81,7 @@ ProxyWatch uses:
 - timestamped tracking of outbound connections for control-channel inference
 - heuristic scoring + role classification
 - burst sampling per refresh to capture short-lived connections
+- `GetExtendedUdpTable` for UDP listeners
 
 No packets are captured. No kernel components are required.  
 All analysis is userland and stateful across scans.
