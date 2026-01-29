@@ -48,12 +48,12 @@ beaconhunter-agent.exe -server 10.0.0.5:50051
 
 Optional agent flags:
 - `-id` Host identifier (default: hostname)
-- `-interval` Refresh interval
+- `-interval` Refresh interval (default `250ms`)
 - `-incremental` Reuse classification for unchanged PIDs
 
 Notes:
 - The dashboard shows a HOST column for each endpoint.
-- Kill is disabled for remote hosts.
+- Kill is available for remote hosts when the agent is connected.
 - Use `-stale 30s` to drop endpoints that stop reporting.
 - Transport is gRPC over TCP with a JSON codec. No auth or mTLS yet.
 
@@ -97,7 +97,7 @@ ProxyWatch assigns a best-fit role per process:
 
 - `-once` Run one scan and exit
 - `-roles` Comma-separated list of roles to display (overrides the default UI filter)
-- `-interval` Refresh interval (for example `250ms`, `1s`)
+- `-interval` Refresh interval (default `250ms`)
 - `-incremental` Reuse classification for unchanged PIDs
 - `-json` Write pretty JSON snapshots to a file (use `-` for stdout)
 - `-listen` Listen address for Beaconhunter ingest (for example `0.0.0.0:50051`)

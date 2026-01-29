@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"proxywatch/internal/beaconhunter"
@@ -23,7 +24,7 @@ import (
 func main() {
 	serverAddr := flag.String("server", "", "Beaconhunter server address (e.g. 10.0.0.5:50051)")
 	hostID := flag.String("id", "", "Host identifier (default: hostname)")
-	interval := flag.Duration("interval", 1*time.Second, "Refresh interval (e.g. 250ms, 1s)")
+	interval := flag.Duration("interval", 250*time.Millisecond, "Refresh interval (e.g. 250ms, 1s)")
 	incremental := flag.Bool("incremental", false, "Reuse classification for unchanged PIDs")
 	flag.Parse()
 
@@ -86,13 +87,74 @@ func runAgent(
 		return err
 	}
 
+	sendCh := make(chan *pb.ClientMessage, 16)
+	sendDone := make(chan error, 1)
+	var closeOnce sync.Once
+	shutdown := func() {
+		closeOnce.Do(func() {
+			close(sendCh)
+			_ = stream.CloseSend()
+		})
+	}
+	go func() {
+		for msg := range sendCh {
+			if err := stream.Send(msg); err != nil {
+				sendDone <- err
+				return
+			}
+		}
+		sendDone <- nil
+	}()
+
+	recvDone := make(chan error, 1)
+	go func() {
+		for {
+			cmd, err := stream.Recv()
+			if err != nil {
+				recvDone <- err
+				return
+			}
+			if cmd == nil {
+				continue
+			}
+			if cmd.Type == "kill" && cmd.Pid > 0 {
+				killErr := telemetry.KillProcess(int(cmd.Pid))
+				resp := &pb.CommandResponse{
+					RequestId: cmd.RequestId,
+					Success:   killErr == nil,
+				}
+				if killErr != nil {
+					resp.Error = killErr.Error()
+				}
+				select {
+				case sendCh <- &pb.ClientMessage{CommandResponse: resp}:
+				case <-ctx.Done():
+					recvDone <- ctx.Err()
+					return
+				}
+			}
+		}
+	}()
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			_, _ = stream.CloseAndRecv()
+			shutdown()
+			return nil
+		case err := <-sendDone:
+			shutdown()
+			if err != nil {
+				return err
+			}
+			return nil
+		case err := <-recvDone:
+			shutdown()
+			if err != nil {
+				return err
+			}
 			return nil
 		case <-ticker.C:
 			snap, err := telemetry.Collect()
@@ -122,8 +184,11 @@ func runAgent(
 			}
 
 			env := beaconhunter.ToEnvelope(hostID, now, cands)
-			if err := stream.Send(env); err != nil {
-				return err
+			msg := &pb.ClientMessage{Envelope: env}
+			select {
+			case sendCh <- msg:
+			case <-ctx.Done():
+				return nil
 			}
 		}
 	}

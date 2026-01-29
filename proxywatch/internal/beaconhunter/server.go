@@ -1,9 +1,12 @@
 package beaconhunter
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"proxywatch/internal/beaconhunter/pb"
@@ -13,49 +16,191 @@ import (
 )
 
 type Server struct {
-	Store *Store
+	Store   *Store
+	mu      sync.RWMutex
+	agents  map[string]*agentConn
+	pending map[string]chan error
+	seq     uint64
+}
+
+type agentConn struct {
+	stream pb.BeaconHunter_StreamCandidatesServer
+	mu     sync.Mutex
+	closed bool
+	host   string
+}
+
+func (a *agentConn) Send(cmd *pb.ServerCommand) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return errors.New("agent stream closed")
+	}
+	return a.stream.Send(cmd)
+}
+
+func (a *agentConn) Close() {
+	a.mu.Lock()
+	a.closed = true
+	a.mu.Unlock()
 }
 
 func (s *Server) StreamCandidates(stream pb.BeaconHunter_StreamCandidatesServer) error {
 	if s.Store == nil {
 		return fmt.Errorf("store not configured")
 	}
+	if s.agents == nil {
+		s.agents = make(map[string]*agentConn)
+	}
+	if s.pending == nil {
+		s.pending = make(map[string]chan error)
+	}
+
+	agent := &agentConn{stream: stream}
+	defer agent.Close()
+
+	var host string
+	defer func() {
+		if host != "" {
+			s.mu.Lock()
+			if cur, ok := s.agents[host]; ok && cur == agent {
+				delete(s.agents, host)
+			}
+			s.mu.Unlock()
+		}
+	}()
+
 	for {
-		env, err := stream.Recv()
+		msg, err := stream.Recv()
 		if err == io.EOF {
-			return stream.SendAndClose(&pb.StreamAck{Message: "ok"})
+			return nil
 		}
 		if err != nil {
 			return err
 		}
-		host := env.HostId
-		ts := time.Unix(env.TimestampUnix, 0).UTC()
-		cands := make([]shared.Candidate, 0, len(env.Candidates))
-		for _, c := range env.Candidates {
-			if c == nil {
-				continue
-			}
-			cands = append(cands, FromPBCandidate(c, host))
+		if msg == nil {
+			continue
 		}
-		s.Store.Update(host, ts, cands)
+
+		if env := msg.Envelope; env != nil {
+			if env.HostId != "" && host != env.HostId {
+				host = env.HostId
+				agent.host = host
+				s.mu.Lock()
+				s.agents[host] = agent
+				s.mu.Unlock()
+			}
+			ts := time.Unix(env.TimestampUnix, 0).UTC()
+			cands := make([]shared.Candidate, 0, len(env.Candidates))
+			for _, c := range env.Candidates {
+				if c == nil {
+					continue
+				}
+				cands = append(cands, FromPBCandidate(c, host))
+			}
+			s.Store.Update(host, ts, cands)
+		}
+
+		if resp := msg.CommandResponse; resp != nil {
+			s.handleCommandResponse(resp)
+		}
 	}
 }
 
-func ListenAndServe(addr string, store *Store) (*grpc.Server, net.Listener, error) {
+func (s *Server) Kill(host string, pid int) error {
+	if s == nil {
+		return errors.New("server not configured")
+	}
+	if host == "" {
+		return errors.New("missing host")
+	}
+
+	s.mu.RLock()
+	agent := s.agents[host]
+	s.mu.RUnlock()
+	if agent == nil {
+		return fmt.Errorf("no agent connected for host %s", host)
+	}
+
+	reqID := fmt.Sprintf("%s-%d", host, atomic.AddUint64(&s.seq, 1))
+	respCh := make(chan error, 1)
+
+	s.mu.Lock()
+	if s.pending == nil {
+		s.pending = make(map[string]chan error)
+	}
+	s.pending[reqID] = respCh
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.pending, reqID)
+		s.mu.Unlock()
+	}()
+
+	cmd := &pb.ServerCommand{
+		RequestId: reqID,
+		Type:      "kill",
+		Pid:       int32(pid),
+	}
+	if err := agent.Send(cmd); err != nil {
+		return err
+	}
+
+	select {
+	case err := <-respCh:
+		return err
+	case <-time.After(5 * time.Second):
+		return errors.New("remote kill timed out")
+	}
+}
+
+func (s *Server) handleCommandResponse(resp *pb.CommandResponse) {
+	if resp == nil {
+		return
+	}
+	s.mu.RLock()
+	ch := s.pending[resp.RequestId]
+	s.mu.RUnlock()
+	if ch == nil {
+		return
+	}
+	if resp.Success {
+		select {
+		case ch <- nil:
+		default:
+		}
+		return
+	}
+	if resp.Error == "" {
+		select {
+		case ch <- errors.New("remote kill failed"):
+		default:
+		}
+		return
+	}
+	select {
+	case ch <- errors.New(resp.Error):
+	default:
+	}
+}
+
+func ListenAndServe(addr string, store *Store) (*Server, *grpc.Server, net.Listener, error) {
 	if store == nil {
-		return nil, nil, fmt.Errorf("store is nil")
+		return nil, nil, nil, fmt.Errorf("store is nil")
 	}
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
+	srv := &Server{Store: store}
 	grpcServer := grpc.NewServer(grpc.ForceServerCodec(jsonCodec{}))
-	pb.RegisterBeaconHunterServer(grpcServer, &Server{Store: store})
+	pb.RegisterBeaconHunterServer(grpcServer, srv)
 
 	go func() {
 		_ = grpcServer.Serve(lis)
 	}()
 
-	return grpcServer, lis, nil
+	return srv, grpcServer, lis, nil
 }

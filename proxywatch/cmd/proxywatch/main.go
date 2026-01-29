@@ -57,7 +57,7 @@ func defaultUIRoleFilter() map[string]bool {
 func main() {
 	once := flag.Bool("once", false, "Run one scan and exit")
 	roles := flag.String("roles", "", "Comma-separated list of roles to display")
-	interval := flag.Duration("interval", 1*time.Second, "Refresh interval (e.g. 250ms, 1s)")
+	interval := flag.Duration("interval", 250*time.Millisecond, "Refresh interval (e.g. 250ms, 1s)")
 	incremental := flag.Bool("incremental", false, "Reuse classification for unchanged PIDs (faster, slightly less accurate)")
 	jsonOut := flag.String("json", "", "Write pretty JSON snapshots to a file (use '-' for stdout)")
 	listen := flag.String("listen", "", "Listen address for Beaconhunter agent ingest (e.g. 0.0.0.0:50051)")
@@ -146,7 +146,7 @@ func main() {
 
 	if *listen != "" {
 		store := beaconhunter.NewStore()
-		server, lis, err := beaconhunter.ListenAndServe(*listen, store)
+		remoteSrv, grpcServer, lis, err := beaconhunter.ListenAndServe(*listen, store)
 		if err != nil {
 			fmt.Println("error:", err)
 			if logger != nil {
@@ -154,10 +154,13 @@ func main() {
 			}
 			os.Exit(1)
 		}
-		defer server.Stop()
+		defer grpcServer.Stop()
 		defer lis.Close()
 
 		app.LocalHost = ""
+		app.RemoteKill = func(host string, pid int) error {
+			return remoteSrv.Kill(host, pid)
+		}
 		sc := &beaconhunter.RemoteScanner{
 			Store:      store,
 			StaleAfter: *staleAfter,

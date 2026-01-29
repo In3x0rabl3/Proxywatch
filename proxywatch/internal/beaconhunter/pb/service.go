@@ -33,8 +33,8 @@ type BeaconHunterServer interface {
 }
 
 type BeaconHunter_StreamCandidatesClient interface {
-	Send(*CandidateEnvelope) error
-	CloseAndRecv() (*StreamAck, error)
+	Send(*ClientMessage) error
+	Recv() (*ServerCommand, error)
 	grpc.ClientStream
 }
 
@@ -42,15 +42,12 @@ type beaconHunterStreamCandidatesClient struct {
 	grpc.ClientStream
 }
 
-func (x *beaconHunterStreamCandidatesClient) Send(m *CandidateEnvelope) error {
+func (x *beaconHunterStreamCandidatesClient) Send(m *ClientMessage) error {
 	return x.ClientStream.SendMsg(m)
 }
 
-func (x *beaconHunterStreamCandidatesClient) CloseAndRecv() (*StreamAck, error) {
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
-	m := new(StreamAck)
+func (x *beaconHunterStreamCandidatesClient) Recv() (*ServerCommand, error) {
+	m := new(ServerCommand)
 	if err := x.ClientStream.RecvMsg(m); err != nil {
 		return nil, err
 	}
@@ -58,8 +55,8 @@ func (x *beaconHunterStreamCandidatesClient) CloseAndRecv() (*StreamAck, error) 
 }
 
 type BeaconHunter_StreamCandidatesServer interface {
-	Recv() (*CandidateEnvelope, error)
-	SendAndClose(*StreamAck) error
+	Recv() (*ClientMessage, error)
+	Send(*ServerCommand) error
 	grpc.ServerStream
 }
 
@@ -67,15 +64,15 @@ type beaconHunterStreamCandidatesServer struct {
 	grpc.ServerStream
 }
 
-func (x *beaconHunterStreamCandidatesServer) Recv() (*CandidateEnvelope, error) {
-	m := new(CandidateEnvelope)
+func (x *beaconHunterStreamCandidatesServer) Recv() (*ClientMessage, error) {
+	m := new(ClientMessage)
 	if err := x.ServerStream.RecvMsg(m); err != nil {
 		return nil, err
 	}
 	return m, nil
 }
 
-func (x *beaconHunterStreamCandidatesServer) SendAndClose(m *StreamAck) error {
+func (x *beaconHunterStreamCandidatesServer) Send(m *ServerCommand) error {
 	return x.ServerStream.SendMsg(m)
 }
 
@@ -93,6 +90,7 @@ var BeaconHunter_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "StreamCandidates",
 			Handler:       _BeaconHunter_StreamCandidates_Handler,
 			ClientStreams: true,
+			ServerStreams: true,
 		},
 	},
 	Metadata: "beaconhunter.proto",

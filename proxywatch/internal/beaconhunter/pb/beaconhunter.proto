@@ -77,10 +77,23 @@ message CandidateEnvelope {
   repeated Candidate candidates = 3;
 }
 
-message StreamAck {
-  string message = 1;
+message ClientMessage {
+  CandidateEnvelope envelope = 1;
+  CommandResponse command_response = 2;
+}
+
+message ServerCommand {
+  string request_id = 1;
+  string type = 2;
+  int32 pid = 3;
+}
+
+message CommandResponse {
+  string request_id = 1;
+  bool success = 2;
+  string error = 3;
 }
 
 service BeaconHunter {
-  rpc StreamCandidates(stream CandidateEnvelope) returns (StreamAck);
+  rpc StreamCandidates(stream ClientMessage) returns (stream ServerCommand);
 }

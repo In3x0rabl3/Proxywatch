@@ -29,6 +29,7 @@ type AppState struct {
 	Whitelist           *Whitelist
 	WhitelistItems      []string
 	WhitelistSelected   int
+	RemoteKill          func(host string, pid int) error
 
 	Candidates  []Candidate
 	Mode        AppMode

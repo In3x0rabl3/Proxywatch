@@ -200,17 +200,30 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 							app.ConfirmKillKey = ""
 							break
 						}
-						if app.LocalHost == "" || app.Candidates[idx].Host != app.LocalHost {
-							app.LastError = "Kill disabled for remote host"
+						pid := app.Candidates[idx].Proc.Pid
+						host := app.Candidates[idx].Host
+						if host == "" {
+							host = "local"
+						}
+						if app.LocalHost != "" && host == app.LocalHost {
+							if err := telemetry.KillProcess(pid); err != nil {
+								app.LastError = "Kill failed: " + err.Error()
+							} else {
+								app.LastError = "Killed PID " + strconv.Itoa(pid) + " (" + app.Candidates[idx].Proc.Name + ")"
+							}
 							app.ConfirmKillKey = ""
 							break
 						}
 
-						pid := app.Candidates[idx].Proc.Pid
-						if err := telemetry.KillProcess(pid); err != nil {
-							app.LastError = "Kill failed: " + err.Error()
+						if app.RemoteKill == nil {
+							app.LastError = "Kill disabled for remote host"
+							app.ConfirmKillKey = ""
+							break
+						}
+						if err := app.RemoteKill(host, pid); err != nil {
+							app.LastError = "Remote kill failed: " + err.Error()
 						} else {
-							app.LastError = "Killed PID " + strconv.Itoa(pid) + " (" + app.Candidates[idx].Proc.Name + ")"
+							app.LastError = "Remote kill sent for PID " + strconv.Itoa(pid) + " (" + app.Candidates[idx].Proc.Name + ")"
 						}
 						app.ConfirmKillKey = ""
 					}
