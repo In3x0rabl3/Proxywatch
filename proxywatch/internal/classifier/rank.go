@@ -63,6 +63,13 @@ func ScoreCandidate(c *shared.Candidate) {
 	if outShortLived > 0 && outLongLived == 0 {
 		addSignal("outbound-bursty")
 	}
+	burstCount := 0
+	switch {
+	case outShortLived > 0:
+		burstCount = outShortLived
+	case outTotal > 0 && outLongLived == 0:
+		burstCount = outTotal
+	}
 
 	inboundRecent := activeClients > 0
 	if t, ok := shared.RecentClientSeen[p.Pid]; ok && now.Sub(t) <= shared.ActiveWindow {
@@ -91,12 +98,17 @@ func ScoreCandidate(c *shared.Candidate) {
 		len(internalTargets) >= shared.MinInternalTargetsForRev ||
 		len(internalPorts) >= shared.MinInternalPortsForRev
 
+	updateBurstHistory(p.Pid, burstCount, distinctTargets, now)
+	internalScanNow := reverseTunnelEligible
+	if internalScanNow {
+		shared.RecentInternalScanSeen[p.Pid] = now
+	}
+
 	localTransport, localCount := localTransportActivity(c.Conns)
 	if localTransport {
 		addSignal("loopback-transport")
+		shared.LocalTransportLast[p.Pid] = now
 	}
-
-	tunnelLikely := !hasListener && outTotal > 0 && outLongLived > 0 && localTransport
 
 	if controlConn != nil && !hasListener {
 		controlKey := connKeyFromConn(p.Pid, *controlConn)
@@ -130,10 +142,52 @@ func ScoreCandidate(c *shared.Candidate) {
 		}
 	}
 
-	activeRecent := !hist.LastActive.IsZero() && now.Sub(hist.LastActive) <= shared.ActiveHoldWindow
 	suspiciousRecent := !hist.LastSuspicious.IsZero() && now.Sub(hist.LastSuspicious) <= shared.SuspicionWindow
 
-	activeProxying := forwardActiveNow || reverseProxyNow || activeRecent
+	activeProxying := forwardActiveNow || reverseProxyNow || localTransport
+
+	burstRecent := burstCount > 0
+	if !burstRecent {
+		if t, ok := shared.ShortLivedBurstLast[p.Pid]; ok && now.Sub(t) <= shared.SlowScanWindow {
+			burstRecent = true
+			burstCount = shared.ShortLivedBurstCount[p.Pid]
+		}
+	}
+	beaconInterval := time.Duration(0)
+	if iv, ok := shared.ShortLivedBurstInterval[p.Pid]; ok {
+		beaconInterval = iv
+	}
+	beaconHits := shared.ShortLivedBurstHits[p.Pid]
+	beaconConfirmed := false
+	if last, ok := shared.ShortLivedBurstLast[p.Pid]; ok && now.Sub(last) <= shared.SlowScanWindow {
+		beaconConfirmed = beaconHits >= shared.BeaconMinIntervals &&
+			beaconInterval >= shared.BeaconSleepThreshold
+	}
+
+	localTransportRecent := localTransport
+	if !localTransportRecent {
+		if t, ok := shared.LocalTransportLast[p.Pid]; ok && now.Sub(t) <= shared.LocalTransportWindow {
+			localTransportRecent = true
+		}
+	}
+
+	internalScanRecent := internalScanNow
+	if !internalScanRecent {
+		if t, ok := shared.RecentInternalScanSeen[p.Pid]; ok && now.Sub(t) <= shared.SlowScanWindow {
+			internalScanRecent = true
+		}
+	}
+
+	suspTunEligible := controlConn != nil && (localTransportRecent || internalScanRecent)
+	beaconEligible := !hasListener &&
+		!reverseProxyNow &&
+		!localTransportRecent &&
+		!internalScanRecent &&
+		outLongLived == 0
+	beaconRecent := false
+	if t, ok := shared.BeaconSeen[p.Pid]; ok && now.Sub(t) <= shared.SuspicionWindow {
+		beaconRecent = true
+	}
 
 	// ---------------- Reverse control detection ----------------
 	reverseControl := false
@@ -246,17 +300,6 @@ func ScoreCandidate(c *shared.Candidate) {
 	c.ActiveProxying = activeProxying
 	c.Role = deriveRole(hasListener, activeClients, outTotal, reverseTunnelEligible)
 
-	if tunnelLikely && !reverseProxyNow && !reverseControl {
-		c.Role = "tunnel-likely"
-		c.ActiveProxying = true
-		addSignal("tunnel-likely")
-		base := 60 + min(outLongLived*5, 25)
-		if c.Score < base {
-			c.Score = base
-		}
-		c.Reasons = append(c.Reasons, "Long-lived outbound connection with local loopback transport")
-	}
-
 	if c.Role == "outbound-only" &&
 		outInternal == 0 &&
 		!hasListener &&
@@ -296,6 +339,89 @@ func ScoreCandidate(c *shared.Candidate) {
 			c.Score = hist.StickyScore
 		}
 		addSignal("reverse-control")
+	}
+
+	if suspTunEligible && (reverseProxyNow || reverseControl) {
+		c.Role = "susp-tun"
+		c.ActiveProxying = forwardActiveNow || reverseProxyNow || localTransport
+		addSignal("susp-tun")
+
+		base := 55
+		if burstRecent && burstCount > 0 {
+			base += min(burstCount*5, 20)
+			c.Reasons = append(c.Reasons,
+				fmt.Sprintf("Recent short-lived outbound activity (%d)", burstCount))
+		}
+		if localTransportRecent {
+			base += 10
+			c.Reasons = append(c.Reasons, "Recent loopback transport activity")
+		}
+		if internalScanRecent {
+			base += 10
+			c.Reasons = append(c.Reasons, "Recent internal scan activity")
+		}
+
+		if c.Score < base {
+			c.Score = base
+		}
+
+		hist.LastSuspicious = now
+		hist.SuspicionKind = shared.SuspicionControl
+		if hist.StickyScore < c.Score {
+			hist.StickyScore = c.Score
+		}
+	} else if reverseControl {
+		c.Role = "susp-session"
+		c.ActiveProxying = false
+		addSignal("susp-session")
+		c.Reasons = []string{
+			"Persistent control session without proxying evidence",
+		}
+		base := controlStickyScore(controlSecs)
+		if c.Score < base {
+			c.Score = base
+		}
+		hist.LastSuspicious = now
+		hist.SuspicionKind = shared.SuspicionControl
+		if hist.StickyScore < c.Score {
+			hist.StickyScore = c.Score
+		}
+	}
+
+	if c.Role != "susp-tun" && c.Role != "reverse-proxy" {
+		if beaconEligible && (beaconConfirmed || beaconRecent) {
+			c.Role = "susp-beacon"
+			c.ActiveProxying = false
+			addSignal("susp-beacon")
+			if beaconConfirmed {
+				shared.BeaconSeen[p.Pid] = now
+				if beaconInterval > 0 {
+					interval := beaconInterval.Round(time.Second)
+					c.Reasons = []string{
+						fmt.Sprintf("Periodic outbound beacon interval ~%s", interval),
+					}
+				} else {
+					c.Reasons = []string{
+						"Periodic short-lived outbound beacon activity",
+					}
+				}
+			} else if len(c.Reasons) == 0 {
+				c.Reasons = []string{
+					"Recent periodic beacon activity",
+				}
+			}
+
+			base := 60 + min(burstCount*5, 20)
+			if c.Score < base {
+				c.Score = base
+			}
+
+			hist.LastSuspicious = now
+			hist.SuspicionKind = shared.SuspicionControl
+			if hist.StickyScore < c.Score {
+				hist.StickyScore = c.Score
+			}
+		}
 	}
 
 	c.Signals = signals
@@ -642,6 +768,14 @@ func purgeHistory(now time.Time) {
 		delete(shared.ProcHistoryByPID, pid)
 		delete(shared.RecentClientSeen, pid)
 		delete(shared.RecentOutboundSeen, pid)
+		delete(shared.RecentInternalScanSeen, pid)
+		delete(shared.ShortLivedBurstLast, pid)
+		delete(shared.ShortLivedBurstCount, pid)
+		delete(shared.ShortLivedBurstInterval, pid)
+		delete(shared.ShortLivedBurstHits, pid)
+		delete(shared.ShortLivedBurstTarget, pid)
+		delete(shared.BeaconSeen, pid)
+		delete(shared.LocalTransportLast, pid)
 
 		for k := range shared.ConnFirstSeen {
 			if k.Pid == pid {
@@ -671,10 +805,14 @@ func confidenceFor(role string, score int, active bool) int {
 		base = 85
 	case "reverse-proxy":
 		base = 80
+	case "susp-tun":
+		base = 70
+	case "susp-session":
+		base = 72
+	case "susp-beacon":
+		base = 68
 	case "reverse-control":
 		base = 75
-	case "tunnel-likely":
-		base = 65
 	case "proxy-listener":
 		base = 60
 	case "reverse-tunnel":
@@ -735,4 +873,55 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func updateBurstHistory(pid int, burstCount int, targets map[string]struct{}, now time.Time) {
+	if burstCount <= 0 {
+		return
+	}
+
+	shared.ShortLivedBurstCount[pid] = burstCount
+	prevTime, hasPrev := shared.ShortLivedBurstLast[pid]
+
+	burstTarget := ""
+	if prevTarget, ok := shared.ShortLivedBurstTarget[pid]; ok {
+		if _, ok := targets[prevTarget]; ok {
+			burstTarget = prevTarget
+		}
+	}
+
+	if burstTarget == "" && len(targets) == 1 {
+		for t := range targets {
+			burstTarget = t
+			break
+		}
+	}
+
+	if burstTarget == "" {
+		shared.ShortLivedBurstHits[pid] = 0
+		delete(shared.ShortLivedBurstInterval, pid)
+		delete(shared.ShortLivedBurstTarget, pid)
+		shared.ShortLivedBurstLast[pid] = now
+		return
+	}
+
+	if hasPrev {
+		interval := now.Sub(prevTime)
+		if interval < shared.ShortLivedBurstWindow {
+			shared.ShortLivedBurstLast[pid] = now
+			shared.ShortLivedBurstTarget[pid] = burstTarget
+			return
+		}
+		shared.ShortLivedBurstInterval[pid] = interval
+		if interval >= shared.BeaconSleepThreshold {
+			shared.ShortLivedBurstHits[pid]++
+		} else {
+			shared.ShortLivedBurstHits[pid] = 0
+		}
+	} else {
+		shared.ShortLivedBurstHits[pid] = 0
+	}
+
+	shared.ShortLivedBurstTarget[pid] = burstTarget
+	shared.ShortLivedBurstLast[pid] = now
 }

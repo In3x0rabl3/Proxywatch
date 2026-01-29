@@ -60,7 +60,7 @@ func Classify(
 			}
 		}
 
-		if c.Score >= opts.MinScore || c.Role == "reverse-control" || c.Role == "reverse-transport" {
+		if c.Score >= opts.MinScore || c.Role == "reverse-control" || c.Role == "reverse-transport" || c.Role == "susp-tun" || c.Role == "susp-session" || c.Role == "susp-beacon" {
 			interesting = append(interesting, *c)
 		}
 	}
@@ -102,7 +102,11 @@ func rolePriority(role string) int {
 		return 80
 	case "proxy-listener":
 		return 70
-	case "tunnel-likely":
+	case "susp-tun":
+		return 68
+	case "susp-session":
+		return 66
+	case "susp-beacon":
 		return 65
 	case "listener-with-clients":
 		return 60
@@ -148,6 +152,12 @@ func buildCandidates(snap *shared.Snapshot) []shared.Candidate {
 	}
 	for pid := range umap {
 		seen[pid] = true
+	}
+	now := time.Now()
+	for pid, t := range shared.BeaconSeen {
+		if now.Sub(t) <= shared.SuspicionWindow {
+			seen[pid] = true
+		}
 	}
 
 	var out []shared.Candidate
