@@ -105,6 +105,15 @@ func runAgent(
 				RoleFilter:  nil,
 				Incremental: incremental,
 			}, cache)
+			selfPID := os.Getpid()
+			filtered := make([]shared.Candidate, 0, len(cands))
+			for _, c := range cands {
+				if c.Proc != nil && c.Proc.Pid == selfPID {
+					continue
+				}
+				filtered = append(filtered, c)
+			}
+			cands = filtered
 
 			now := time.Now().UTC()
 			shared.ApplyIORates(cands, now, lastIO)

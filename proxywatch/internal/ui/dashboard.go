@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"proxywatch/internal/shared"
@@ -19,7 +20,7 @@ func DrawDashboard(app *shared.AppState) {
 	)
 
 	PutString(s, 0, 2,
-		TruncateToWidth("Use UP/DOWN arrows | ENTER inspect | q quit", w),
+		TruncateToWidth("Use UP/DOWN arrows | ENTER inspect | w whitelist | W manage whitelist | q quit", w),
 	)
 
 	if app.LastError != "" {
@@ -32,14 +33,32 @@ func DrawDashboard(app *shared.AppState) {
 		return
 	}
 
+	hostWidth := len("HOST")
+	for i := range app.Candidates {
+		host := app.Candidates[i].Host
+		if host == "" {
+			host = "local"
+		}
+		if len(host) > hostWidth {
+			hostWidth = len(host)
+		}
+	}
+
 	PutString(s, 0, y,
-		fmt.Sprintf("%-1s %-10s %-6s %-22s %-26s %-7s %-11s",
-			" ", "HOST", "PID", "NAME", "ROLE", "ACTIVE", "INT/EXT/LO"),
+		fmt.Sprintf("%-1s %-*s %-6s %-22s %-26s %-7s %-11s",
+			" ", hostWidth, "HOST", "PID", "NAME", "ROLE", "ACTIVE", "INT/EXT/LO"),
 	)
 	y++
 	PutString(s, 0, y,
-		fmt.Sprintf("%-1s %-10s %-6s %-22s %-26s %-7s %-11s",
-			" ", "----------", "-----", "----------------------", "--------------------------", "------", "-----------"),
+		fmt.Sprintf("%-1s %-*s %-6s %-22s %-26s %-7s %-11s",
+			" ",
+			hostWidth,
+			strings.Repeat("-", hostWidth),
+			"-----",
+			strings.Repeat("-", 22),
+			strings.Repeat("-", 26),
+			"------",
+			"-----------"),
 	)
 	y++
 
@@ -54,7 +73,6 @@ func DrawDashboard(app *shared.AppState) {
 		if host == "" {
 			host = "local"
 		}
-		host = shared.TrimName(host, 10)
 		udpInt, udpExt, udpLo := shared.UDPScopeCounts(c.UDPListeners)
 		intExt := fmt.Sprintf("%d/%d/%d",
 			c.OutInternal+udpInt,
@@ -62,8 +80,9 @@ func DrawDashboard(app *shared.AppState) {
 			c.OutLoopback+udpLo,
 		)
 
-		line := fmt.Sprintf("%-1s %-10s %-6d %-22s %-26s %-7v %-11s",
+		line := fmt.Sprintf("%-1s %-*s %-6d %-22s %-26s %-7v %-11s",
 			arrow,
+			hostWidth,
 			host,
 			c.Proc.Pid,
 			name,

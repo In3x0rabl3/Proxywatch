@@ -44,6 +44,14 @@ func defaultHostID() string {
 	return name
 }
 
+func defaultUIRoleFilter() map[string]bool {
+	return map[string]bool{
+		"susp-session": true,
+		"susp-beacon":  true,
+		"susp-tun":     true,
+	}
+}
+
 /* ---------------- main ---------------- */
 
 func main() {
@@ -58,6 +66,7 @@ func main() {
 	flag.Parse()
 
 	roleFilter := parseRoleFilter(*roles)
+	roleFilterSet := strings.TrimSpace(*roles) != ""
 	minScore := 15
 
 	// -------- one-shot mode --------
@@ -117,10 +126,22 @@ func main() {
 		ConfirmKillTimeout: 3 * time.Second,
 	}
 
+	whitelist, err := shared.LoadWhitelist("")
+	if err != nil {
+		fmt.Println("error:", err)
+		os.Exit(1)
+	}
+	app.Whitelist = whitelist
+
 	logger, err := shared.NewJSONLogger(*jsonOut, true)
 	if err != nil {
 		fmt.Println("error:", err)
 		os.Exit(1)
+	}
+
+	uiRoleFilter := roleFilter
+	if !roleFilterSet {
+		uiRoleFilter = defaultUIRoleFilter()
 	}
 
 	if *listen != "" {
@@ -141,8 +162,9 @@ func main() {
 			Store:      store,
 			StaleAfter: *staleAfter,
 			MinScore:   minScore,
-			RoleFilter: roleFilter,
+			RoleFilter: uiRoleFilter,
 			Logger:     logger,
+			Whitelist:  whitelist,
 		}
 
 		if err := ui.Run(app, sc); err != nil {
@@ -164,13 +186,14 @@ func main() {
 	sc := &shared.ScannerAdapter{
 		Options: shared.ClassifyOptions{
 			MinScore:    minScore,
-			RoleFilter:  roleFilter,
+			RoleFilter:  uiRoleFilter,
 			Incremental: *incremental,
 		},
-		Collect:  telemetry.Collect,
-		Classify: classifier.Classify,
-		Logger:   logger,
-		HostID:   hostID,
+		Collect:   telemetry.Collect,
+		Classify:  classifier.Classify,
+		Logger:    logger,
+		HostID:    hostID,
+		Whitelist: whitelist,
 	}
 
 	if err := ui.Run(app, sc); err != nil {

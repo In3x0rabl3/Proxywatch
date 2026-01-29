@@ -12,6 +12,7 @@ type RemoteScanner struct {
 	MinScore   int
 	RoleFilter map[string]bool
 	Logger     *shared.JSONLogger
+	Whitelist  *shared.Whitelist
 }
 
 func (r *RemoteScanner) Refresh(app *shared.AppState) {
@@ -37,6 +38,9 @@ func (r *RemoteScanner) Refresh(app *shared.AppState) {
 			filtered = append(filtered, c)
 		}
 		cands = filtered
+	}
+	if r.Whitelist != nil {
+		cands = r.Whitelist.Filter(cands)
 	}
 	now := time.Now().UTC()
 

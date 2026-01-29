@@ -27,6 +27,8 @@ Keys:
 - `UP/DOWN` to select
 - `ENTER` to inspect
 - `ESC` to return to dashboard
+- `w` to whitelist the selected process
+- `W` to open the whitelist manager (remove entries)
 - `k` to kill the inspected process
 - `q` to quit
 
@@ -88,14 +90,13 @@ ProxyWatch assigns a best-fit role per process:
 | `listener-with-outbound` | Listener, no clients, outbound activity |
 | `listener-only`          | Listener without traffic |
 | `outbound-only`          | Outbound activity only |
-| `no-network-activity`    | Nothing interesting |
 
 ---
 
 ## Flags
 
 - `-once` Run one scan and exit
-- `-roles` Comma-separated list of roles to display
+- `-roles` Comma-separated list of roles to display (overrides the default UI filter)
 - `-interval` Refresh interval (for example `250ms`, `1s`)
 - `-incremental` Reuse classification for unchanged PIDs
 - `-json` Write pretty JSON snapshots to a file (use `-` for stdout)
@@ -136,3 +137,5 @@ GOOS=windows GOARCH=amd64 go build -o beaconhunter-agent.exe ./cmd/beaconhunter-
 
 - Terminating processes may require elevated privileges depending on target.
 - Lateral ports are used as heuristic hints (SMB, RDP, WinRM, LDAP, MSSQL, SSH).
+- The TUI defaults to showing only `susp-session`, `susp-beacon`, and `susp-tun`. Use `-roles` to override.
+- Whitelisted processes are stored in the user config directory at `proxywatch/whitelist.json`.

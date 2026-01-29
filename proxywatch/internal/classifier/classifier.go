@@ -120,8 +120,6 @@ func rolePriority(role string) int {
 		return 30
 	case "outbound-only":
 		return 10
-	case "no-network-activity":
-		return 0
 	default:
 		return 0
 	}

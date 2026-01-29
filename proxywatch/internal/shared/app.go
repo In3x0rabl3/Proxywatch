@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"os"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -11,6 +12,7 @@ type AppMode int
 const (
 	ModeDashboard AppMode = iota
 	ModeInspect
+	ModeWhitelist
 )
 
 type AppState struct {
@@ -24,6 +26,9 @@ type AppState struct {
 	ConfirmKillKey      string
 	ConfirmKillDeadline time.Time
 	LocalHost           string
+	Whitelist           *Whitelist
+	WhitelistItems      []string
+	WhitelistSelected   int
 
 	Candidates  []Candidate
 	Mode        AppMode
@@ -44,13 +49,14 @@ type IOSample struct {
 }
 
 type ScannerAdapter struct {
-	Options  ClassifyOptions
-	Cache    ClassifierCache
-	LastIO   map[int]IOSample
-	Logger   *JSONLogger
-	HostID   string
-	Collect  func() (*Snapshot, error)
-	Classify ClassifyFunc
+	Options   ClassifyOptions
+	Cache     ClassifierCache
+	LastIO    map[int]IOSample
+	Logger    *JSONLogger
+	HostID    string
+	Whitelist *Whitelist
+	Collect   func() (*Snapshot, error)
+	Classify  ClassifyFunc
 }
 
 func (s *ScannerAdapter) Refresh(app *AppState) {
@@ -74,6 +80,15 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 	}
 
 	cands := s.Classify(snap, s.Options, &s.Cache)
+	selfPID := os.Getpid()
+	filtered := make([]Candidate, 0, len(cands))
+	for _, c := range cands {
+		if c.Proc != nil && c.Proc.Pid == selfPID {
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	cands = filtered
 	now := time.Now().UTC()
 	if s.HostID == "" {
 		s.HostID = "local"
@@ -82,6 +97,9 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 		cands[i].Host = s.HostID
 	}
 	ApplyIORates(cands, now, &s.LastIO)
+	if s.Whitelist != nil {
+		cands = s.Whitelist.Filter(cands)
+	}
 
 	app.LastError = ""
 	if s.Logger != nil {

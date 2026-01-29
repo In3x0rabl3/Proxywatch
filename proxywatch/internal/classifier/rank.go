@@ -447,7 +447,7 @@ func deriveRole(hasListener bool, clients int, out int, reverseTunnelEligible bo
 	case out > 0:
 		return "outbound-only"
 	default:
-		return "no-network-activity"
+		return "outbound-only"
 	}
 }
 
@@ -825,8 +825,6 @@ func confidenceFor(role string, score int, active bool) int {
 		base = 35
 	case "outbound-only":
 		base = 30
-	case "no-network-activity":
-		base = 5
 	}
 
 	if active {
