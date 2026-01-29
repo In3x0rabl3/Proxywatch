@@ -21,14 +21,15 @@ type AppState struct {
 	RefreshInt          time.Duration
 	ConfirmKill         bool
 	ConfirmKillTimeout  time.Duration
-	ConfirmKillPID      int
+	ConfirmKillKey      string
 	ConfirmKillDeadline time.Time
+	LocalHost           string
 
 	Candidates  []Candidate
 	Mode        AppMode
-	SelectedPID int
+	SelectedKey string
 	SelectedIdx int
-	InspectPID  int
+	InspectKey  string
 }
 
 type Scanner interface {
@@ -47,6 +48,7 @@ type ScannerAdapter struct {
 	Cache    ClassifierCache
 	LastIO   map[int]IOSample
 	Logger   *JSONLogger
+	HostID   string
 	Collect  func() (*Snapshot, error)
 	Classify ClassifyFunc
 }
@@ -56,7 +58,7 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 		app.LastError = "scanner not configured"
 		app.Candidates = nil
 		app.SelectedIdx = -1
-		app.SelectedPID = 0
+		app.SelectedKey = ""
 		app.LastUpdate = time.Now().UTC()
 		return
 	}
@@ -66,14 +68,20 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 		app.LastError = err.Error()
 		app.Candidates = nil
 		app.SelectedIdx = -1
-		app.SelectedPID = 0
+		app.SelectedKey = ""
 		app.LastUpdate = time.Now().UTC()
 		return
 	}
 
 	cands := s.Classify(snap, s.Options, &s.Cache)
 	now := time.Now().UTC()
-	applyIORates(cands, now, &s.LastIO)
+	if s.HostID == "" {
+		s.HostID = "local"
+	}
+	for i := range cands {
+		cands[i].Host = s.HostID
+	}
+	ApplyIORates(cands, now, &s.LastIO)
 
 	app.LastError = ""
 	if s.Logger != nil {
@@ -89,13 +97,13 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 	// maintain selection across refreshes
 	if len(app.Candidates) == 0 {
 		app.SelectedIdx = -1
-		app.SelectedPID = 0
+		app.SelectedKey = ""
 		return
 	}
 
-	if app.SelectedPID != 0 {
+	if app.SelectedKey != "" {
 		for i, c := range app.Candidates {
-			if c.Proc.Pid == app.SelectedPID {
+			if CandidateKey(c) == app.SelectedKey {
 				app.SelectedIdx = i
 				return
 			}
@@ -103,10 +111,10 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 	}
 
 	app.SelectedIdx = 0
-	app.SelectedPID = app.Candidates[0].Proc.Pid
+	app.SelectedKey = CandidateKey(app.Candidates[0])
 }
 
-func applyIORates(cands []Candidate, now time.Time, prev *map[int]IOSample) {
+func ApplyIORates(cands []Candidate, now time.Time, prev *map[int]IOSample) {
 	if *prev == nil {
 		*prev = make(map[int]IOSample, len(cands))
 	}

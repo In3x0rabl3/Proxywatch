@@ -1,37 +1,83 @@
 # ProxyWatch
 
-ProxyWatch is a Windows behavioral network inspection tool that identifies potential tunneling, proxying, and control‑channel activity by correlating network state with running processes. It operates without kernel drivers, ETW, or packet inspection. Detection is based on TCP/UDP state, process context, and heuristic scoring.
+ProxyWatch is a Windows userland network inspection tool that labels processes by role (tunnels, proxies, beacons) using TCP/UDP state and process context. It does not require kernel drivers, ETW, or packet capture.
 
-ProxyWatch can run continuously in a TUI, classify roles (e.g., susp‑tun, reverse‑proxy), and let you manually terminate a process from the inspector.
+Beaconhunter is a companion agent that runs on remote endpoints and streams the same classified results into a central ProxyWatch UI.
+
+---
+
+## Quick start (local)
+
+Interactive TUI:
+```bash
+proxywatch.exe
+```
+
+One-shot (scriptable):
+```bash
+proxywatch.exe -once
+```
+
+JSON logging:
+```bash
+proxywatch.exe -json out.json
+```
+
+Keys:
+- `UP/DOWN` to select
+- `ENTER` to inspect
+- `ESC` to return to dashboard
+- `k` to kill the inspected process
+- `q` to quit
+
+---
+
+## Multi-endpoint mode (Beaconhunter)
+
+1) Start ProxyWatch in ingest mode:
+```bash
+proxywatch.exe -listen 0.0.0.0:50051
+```
+
+2) Run the agent on each endpoint:
+```bash
+beaconhunter-agent.exe -server 10.0.0.5:50051
+```
+
+Optional agent flags:
+- `-id` Host identifier (default: hostname)
+- `-interval` Refresh interval
+- `-incremental` Reuse classification for unchanged PIDs
+
+Notes:
+- The dashboard shows a HOST column for each endpoint.
+- Kill is disabled for remote hosts.
+- Use `-stale 30s` to drop endpoints that stop reporting.
+- Transport is gRPC over TCP with a JSON codec. No auth or mTLS yet.
 
 ---
 
 ## Features
-| Feature                       | Meaning |
-|------------------------------|---------|
-| **Behavior-based detection** | identifies proxy/tunnel patterns without signatures |
-| **Reverse-control detection** | persistent outbound channels tracked over time |
-| **Reverse-transport detection** | detects local forwarding activity over loopback |
-| **Role assignment**          | processes are labeled based on observed traffic patterns |
-| **Outbound fan-out heuristics** | identifies multiplexing & multiple service targets |
-| **Client listener detection** | detects loopback/bound SOCKS-like behavior |
-| **Lateral movement hints**   | flags internal connections to common lateral ports |
-| **Short-lived connection capture** | burst sampling improves visibility of fast scans |
-| **TUI + inspector**          | interactive view with per-process details (TCP + UDP) |
-| **Manual kill (inspector)**  | terminate the inspected process with one keypress |
-| **Run once or continuous**   | suitable for terminal usage, scripting, or monitoring |
-| **No admin installation required** | uses standard Win32 APIs |
+
+- Behavior-based detection without signatures
+- Role assignment for tunnels, proxies, and beacons
+- Reverse-control and reverse-transport detection
+- Listener and client mapping (TCP + UDP)
+- Short-lived connection capture for fast scans
+- TUI with per-process inspector and manual kill
+- JSON logging (pretty) for offline review
+- Multi-endpoint ingest with Beaconhunter
 
 ---
 
 ## Roles
 
-ProxyWatch assigns a best‑fit role per process:
+ProxyWatch assigns a best-fit role per process:
 
 | Role                     | Meaning |
 |--------------------------|---------|
 | `susp-tun`               | Control channel with tunnel evidence (loopback transport or internal scan activity) |
-| `susp-beacon`            | Periodic short‑lived outbound beacons (e.g., ~60s callbacks) |
+| `susp-beacon`            | Periodic short-lived outbound beacons (for example ~60s callbacks) |
 | `susp-session`           | Control channel without proxying evidence |
 | `reverse-proxy`          | Control channel with proxied outbound activity |
 | `reverse-transport`      | Control channel + active local forwarding (loopback) |
@@ -46,58 +92,42 @@ ProxyWatch assigns a best‑fit role per process:
 
 ---
 
-## Usage
+## Flags
 
-### Interactive TUI
-```bash
-proxywatch.exe
-```
+- `-once` Run one scan and exit
+- `-roles` Comma-separated list of roles to display
+- `-interval` Refresh interval (for example `250ms`, `1s`)
+- `-incremental` Reuse classification for unchanged PIDs
+- `-json` Write pretty JSON snapshots to a file (use `-` for stdout)
+- `-listen` Listen address for Beaconhunter ingest (for example `0.0.0.0:50051`)
+- `-stale` Drop remote hosts after this duration without updates (0 = keep)
 
-Keys:
-- `UP/DOWN` to select
-- `ENTER` to inspect
-- `ESC` to return to dashboard
-- `k` to kill the inspected process
-- `q` to quit
-
-### One-shot (scriptable)
-```bash
-proxywatch.exe -once
-```
-
-### Useful flags
-- `-roles`: comma-separated list of roles to display (e.g., `reverse-proxy,reverse-control`)
-- `-interval`: refresh interval (e.g., `250ms`, `1s`)
-- `-incremental`: reuse classification for unchanged PIDs (faster, slightly less accurate)
-- `-json`: write pretty JSON snapshots to a file (use `-` for stdout)
 ---
 
-## How It Works (High-Level)
+## How it works (high level)
 
 ProxyWatch uses:
 
-- `GetExtendedTcpTable` (IPv4/IPv6) for TCP state & PID association
-- Toolhelp process snapshot + Win32 APIs for process metadata
-- timestamped tracking of outbound connections for control-channel inference
-- heuristic scoring + role classification
-- burst sampling per refresh to capture short-lived connections
+- `GetExtendedTcpTable` (IPv4/IPv6) for TCP state and PID association
 - `GetExtendedUdpTable` for UDP listeners
+- Toolhelp process snapshots and Win32 APIs for process metadata
+- Timestamped tracking of outbound connections for control-channel inference
+- Heuristic scoring and role classification
+- Burst sampling per refresh to capture short-lived connections
 
-No packets are captured. No kernel components are required.  
-All analysis is userland and stateful across scans.
+No packets are captured. No kernel components are required.
 
 ---
 
-## Installation
+## Build
 
-Clone & build:
-
+Clone and build:
 ```bash
 git clone https://github.com/In3x0rabl3/proxywatch.git
 cd proxywatch/proxywatch
 go mod download
-go get github.com/gdamore/tcell/v2
 GOOS=windows GOARCH=amd64 go build -o proxywatch.exe ./cmd/proxywatch
+GOOS=windows GOARCH=amd64 go build -o beaconhunter-agent.exe ./cmd/beaconhunter-agent
 ```
 
 ---

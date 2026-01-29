@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package beaconhunter.v1;
+
+option go_package = "proxywatch/internal/beaconhunter/pb";
+
+message ProcessInfo {
+  int32 pid = 1;
+  int32 parent_pid = 2;
+  string name = 3;
+  uint32 session_id = 4;
+  string session_name = 5;
+  uint64 mem_usage = 6;
+  string status = 7;
+  string user_name = 8;
+  string exe_path = 9;
+  string company = 10;
+  string integrity = 11;
+  uint64 io_read_bytes = 12;
+  uint64 io_write_bytes = 13;
+  uint64 io_other_bytes = 14;
+  uint64 io_read_bps = 15;
+  uint64 io_write_bps = 16;
+  uint64 io_other_bps = 17;
+  int64 cpu_time_nanos = 18;
+  string window_title = 19;
+}
+
+message ListenerInfo {
+  int32 pid = 1;
+  string local_address = 2;
+  int32 local_port = 3;
+  string state = 4;
+}
+
+message ConnectionInfo {
+  int32 pid = 1;
+  string local_address = 2;
+  int32 local_port = 3;
+  string remote_address = 4;
+  int32 remote_port = 5;
+  string state = 6;
+}
+
+message UDPListenerInfo {
+  int32 pid = 1;
+  string local_address = 2;
+  int32 local_port = 3;
+}
+
+message Candidate {
+  string host = 1;
+  ProcessInfo proc = 2;
+  repeated ListenerInfo listeners = 3;
+  repeated ConnectionInfo conns = 4;
+  repeated UDPListenerInfo udp_listeners = 5;
+  int32 score = 6;
+  int32 confidence = 7;
+  repeated string reasons = 8;
+  repeated string signals = 9;
+  string role = 10;
+  bool active_proxying = 11;
+  ConnectionInfo control_channel = 12;
+  int32 control_duration_seconds = 13;
+  int32 out_total = 14;
+  int32 out_external = 15;
+  int32 out_internal = 16;
+  int32 out_loopback = 17;
+  int32 out_long_lived = 18;
+  int32 out_short_lived = 19;
+  int32 inbound_total = 20;
+}
+
+message CandidateEnvelope {
+  string host_id = 1;
+  int64 timestamp_unix = 2;
+  repeated Candidate candidates = 3;
+}
+
+message StreamAck {
+  string message = 1;
+}
+
+service BeaconHunter {
+  rpc StreamCandidates(stream CandidateEnvelope) returns (StreamAck);
+}

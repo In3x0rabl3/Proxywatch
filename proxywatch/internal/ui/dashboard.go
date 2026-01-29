@@ -33,13 +33,13 @@ func DrawDashboard(app *shared.AppState) {
 	}
 
 	PutString(s, 0, y,
-		fmt.Sprintf("%-1s %-6s %-22s %-26s %-7s %-11s",
-			" ", "PID", "NAME", "ROLE", "ACTIVE", "INT/EXT/LO"),
+		fmt.Sprintf("%-1s %-10s %-6s %-22s %-26s %-7s %-11s",
+			" ", "HOST", "PID", "NAME", "ROLE", "ACTIVE", "INT/EXT/LO"),
 	)
 	y++
 	PutString(s, 0, y,
-		fmt.Sprintf("%-1s %-6s %-22s %-26s %-7s %-11s",
-			" ", "-----", "----------------------", "--------------------------", "------", "-----------"),
+		fmt.Sprintf("%-1s %-10s %-6s %-22s %-26s %-7s %-11s",
+			" ", "----------", "-----", "----------------------", "--------------------------", "------", "-----------"),
 	)
 	y++
 
@@ -50,6 +50,11 @@ func DrawDashboard(app *shared.AppState) {
 		}
 
 		name := shared.TrimName(c.Proc.Name, 22)
+		host := c.Host
+		if host == "" {
+			host = "local"
+		}
+		host = shared.TrimName(host, 10)
 		udpInt, udpExt, udpLo := shared.UDPScopeCounts(c.UDPListeners)
 		intExt := fmt.Sprintf("%d/%d/%d",
 			c.OutInternal+udpInt,
@@ -57,8 +62,9 @@ func DrawDashboard(app *shared.AppState) {
 			c.OutLoopback+udpLo,
 		)
 
-		line := fmt.Sprintf("%-1s %-6d %-22s %-26s %-7v %-11s",
+		line := fmt.Sprintf("%-1s %-10s %-6d %-22s %-26s %-7v %-11s",
 			arrow,
+			host,
 			c.Proc.Pid,
 			name,
 			c.Role,

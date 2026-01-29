@@ -43,9 +43,9 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 		candidates          []shared.Candidate
 		lastError           string
 		lastUpdate          time.Time
-		selectedPID         int
+		selectedKey         string
 		selectedIdx         int
-		selectionPIDAtStart int
+		selectionKeyAtStart string
 	}
 
 	refreshCh := make(chan refreshResult, 1)
@@ -55,7 +55,7 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 			return
 		}
 		refreshInFlight = true
-		selectionPIDAtStart := app.SelectedPID
+		selectionKeyAtStart := app.SelectedKey
 		go func() {
 			tmp := *app
 			tmp.Screen = nil
@@ -64,9 +64,9 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 				candidates:          tmp.Candidates,
 				lastError:           tmp.LastError,
 				lastUpdate:          tmp.LastUpdate,
-				selectedPID:         tmp.SelectedPID,
+				selectedKey:         tmp.SelectedKey,
 				selectedIdx:         tmp.SelectedIdx,
-				selectionPIDAtStart: selectionPIDAtStart,
+				selectionKeyAtStart: selectionKeyAtStart,
 			}
 		}()
 	}
@@ -75,8 +75,8 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 	defer tick.Stop()
 
 	for {
-		if app.ConfirmKillPID != 0 && time.Now().After(app.ConfirmKillDeadline) {
-			app.ConfirmKillPID = 0
+		if app.ConfirmKillKey != "" && time.Now().After(app.ConfirmKillDeadline) {
+			app.ConfirmKillKey = ""
 		}
 
 		switch app.Mode {
@@ -103,18 +103,18 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 							app.SelectedIdx > 0 &&
 							app.SelectedIdx < len(app.Candidates) {
 							app.SelectedIdx--
-							app.SelectedPID = app.Candidates[app.SelectedIdx].Proc.Pid
+							app.SelectedKey = shared.CandidateKey(app.Candidates[app.SelectedIdx])
 						}
 					case tcell.KeyDown:
 						if app.SelectedIdx >= 0 &&
 							app.SelectedIdx < len(app.Candidates)-1 {
 							app.SelectedIdx++
-							app.SelectedPID = app.Candidates[app.SelectedIdx].Proc.Pid
+							app.SelectedKey = shared.CandidateKey(app.Candidates[app.SelectedIdx])
 						}
 					case tcell.KeyEnter:
 						if app.SelectedIdx >= 0 &&
 							app.SelectedIdx < len(app.Candidates) {
-							app.InspectPID = app.Candidates[app.SelectedIdx].Proc.Pid
+							app.InspectKey = shared.CandidateKey(app.Candidates[app.SelectedIdx])
 							app.Mode = shared.ModeInspect
 						}
 					}
@@ -124,45 +124,51 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 					}
 
 				case shared.ModeInspect:
-					if app.ConfirmKillPID != 0 {
+					if app.ConfirmKillKey != "" {
 						if r := tev.Rune(); r != 'k' && r != 'K' && r != 'y' && r != 'Y' {
-							app.ConfirmKillPID = 0
+							app.ConfirmKillKey = ""
 						}
 					}
 					if tev.Key() == tcell.KeyEscape {
-						app.ConfirmKillPID = 0
+						app.ConfirmKillKey = ""
 						app.Mode = shared.ModeDashboard
 					}
 					if tev.Rune() == 'q' {
-						app.ConfirmKillPID = 0
+						app.ConfirmKillKey = ""
 						return nil
 					}
 					if tev.Rune() == 'k' || tev.Rune() == 'K' || tev.Rune() == 'y' || tev.Rune() == 'Y' {
-						pid := app.InspectPID
+						key := app.InspectKey
 						if app.ConfirmKill {
-							if app.ConfirmKillPID != pid || time.Now().After(app.ConfirmKillDeadline) {
+							if app.ConfirmKillKey != key || time.Now().After(app.ConfirmKillDeadline) {
 								if tev.Rune() == 'y' || tev.Rune() == 'Y' {
 									break
 								}
-								app.ConfirmKillPID = pid
+								app.ConfirmKillKey = key
 								app.ConfirmKillDeadline = time.Now().Add(app.ConfirmKillTimeout)
 								break
 							}
 						}
 
-						idx := FindIndexByPID(app.Candidates, pid)
+						idx := FindIndexByKey(app.Candidates, key)
 						if idx == -1 {
 							app.LastError = "Process no longer present"
-							app.ConfirmKillPID = 0
+							app.ConfirmKillKey = ""
+							break
+						}
+						if app.LocalHost == "" || app.Candidates[idx].Host != app.LocalHost {
+							app.LastError = "Kill disabled for remote host"
+							app.ConfirmKillKey = ""
 							break
 						}
 
+						pid := app.Candidates[idx].Proc.Pid
 						if err := telemetry.KillProcess(pid); err != nil {
 							app.LastError = "Kill failed: " + err.Error()
 						} else {
 							app.LastError = "Killed PID " + strconv.Itoa(pid) + " (" + app.Candidates[idx].Proc.Name + ")"
 						}
-						app.ConfirmKillPID = 0
+						app.ConfirmKillKey = ""
 					}
 				}
 			}
@@ -177,22 +183,22 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 
 			if len(app.Candidates) == 0 {
 				app.SelectedIdx = -1
-				app.SelectedPID = 0
+				app.SelectedKey = ""
 				break
 			}
 
-			if app.SelectedPID != res.selectionPIDAtStart {
-				idx := FindIndexByPID(app.Candidates, app.SelectedPID)
+			if app.SelectedKey != res.selectionKeyAtStart {
+				idx := FindIndexByKey(app.Candidates, app.SelectedKey)
 				if idx >= 0 {
 					app.SelectedIdx = idx
 				} else {
 					app.SelectedIdx = 0
-					app.SelectedPID = app.Candidates[0].Proc.Pid
+					app.SelectedKey = shared.CandidateKey(app.Candidates[0])
 				}
 				break
 			}
 
-			app.SelectedPID = res.selectedPID
+			app.SelectedKey = res.selectedKey
 			app.SelectedIdx = res.selectedIdx
 		}
 	}

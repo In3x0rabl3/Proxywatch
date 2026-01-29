@@ -21,7 +21,7 @@ func DrawInspector(app *shared.AppState) {
 
 	var cand *shared.Candidate
 	for i := range app.Candidates {
-		if app.Candidates[i].Proc.Pid == app.InspectPID {
+		if shared.CandidateKey(app.Candidates[i]) == app.InspectKey {
 			cand = &app.Candidates[i]
 			break
 		}
@@ -46,6 +46,12 @@ func DrawInspector(app *shared.AppState) {
 	PutString(s, 0, y, fmt.Sprintf("Role:  %s", cand.Role))
 	y++
 	PutString(s, 0, y, fmt.Sprintf("Active: %v", cand.ActiveProxying))
+	y++
+	host := cand.Host
+	if host == "" {
+		host = "local"
+	}
+	PutString(s, 0, y, fmt.Sprintf("Host:  %s", host))
 	y += 2
 
 	user := cand.Proc.UserName
@@ -194,10 +200,10 @@ func DrawInspector(app *shared.AppState) {
 		PutString(s, 0, h-2, TruncateToWidth("Status: "+app.LastError, w))
 	}
 
-	if app.ConfirmKill && app.ConfirmKillPID == app.InspectPID && time.Now().Before(app.ConfirmKillDeadline) && h >= 2 {
+	if app.ConfirmKill && app.ConfirmKillKey == app.InspectKey && time.Now().Before(app.ConfirmKillDeadline) && h >= 2 {
 		msg := fmt.Sprintf(
-			"Confirm kill PID %d (%s): press k again or y within %s",
-			app.InspectPID,
+			"Confirm kill %s (%s): press k again or y within %s",
+			app.InspectKey,
 			cand.Proc.Name,
 			app.ConfirmKillTimeout,
 		)

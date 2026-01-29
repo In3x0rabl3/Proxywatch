@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"proxywatch/internal/beaconhunter"
 	"proxywatch/internal/classifier"
 	"proxywatch/internal/shared"
 	"proxywatch/internal/telemetry"
@@ -32,6 +33,17 @@ func parseRoleFilter(s string) map[string]bool {
 	return out
 }
 
+func defaultHostID() string {
+	name, err := os.Hostname()
+	if err == nil {
+		name = strings.TrimSpace(name)
+	}
+	if name == "" {
+		return "local"
+	}
+	return name
+}
+
 /* ---------------- main ---------------- */
 
 func main() {
@@ -40,6 +52,8 @@ func main() {
 	interval := flag.Duration("interval", 1*time.Second, "Refresh interval (e.g. 250ms, 1s)")
 	incremental := flag.Bool("incremental", false, "Reuse classification for unchanged PIDs (faster, slightly less accurate)")
 	jsonOut := flag.String("json", "", "Write pretty JSON snapshots to a file (use '-' for stdout)")
+	listen := flag.String("listen", "", "Listen address for Beaconhunter agent ingest (e.g. 0.0.0.0:50051)")
+	staleAfter := flag.Duration("stale", 0, "Drop remote hosts after this duration without updates (0 = keep)")
 
 	flag.Parse()
 
@@ -48,6 +62,10 @@ func main() {
 
 	// -------- one-shot mode --------
 	if *once {
+		if *listen != "" {
+			fmt.Println("error: -listen cannot be used with -once")
+			os.Exit(1)
+		}
 		snap, err := telemetry.Collect()
 		if err != nil {
 			fmt.Println("error:", err)
@@ -59,6 +77,10 @@ func main() {
 			RoleFilter:  roleFilter,
 			Incremental: false,
 		}, nil)
+		hostID := defaultHostID()
+		for i := range cands {
+			cands[i].Host = hostID
+		}
 
 		// intentionally minimal, machine-friendly output
 		if *jsonOut != "" {
@@ -101,6 +123,44 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *listen != "" {
+		store := beaconhunter.NewStore()
+		server, lis, err := beaconhunter.ListenAndServe(*listen, store)
+		if err != nil {
+			fmt.Println("error:", err)
+			if logger != nil {
+				_ = logger.Close()
+			}
+			os.Exit(1)
+		}
+		defer server.Stop()
+		defer lis.Close()
+
+		app.LocalHost = ""
+		sc := &beaconhunter.RemoteScanner{
+			Store:      store,
+			StaleAfter: *staleAfter,
+			MinScore:   minScore,
+			RoleFilter: roleFilter,
+			Logger:     logger,
+		}
+
+		if err := ui.Run(app, sc); err != nil {
+			fmt.Println("error:", err)
+			if logger != nil {
+				_ = logger.Close()
+			}
+			os.Exit(1)
+		}
+
+		if logger != nil {
+			_ = logger.Close()
+		}
+		return
+	}
+
+	hostID := defaultHostID()
+	app.LocalHost = hostID
 	sc := &shared.ScannerAdapter{
 		Options: shared.ClassifyOptions{
 			MinScore:    minScore,
@@ -110,6 +170,7 @@ func main() {
 		Collect:  telemetry.Collect,
 		Classify: classifier.Classify,
 		Logger:   logger,
+		HostID:   hostID,
 	}
 
 	if err := ui.Run(app, sc); err != nil {
