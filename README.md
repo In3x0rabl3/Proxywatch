@@ -70,6 +70,8 @@ Collection is started from the TUI:
 
 Works for both local mode and ingest mode (`-listen`).
 
+Saved Cypher queries are in `queries.md`.
+
 ---
 
 ## Features
