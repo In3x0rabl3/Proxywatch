@@ -50,6 +50,11 @@ Optional agent flags:
 - `-id` Host identifier (default: hostname)
 - `-interval` Refresh interval (default `250ms`)
 - `-incremental` Reuse classification for unchanged PIDs
+- `--install` Install the BeaconHunter Windows service
+- `--uninstall` Uninstall the service
+- `--start` Start the service
+- `--stop` Stop the service
+- `--service` Run under SCM (service mode only)
 
 Notes:
 - The dashboard shows a HOST column for each endpoint.
@@ -130,6 +135,24 @@ go mod download
 GOOS=windows GOARCH=amd64 go build -o proxywatch.exe ./cmd/proxywatch
 GOOS=windows GOARCH=amd64 go build -o beaconhunter-agent.exe ./cmd/beaconhunter-agent
 ```
+
+## Windows service
+
+Install and start the agent service (keeps running after the terminal closes):
+```bash
+beaconhunter-agent.exe --install --server 10.0.0.5:50051
+beaconhunter-agent.exe --start
+```
+
+Stop and uninstall:
+```bash
+beaconhunter-agent.exe --stop
+beaconhunter-agent.exe --uninstall
+```
+
+Notes:
+- `--service` is intended for the Service Control Manager (SCM) only.
+- Use the normal binary for debugging or ad‑hoc runs.
 
 ---
 
