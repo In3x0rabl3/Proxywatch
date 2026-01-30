@@ -20,11 +20,22 @@ func DrawDashboard(app *shared.AppState) {
 	)
 
 	PutString(s, 0, 2,
-		TruncateToWidth("Use UP/DOWN arrows | ENTER inspect | w whitelist | W manage whitelist | q quit", w),
+		TruncateToWidth("Use UP/DOWN arrows | ENTER inspect | c collect | w whitelist | W manage whitelist | q quit", w),
 	)
 
-	if app.LastError != "" {
-		PutString(s, 0, 3, TruncateToWidth("Status: "+app.LastError, w))
+	status := app.LastError
+	if app.CollectActive {
+		remaining := time.Until(app.CollectUntil).Round(time.Second)
+		if remaining < 0 {
+			remaining = 0
+		}
+		if status != "" {
+			status += " | "
+		}
+		status += "Collecting (" + remaining.String() + " left)"
+	}
+	if status != "" {
+		PutString(s, 0, 3, TruncateToWidth("Status: "+status, w))
 	}
 
 	y := 5

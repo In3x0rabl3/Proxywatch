@@ -30,10 +30,10 @@ func main() {
 	install := flag.Bool("install", false, "Install the Windows service")
 	uninstall := flag.Bool("uninstall", false, "Uninstall the Windows service")
 	start := flag.Bool("start", false, "Start the Windows service")
-	stop := flag.Bool("stop", false, "Stop the Windows service")
+	stopSvc := flag.Bool("stop", false, "Stop the Windows service")
 	flag.Parse()
 
-	if *install || *uninstall || *start || *stop {
+	if *install || *uninstall || *start || *stopSvc {
 		if *serviceMode {
 			fmt.Println("error: --service cannot be used with install/start/stop commands")
 			os.Exit(1)
@@ -63,7 +63,7 @@ func main() {
 				os.Exit(1)
 			}
 		}
-		if *stop {
+		if *stopSvc {
 			if err := stopService(); err != nil {
 				fmt.Println("error:", err)
 				os.Exit(1)

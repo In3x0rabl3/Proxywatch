@@ -19,20 +19,6 @@ import (
 
 /* ---------------- CLI helpers ---------------- */
 
-func parseRoleFilter(s string) map[string]bool {
-	out := make(map[string]bool)
-	if s == "" {
-		return out
-	}
-	for _, r := range strings.Split(s, ",") {
-		r = strings.TrimSpace(r)
-		if r != "" {
-			out[r] = true
-		}
-	}
-	return out
-}
-
 func defaultHostID() string {
 	name, err := os.Hostname()
 	if err == nil {
@@ -59,13 +45,12 @@ func main() {
 	roles := flag.String("roles", "", "Comma-separated list of roles to display")
 	interval := flag.Duration("interval", 250*time.Millisecond, "Refresh interval (e.g. 250ms, 1s)")
 	incremental := flag.Bool("incremental", false, "Reuse classification for unchanged PIDs (faster, slightly less accurate)")
-	jsonOut := flag.String("json", "", "Write pretty JSON snapshots to a file (use '-' for stdout)")
 	listen := flag.String("listen", "", "Listen address for Beaconhunter agent ingest (e.g. 0.0.0.0:50051)")
 	staleAfter := flag.Duration("stale", 0, "Drop remote hosts after this duration without updates (0 = keep)")
 
 	flag.Parse()
 
-	roleFilter := parseRoleFilter(*roles)
+	roleFilter := shared.ParseRoleFilter(*roles)
 	roleFilterSet := strings.TrimSpace(*roles) != ""
 	minScore := 15
 
@@ -89,18 +74,6 @@ func main() {
 		hostID := defaultHostID()
 		for i := range cands {
 			cands[i].Host = hostID
-		}
-
-		// intentionally minimal, machine-friendly output
-		if *jsonOut != "" {
-			logger, err := shared.NewJSONLogger(*jsonOut, true)
-			if err != nil {
-				fmt.Println("error:", err)
-				os.Exit(1)
-			}
-			_ = logger.WriteSnapshot(snap, cands)
-			_ = logger.Close()
-			return
 		}
 
 		for _, c := range cands {
@@ -133,11 +106,9 @@ func main() {
 	}
 	app.Whitelist = whitelist
 
-	logger, err := shared.NewJSONLogger(*jsonOut, true)
-	if err != nil {
-		fmt.Println("error:", err)
-		os.Exit(1)
-	}
+	app.CollectDurationStr = "5m"
+	app.CollectRoles = "susp-session,susp-beacon,susp-tun"
+	app.CollectOutput = "proxywatch-collection.json"
 
 	uiRoleFilter := roleFilter
 	if !roleFilterSet {
@@ -149,9 +120,6 @@ func main() {
 		remoteSrv, grpcServer, lis, err := beaconhunter.ListenAndServe(*listen, store)
 		if err != nil {
 			fmt.Println("error:", err)
-			if logger != nil {
-				_ = logger.Close()
-			}
 			os.Exit(1)
 		}
 		defer grpcServer.Stop()
@@ -166,20 +134,12 @@ func main() {
 			StaleAfter: *staleAfter,
 			MinScore:   minScore,
 			RoleFilter: uiRoleFilter,
-			Logger:     logger,
 			Whitelist:  whitelist,
 		}
 
 		if err := ui.Run(app, sc); err != nil {
 			fmt.Println("error:", err)
-			if logger != nil {
-				_ = logger.Close()
-			}
 			os.Exit(1)
-		}
-
-		if logger != nil {
-			_ = logger.Close()
 		}
 		return
 	}
@@ -194,20 +154,12 @@ func main() {
 		},
 		Collect:   telemetry.Collect,
 		Classify:  classifier.Classify,
-		Logger:    logger,
 		HostID:    hostID,
 		Whitelist: whitelist,
 	}
 
 	if err := ui.Run(app, sc); err != nil {
 		fmt.Println("error:", err)
-		if logger != nil {
-			_ = logger.Close()
-		}
 		os.Exit(1)
-	}
-
-	if logger != nil {
-		_ = logger.Close()
 	}
 }

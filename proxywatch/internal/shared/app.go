@@ -13,6 +13,7 @@ const (
 	ModeDashboard AppMode = iota
 	ModeInspect
 	ModeWhitelist
+	ModeCollect
 )
 
 type AppState struct {
@@ -30,6 +31,16 @@ type AppState struct {
 	WhitelistItems      []string
 	WhitelistSelected   int
 	RemoteKill          func(host string, pid int) error
+	RoleFilterOverride  map[string]bool
+
+	CollectActive      bool
+	CollectUntil       time.Time
+	CollectDurationStr string
+	CollectRoles       string
+	CollectOutput      string
+	CollectRoleFilter  map[string]bool
+	CollectData        []Candidate
+	CollectField       int
 
 	Candidates  []Candidate
 	Mode        AppMode
@@ -80,7 +91,11 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 		return
 	}
 
-	cands := s.Classify(snap, s.Options, &s.Cache)
+	opts := s.Options
+	if app != nil && len(app.RoleFilterOverride) > 0 {
+		opts.RoleFilter = app.RoleFilterOverride
+	}
+	cands := s.Classify(snap, opts, &s.Cache)
 	selfPID := os.Getpid()
 	filtered := make([]Candidate, 0, len(cands))
 	for _, c := range cands {

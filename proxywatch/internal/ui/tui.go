@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"time"
 
+	"proxywatch/internal/bloodhound"
 	"proxywatch/internal/shared"
 	"proxywatch/internal/telemetry"
 
@@ -89,6 +90,8 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 			DrawInspector(app)
 		case shared.ModeWhitelist:
 			DrawWhitelist(app)
+		case shared.ModeCollect:
+			DrawCollect(app)
 		}
 		s.Show()
 
@@ -122,6 +125,19 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 							app.InspectKey = shared.CandidateKey(app.Candidates[app.SelectedIdx])
 							app.Mode = shared.ModeInspect
 						}
+					}
+
+					if tev.Rune() == 'c' || tev.Rune() == 'C' {
+						if app.CollectOutput == "" {
+							app.CollectOutput = "proxywatch-collection.json"
+						}
+						if app.CollectDurationStr == "" {
+							app.CollectDurationStr = "5m"
+						}
+						if app.CollectRoles == "" {
+							app.CollectRoles = "susp-session,susp-beacon,susp-tun"
+						}
+						app.Mode = shared.ModeCollect
 					}
 
 					if tev.Rune() == 'w' || tev.Rune() == 'W' {
@@ -263,6 +279,72 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 							}
 						}
 					}
+				case shared.ModeCollect:
+					switch tev.Key() {
+					case tcell.KeyTab:
+						app.CollectField = (app.CollectField + 1) % 3
+					case tcell.KeyBacktab:
+						app.CollectField = (app.CollectField + 2) % 3
+					case tcell.KeyBackspace, tcell.KeyBackspace2:
+						switch app.CollectField {
+						case 0:
+							app.CollectOutput = trimLastRune(app.CollectOutput)
+						case 1:
+							app.CollectDurationStr = trimLastRune(app.CollectDurationStr)
+						case 2:
+							app.CollectRoles = trimLastRune(app.CollectRoles)
+						}
+					case tcell.KeyEnter:
+						if app.CollectActive {
+							payload := bloodhound.BuildGraph(app.CollectData, app.CollectRoleFilter)
+							if err := bloodhound.WriteJSON(app.CollectOutput, payload); err != nil {
+								app.LastError = "collection failed: " + err.Error()
+							} else {
+								app.LastError = "collection written: " + app.CollectOutput
+							}
+							app.CollectActive = false
+							app.CollectData = nil
+							app.CollectRoleFilter = nil
+							app.RoleFilterOverride = nil
+							break
+						}
+						dur, err := time.ParseDuration(app.CollectDurationStr)
+						if err != nil || dur <= 0 {
+							app.LastError = "invalid duration"
+							break
+						}
+						app.CollectRoleFilter = shared.ParseRoleFilter(app.CollectRoles)
+						if len(app.CollectRoleFilter) == 0 {
+							app.CollectRoleFilter = map[string]bool{
+								"susp-session": true,
+								"susp-beacon":  true,
+								"susp-tun":     true,
+							}
+						}
+						app.RoleFilterOverride = app.CollectRoleFilter
+						app.CollectData = nil
+						app.CollectActive = true
+						app.CollectUntil = time.Now().Add(dur)
+						app.Mode = shared.ModeDashboard
+					case tcell.KeyEscape:
+						app.Mode = shared.ModeDashboard
+					}
+					if tev.Rune() == 'q' {
+						return nil
+					}
+					if tev.Rune() != 0 && tev.Key() == tcell.KeyRune {
+						r := tev.Rune()
+						if r >= 32 && r <= 126 {
+							switch app.CollectField {
+							case 0:
+								app.CollectOutput += string(r)
+							case 1:
+								app.CollectDurationStr += string(r)
+							case 2:
+								app.CollectRoles += string(r)
+							}
+						}
+					}
 				}
 			}
 
@@ -277,7 +359,7 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 			if len(app.Candidates) == 0 {
 				app.SelectedIdx = -1
 				app.SelectedKey = ""
-				break
+				goto collectUpdate
 			}
 
 			if app.SelectedKey != res.selectionKeyAtStart {
@@ -288,11 +370,44 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 					app.SelectedIdx = 0
 					app.SelectedKey = shared.CandidateKey(app.Candidates[0])
 				}
-				break
+				goto collectUpdate
 			}
 
 			app.SelectedKey = res.selectedKey
 			app.SelectedIdx = res.selectedIdx
+
+		collectUpdate:
+			if app.CollectActive {
+				if len(app.CollectRoleFilter) == 0 {
+					app.CollectRoleFilter = shared.ParseRoleFilter(app.CollectRoles)
+				}
+				for _, c := range app.Candidates {
+					if len(app.CollectRoleFilter) > 0 && !app.CollectRoleFilter[c.Role] {
+						continue
+					}
+					app.CollectData = append(app.CollectData, c)
+				}
+				if time.Now().After(app.CollectUntil) {
+					payload := bloodhound.BuildGraph(app.CollectData, app.CollectRoleFilter)
+					if err := bloodhound.WriteJSON(app.CollectOutput, payload); err != nil {
+						app.LastError = "collection failed: " + err.Error()
+					} else {
+						app.LastError = "collection written: " + app.CollectOutput
+					}
+					app.CollectActive = false
+					app.CollectData = nil
+					app.CollectRoleFilter = nil
+					app.RoleFilterOverride = nil
+				}
+			}
 		}
 	}
+}
+
+func trimLastRune(s string) string {
+	if s == "" {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:len(runes)-1])
 }

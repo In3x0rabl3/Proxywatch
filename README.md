@@ -18,11 +18,6 @@ One-shot (scriptable):
 proxywatch.exe -once
 ```
 
-JSON logging:
-```bash
-proxywatch.exe -json out.json
-```
-
 Keys:
 - `UP/DOWN` to select
 - `ENTER` to inspect
@@ -64,6 +59,19 @@ Notes:
 
 ---
 
+## BloodHound collection
+
+Collection is started from the TUI:
+1) Press `c` to open the collection screen
+2) Set output path, duration, and roles
+3) Press `ENTER` to start
+4) Return to the dashboard while it runs
+5) The JSON file is written automatically when the timer ends (or press `ENTER` again to stop early)
+
+Works for both local mode and ingest mode (`-listen`).
+
+---
+
 ## Features
 
 - Behavior-based detection without signatures
@@ -72,8 +80,8 @@ Notes:
 - Listener and client mapping (TCP + UDP)
 - Short-lived connection capture for fast scans
 - TUI with per-process inspector and manual kill
-- JSON logging (pretty) for offline review
 - Multi-endpoint ingest with Beaconhunter
+- BloodHound collection output (.zip)
 
 ---
 
@@ -104,7 +112,6 @@ ProxyWatch assigns a best-fit role per process:
 - `-roles` Comma-separated list of roles to display (overrides the default UI filter)
 - `-interval` Refresh interval (default `250ms`)
 - `-incremental` Reuse classification for unchanged PIDs
-- `-json` Write pretty JSON snapshots to a file (use `-` for stdout)
 - `-listen` Listen address for Beaconhunter ingest (for example `0.0.0.0:50051`)
 - `-stale` Drop remote hosts after this duration without updates (0 = keep)
 

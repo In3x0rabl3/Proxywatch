@@ -25,14 +25,18 @@ func (r *RemoteScanner) Refresh(app *shared.AppState) {
 		return
 	}
 
+	roleFilter := r.RoleFilter
+	if app != nil && len(app.RoleFilterOverride) > 0 {
+		roleFilter = app.RoleFilterOverride
+	}
 	cands := r.Store.Snapshot(r.StaleAfter)
-	if r.MinScore > 0 || len(r.RoleFilter) > 0 {
+	if r.MinScore > 0 || len(roleFilter) > 0 {
 		filtered := make([]shared.Candidate, 0, len(cands))
 		for _, c := range cands {
 			if r.MinScore > 0 && c.Score < r.MinScore {
 				continue
 			}
-			if len(r.RoleFilter) > 0 && !r.RoleFilter[c.Role] {
+			if len(roleFilter) > 0 && !roleFilter[c.Role] {
 				continue
 			}
 			filtered = append(filtered, c)

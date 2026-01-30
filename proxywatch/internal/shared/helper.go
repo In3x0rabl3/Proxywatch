@@ -1,6 +1,9 @@
 package shared
 
-import "net"
+import (
+	"net"
+	"strings"
+)
 
 func IsInternalIP(ip string) bool {
 	netIP := net.ParseIP(ip)
@@ -66,4 +69,19 @@ func TrimName(name string, max int) string {
 		return name[:max]
 	}
 	return name[:max-3] + "..."
+}
+
+func ParseRoleFilter(s string) map[string]bool {
+	out := make(map[string]bool)
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return out
+	}
+	for _, r := range strings.Split(s, ",") {
+		r = strings.TrimSpace(r)
+		if r != "" {
+			out[r] = true
+		}
+	}
+	return out
 }
