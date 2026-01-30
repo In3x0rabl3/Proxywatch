@@ -2,6 +2,7 @@ package shared
 
 import (
 	"net"
+	"os"
 	"strings"
 )
 
@@ -84,4 +85,15 @@ func ParseRoleFilter(s string) map[string]bool {
 		}
 	}
 	return out
+}
+
+func DefaultHostID(fallback string) string {
+	name, err := os.Hostname()
+	if err == nil {
+		name = strings.TrimSpace(name)
+	}
+	if name == "" {
+		return fallback
+	}
+	return name
 }

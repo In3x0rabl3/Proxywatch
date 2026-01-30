@@ -2,7 +2,7 @@
 
 ProxyWatch is a Windows userland network inspection tool that labels processes by role (tunnels, proxies, beacons) using TCP/UDP state and process context. It does not require kernel drivers, ETW, or packet capture.
 
-Beaconhunter is a companion agent that runs on remote endpoints and streams the same classified results into a central ProxyWatch UI.
+ProxyWatch Agent is a companion service that runs on remote endpoints and streams the same classified results into a central ProxyWatch UI. Each build generates a unique TLS/mTLS trust bundle so only agents built from the same build can connect.
 
 ---
 
@@ -11,11 +11,6 @@ Beaconhunter is a companion agent that runs on remote endpoints and streams the 
 Interactive TUI:
 ```bash
 proxywatch.exe
-```
-
-One-shot (scriptable):
-```bash
-proxywatch.exe -once
 ```
 
 Keys:
@@ -29,7 +24,7 @@ Keys:
 
 ---
 
-## Multi-endpoint mode (Beaconhunter)
+## Multi-endpoint mode (ProxyWatch Agent)
 
 1) Start ProxyWatch in ingest mode:
 ```bash
@@ -38,14 +33,14 @@ proxywatch.exe -listen 0.0.0.0:50051
 
 2) Run the agent on each endpoint:
 ```bash
-beaconhunter-agent.exe -server 10.0.0.5:50051
+pwa.exe -server 10.0.0.5:50051
 ```
 
 Optional agent flags:
 - `-id` Host identifier (default: hostname)
 - `-interval` Refresh interval (default `250ms`)
 - `-incremental` Reuse classification for unchanged PIDs
-- `--install` Install the BeaconHunter Windows service
+- `--install` Install the ProxyWatch Agent Windows service
 - `--uninstall` Uninstall the service
 - `--start` Start the service
 - `--stop` Stop the service
@@ -55,7 +50,8 @@ Notes:
 - The dashboard shows a HOST column for each endpoint.
 - Kill is available for remote hosts when the agent is connected.
 - Use `-stale 30s` to drop endpoints that stop reporting.
-- Transport is gRPC over TCP with a JSON codec. No auth or mTLS yet.
+- Transport is gRPC over TCP with JSON framing and automatic TLS/mTLS (generated at build time).
+- Agent and UI must be built together so they share the same trust bundle.
 
 ---
 
@@ -63,8 +59,10 @@ Notes:
 
 Collection is started from the TUI:
 1) Press `c` to open the collection screen
-2) Set output path, duration, and roles
-3) Press `ENTER` to start
+2) Use `UP/DOWN` to select a field
+3) Press `ENTER` to edit Output or Roles (type to change)
+4) Use `LEFT/RIGHT` to change Duration
+5) Select `Start/Stop` and press `ENTER` to start
 4) Return to the dashboard while it runs
 5) The JSON file is written automatically when the timer ends (or press `ENTER` again to stop early)
 
@@ -82,8 +80,8 @@ Saved Cypher queries are in `queries.md`.
 - Listener and client mapping (TCP + UDP)
 - Short-lived connection capture for fast scans
 - TUI with per-process inspector and manual kill
-- Multi-endpoint ingest with Beaconhunter
-- BloodHound collection output (.zip)
+- Multi-endpoint ingest with ProxyWatch Agent
+- BloodHound collection output (JSON file)
 
 ---
 
@@ -110,11 +108,10 @@ ProxyWatch assigns a best-fit role per process:
 
 ## Flags
 
-- `-once` Run one scan and exit
 - `-roles` Comma-separated list of roles to display (overrides the default UI filter)
 - `-interval` Refresh interval (default `250ms`)
 - `-incremental` Reuse classification for unchanged PIDs
-- `-listen` Listen address for Beaconhunter ingest (for example `0.0.0.0:50051`)
+- `-listen` Listen address for ProxyWatch Agent ingest (for example `0.0.0.0:50051`)
 - `-stale` Drop remote hosts after this duration without updates (0 = keep)
 
 ---
@@ -139,24 +136,23 @@ No packets are captured. No kernel components are required.
 Clone and build:
 ```bash
 git clone https://github.com/In3x0rabl3/proxywatch.git
-cd proxywatch/proxywatch
-go mod download
-GOOS=windows GOARCH=amd64 go build -o proxywatch.exe ./cmd/proxywatch
-GOOS=windows GOARCH=amd64 go build -o beaconhunter-agent.exe ./cmd/beaconhunter-agent
+cd proxywatch
+make
 ```
+Artifacts are placed in `dist/` by default.
 
 ## Windows service
 
 Install and start the agent service (keeps running after the terminal closes):
 ```bash
-beaconhunter-agent.exe --install --server 10.0.0.5:50051
-beaconhunter-agent.exe --start
+pwa.exe --install --server 10.0.0.5:50051
+pwa.exe --start
 ```
 
 Stop and uninstall:
 ```bash
-beaconhunter-agent.exe --stop
-beaconhunter-agent.exe --uninstall
+pwa.exe --stop
+pwa.exe --uninstall
 ```
 
 Notes:

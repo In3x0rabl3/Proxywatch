@@ -61,8 +61,8 @@ func (s *Store) Snapshot(staleAfter time.Duration) []shared.Candidate {
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		pri := rolePriority(out[i].Role)
-		prj := rolePriority(out[j].Role)
+		pri := shared.RolePriority(out[i].Role)
+		prj := shared.RolePriority(out[j].Role)
 		if pri != prj {
 			return pri > prj
 		}
@@ -82,35 +82,4 @@ func (s *Store) Snapshot(staleAfter time.Duration) []shared.Candidate {
 	})
 
 	return out
-}
-
-func rolePriority(role string) int {
-	switch role {
-	case "reverse-transport":
-		return 90
-	case "reverse-proxy":
-		return 80
-	case "proxy-listener":
-		return 70
-	case "susp-tun":
-		return 68
-	case "susp-session":
-		return 66
-	case "susp-beacon":
-		return 65
-	case "listener-with-clients":
-		return 60
-	case "listener-with-outbound":
-		return 50
-	case "reverse-control":
-		return 40
-	case "reverse-tunnel":
-		return 35
-	case "listener-only":
-		return 30
-	case "outbound-only":
-		return 10
-	default:
-		return 0
-	}
 }

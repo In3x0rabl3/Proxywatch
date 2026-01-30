@@ -41,6 +41,7 @@ type AppState struct {
 	CollectRoleFilter  map[string]bool
 	CollectData        []Candidate
 	CollectField       int
+	CollectEditing     bool
 
 	Candidates  []Candidate
 	Mode        AppMode
@@ -64,7 +65,6 @@ type ScannerAdapter struct {
 	Options   ClassifyOptions
 	Cache     ClassifierCache
 	LastIO    map[int]IOSample
-	Logger    *JSONLogger
 	HostID    string
 	Whitelist *Whitelist
 	Collect   func() (*Snapshot, error)
@@ -118,12 +118,6 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 	}
 
 	app.LastError = ""
-	if s.Logger != nil {
-		if err := s.Logger.WriteSnapshot(snap, cands); err != nil {
-			app.LastError = "log write failed: " + err.Error()
-		}
-	}
-
 	app.Candidates = cands
 	app.LastUpdate = now
 	// app.LastError already set above

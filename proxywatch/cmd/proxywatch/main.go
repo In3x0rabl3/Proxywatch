@@ -19,17 +19,6 @@ import (
 
 /* ---------------- CLI helpers ---------------- */
 
-func defaultHostID() string {
-	name, err := os.Hostname()
-	if err == nil {
-		name = strings.TrimSpace(name)
-	}
-	if name == "" {
-		return "local"
-	}
-	return name
-}
-
 func defaultUIRoleFilter() map[string]bool {
 	return map[string]bool{
 		"susp-session": true,
@@ -41,11 +30,10 @@ func defaultUIRoleFilter() map[string]bool {
 /* ---------------- main ---------------- */
 
 func main() {
-	once := flag.Bool("once", false, "Run one scan and exit")
 	roles := flag.String("roles", "", "Comma-separated list of roles to display")
 	interval := flag.Duration("interval", 250*time.Millisecond, "Refresh interval (e.g. 250ms, 1s)")
 	incremental := flag.Bool("incremental", false, "Reuse classification for unchanged PIDs (faster, slightly less accurate)")
-	listen := flag.String("listen", "", "Listen address for Beaconhunter agent ingest (e.g. 0.0.0.0:50051)")
+	listen := flag.String("listen", "", "Listen address for Proxywatch agent ingest (e.g. 0.0.0.0:50051)")
 	staleAfter := flag.Duration("stale", 0, "Drop remote hosts after this duration without updates (0 = keep)")
 
 	flag.Parse()
@@ -53,44 +41,6 @@ func main() {
 	roleFilter := shared.ParseRoleFilter(*roles)
 	roleFilterSet := strings.TrimSpace(*roles) != ""
 	minScore := 15
-
-	// -------- one-shot mode --------
-	if *once {
-		if *listen != "" {
-			fmt.Println("error: -listen cannot be used with -once")
-			os.Exit(1)
-		}
-		snap, err := telemetry.Collect()
-		if err != nil {
-			fmt.Println("error:", err)
-			os.Exit(1)
-		}
-
-		cands := classifier.Classify(snap, shared.ClassifyOptions{
-			MinScore:    minScore,
-			RoleFilter:  roleFilter,
-			Incremental: false,
-		}, nil)
-		hostID := defaultHostID()
-		for i := range cands {
-			cands[i].Host = hostID
-		}
-
-		for _, c := range cands {
-			udpInt, udpExt, udpLo := shared.UDPScopeCounts(c.UDPListeners)
-			fmt.Printf(
-				"pid=%d role=%s active=%v out_int=%d out_ext=%d out_lo=%d\n",
-				c.Proc.Pid,
-				c.Role,
-				c.ActiveProxying,
-				c.OutInternal+udpInt,
-				c.OutExternal+udpExt,
-				c.OutLoopback+udpLo,
-			)
-		}
-
-		return
-	}
 
 	// -------- interactive TUI --------
 	app := &shared.AppState{
@@ -144,7 +94,7 @@ func main() {
 		return
 	}
 
-	hostID := defaultHostID()
+	hostID := shared.DefaultHostID("local")
 	app.LocalHost = hostID
 	sc := &shared.ScannerAdapter{
 		Options: shared.ClassifyOptions{

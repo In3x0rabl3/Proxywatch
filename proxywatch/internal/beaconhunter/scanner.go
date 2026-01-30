@@ -11,7 +11,6 @@ type RemoteScanner struct {
 	StaleAfter time.Duration
 	MinScore   int
 	RoleFilter map[string]bool
-	Logger     *shared.JSONLogger
 	Whitelist  *shared.Whitelist
 }
 
@@ -51,12 +50,6 @@ func (r *RemoteScanner) Refresh(app *shared.AppState) {
 	app.LastError = ""
 	app.Candidates = cands
 	app.LastUpdate = now
-	if r.Logger != nil {
-		if err := r.Logger.WriteSnapshot(nil, cands); err != nil {
-			app.LastError = "log write failed: " + err.Error()
-		}
-	}
-
 	if len(app.Candidates) == 0 {
 		app.SelectedIdx = -1
 		app.SelectedKey = ""

@@ -19,10 +19,11 @@ import (
 	"proxywatch/internal/telemetry"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 func main() {
-	serverAddr := flag.String("server", "", "Beaconhunter server address (e.g. 10.0.0.5:50051)")
+	serverAddr := flag.String("server", "", "Proxywatch server address (e.g. 10.0.0.5:50051)")
 	hostID := flag.String("id", "", "Host identifier (default: hostname)")
 	interval := flag.Duration("interval", 250*time.Millisecond, "Refresh interval (e.g. 250ms, 1s)")
 	incremental := flag.Bool("incremental", false, "Reuse classification for unchanged PIDs")
@@ -44,7 +45,7 @@ func main() {
 				os.Exit(1)
 			}
 			if *hostID == "" {
-				*hostID = defaultHostID()
+				*hostID = shared.DefaultHostID("unknown")
 			}
 			args := buildServiceArgs(*serverAddr, *hostID, *interval, *incremental)
 			exePath, err := os.Executable()
@@ -84,7 +85,7 @@ func main() {
 	}
 
 	if *hostID == "" {
-		*hostID = defaultHostID()
+		*hostID = shared.DefaultHostID("unknown")
 	}
 
 	if *serviceMode {
@@ -102,14 +103,6 @@ func main() {
 	lastIO := map[int]shared.IOSample{}
 
 	runAgentLoop(ctx, *serverAddr, *hostID, *interval, *incremental, &cache, &lastIO)
-}
-
-func defaultHostID() string {
-	name, err := os.Hostname()
-	if err == nil && name != "" {
-		return name
-	}
-	return "unknown"
 }
 
 func buildServiceArgs(serverAddr, hostID string, interval time.Duration, incremental bool) []string {
@@ -158,10 +151,14 @@ func runAgent(
 	cache *shared.ClassifierCache,
 	lastIO *map[int]shared.IOSample,
 ) error {
+	tlsCfg, err := beaconhunter.AgentTLSConfig(hostID)
+	if err != nil {
+		return err
+	}
 	conn, err := grpc.DialContext(
 		ctx,
 		addr,
-		grpc.WithInsecure(),
+		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
 		grpc.WithDefaultCallOptions(grpc.ForceCodec(beaconhunter.JSONCodec())),
 	)
 	if err != nil {

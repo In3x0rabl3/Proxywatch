@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	serviceName        = "BeaconHunterAgent"
-	serviceDisplayName = "BeaconHunter Agent"
-	serviceDescription = "BeaconHunter endpoint agent for ProxyWatch"
+	serviceName        = "ProxyWatchAgent"
+	serviceDisplayName = "ProxyWatch Agent"
+	serviceDescription = "ProxyWatch endpoint agent for ProxyWatch UI"
 )
 
 type serviceConfig struct {

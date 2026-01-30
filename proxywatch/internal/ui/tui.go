@@ -137,6 +137,10 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 						if app.CollectRoles == "" {
 							app.CollectRoles = "susp-session,susp-beacon,susp-tun"
 						}
+						app.CollectEditing = false
+						if app.CollectField < 0 || app.CollectField > 3 {
+							app.CollectField = 0
+						}
 						app.Mode = shared.ModeCollect
 					}
 
@@ -281,67 +285,97 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 					}
 				case shared.ModeCollect:
 					switch tev.Key() {
-					case tcell.KeyTab:
-						app.CollectField = (app.CollectField + 1) % 3
-					case tcell.KeyBacktab:
-						app.CollectField = (app.CollectField + 2) % 3
+					case tcell.KeyUp:
+						if app.CollectField > 0 {
+							app.CollectField--
+						} else {
+							app.CollectField = 3
+						}
+					case tcell.KeyDown:
+						if app.CollectField < 3 {
+							app.CollectField++
+						} else {
+							app.CollectField = 0
+						}
+					case tcell.KeyLeft:
+						if app.CollectField == 1 && !app.CollectActive {
+							app.CollectDurationStr = stepDuration(app.CollectDurationStr, -1)
+						}
+					case tcell.KeyRight:
+						if app.CollectField == 1 && !app.CollectActive {
+							app.CollectDurationStr = stepDuration(app.CollectDurationStr, 1)
+						}
 					case tcell.KeyBackspace, tcell.KeyBackspace2:
-						switch app.CollectField {
-						case 0:
-							app.CollectOutput = trimLastRune(app.CollectOutput)
-						case 1:
-							app.CollectDurationStr = trimLastRune(app.CollectDurationStr)
-						case 2:
-							app.CollectRoles = trimLastRune(app.CollectRoles)
+						if app.CollectEditing {
+							switch app.CollectField {
+							case 0:
+								app.CollectOutput = trimLastRune(app.CollectOutput)
+							case 2:
+								app.CollectRoles = trimLastRune(app.CollectRoles)
+							}
 						}
 					case tcell.KeyEnter:
-						if app.CollectActive {
-							payload := bloodhound.BuildGraph(app.CollectData, app.CollectRoleFilter)
-							if err := bloodhound.WriteJSON(app.CollectOutput, payload); err != nil {
-								app.LastError = "collection failed: " + err.Error()
-							} else {
-								app.LastError = "collection written: " + app.CollectOutput
+						switch app.CollectField {
+						case 0, 2:
+							if app.CollectActive {
+								break
 							}
-							app.CollectActive = false
+							app.CollectEditing = !app.CollectEditing
+						case 3:
+							if app.CollectActive {
+								payload := bloodhound.BuildGraph(app.CollectData, app.CollectRoleFilter)
+								if err := bloodhound.WriteJSON(app.CollectOutput, payload); err != nil {
+									app.LastError = "collection failed: " + err.Error()
+								} else {
+									app.LastError = "collection written: " + app.CollectOutput
+								}
+								app.CollectActive = false
+								app.CollectData = nil
+								app.CollectRoleFilter = nil
+								app.RoleFilterOverride = nil
+								app.CollectEditing = false
+								break
+							}
+							dur, err := time.ParseDuration(app.CollectDurationStr)
+							if err != nil || dur <= 0 {
+								app.LastError = "invalid duration"
+								break
+							}
+							app.CollectRoleFilter = shared.ParseRoleFilter(app.CollectRoles)
+							if len(app.CollectRoleFilter) == 0 {
+								app.CollectRoleFilter = map[string]bool{
+									"susp-session": true,
+									"susp-beacon":  true,
+									"susp-tun":     true,
+								}
+							}
+							app.RoleFilterOverride = app.CollectRoleFilter
 							app.CollectData = nil
-							app.CollectRoleFilter = nil
-							app.RoleFilterOverride = nil
-							break
+							app.CollectActive = true
+							app.CollectUntil = time.Now().Add(dur)
+							app.CollectEditing = false
+							app.Mode = shared.ModeDashboard
 						}
-						dur, err := time.ParseDuration(app.CollectDurationStr)
-						if err != nil || dur <= 0 {
-							app.LastError = "invalid duration"
-							break
-						}
-						app.CollectRoleFilter = shared.ParseRoleFilter(app.CollectRoles)
-						if len(app.CollectRoleFilter) == 0 {
-							app.CollectRoleFilter = map[string]bool{
-								"susp-session": true,
-								"susp-beacon":  true,
-								"susp-tun":     true,
-							}
-						}
-						app.RoleFilterOverride = app.CollectRoleFilter
-						app.CollectData = nil
-						app.CollectActive = true
-						app.CollectUntil = time.Now().Add(dur)
-						app.Mode = shared.ModeDashboard
 					case tcell.KeyEscape:
-						app.Mode = shared.ModeDashboard
+						if app.CollectEditing {
+							app.CollectEditing = false
+						} else {
+							app.Mode = shared.ModeDashboard
+						}
 					}
 					if tev.Rune() == 'q' {
 						return nil
 					}
 					if tev.Rune() != 0 && tev.Key() == tcell.KeyRune {
-						r := tev.Rune()
-						if r >= 32 && r <= 126 {
-							switch app.CollectField {
-							case 0:
-								app.CollectOutput += string(r)
-							case 1:
-								app.CollectDurationStr += string(r)
-							case 2:
-								app.CollectRoles += string(r)
+						if app.CollectEditing {
+							r := tev.Rune()
+							if r >= 32 && r <= 126 {
+								switch app.CollectField {
+								case 0:
+									app.CollectOutput += string(r)
+								case 2:
+									app.CollectRoles += string(r)
+								}
 							}
 						}
 					}

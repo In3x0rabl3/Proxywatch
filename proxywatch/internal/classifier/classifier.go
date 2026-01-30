@@ -71,8 +71,8 @@ func Classify(
 	}
 
 	sort.Slice(interesting, func(i, j int) bool {
-		pri := rolePriority(interesting[i].Role)
-		prj := rolePriority(interesting[j].Role)
+		pri := shared.RolePriority(interesting[i].Role)
+		prj := shared.RolePriority(interesting[j].Role)
 		if pri != prj {
 			return pri > prj
 		}
@@ -92,37 +92,6 @@ func Classify(
 	})
 
 	return interesting
-}
-
-func rolePriority(role string) int {
-	switch role {
-	case "reverse-transport":
-		return 90
-	case "reverse-proxy":
-		return 80
-	case "proxy-listener":
-		return 70
-	case "susp-tun":
-		return 68
-	case "susp-session":
-		return 66
-	case "susp-beacon":
-		return 65
-	case "listener-with-clients":
-		return 60
-	case "listener-with-outbound":
-		return 50
-	case "reverse-control":
-		return 40
-	case "reverse-tunnel":
-		return 35
-	case "listener-only":
-		return 30
-	case "outbound-only":
-		return 10
-	default:
-		return 0
-	}
 }
 
 func buildCandidates(snap *shared.Snapshot) []shared.Candidate {
