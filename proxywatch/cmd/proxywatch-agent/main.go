@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"proxywatch/internal/beaconhunter"
-	"proxywatch/internal/beaconhunter/pb"
+	"proxywatch/internal/agent"
+	"proxywatch/internal/agent/pb"
 	"proxywatch/internal/classifier"
 	"proxywatch/internal/shared"
 	"proxywatch/internal/telemetry"
@@ -151,7 +151,7 @@ func runAgent(
 	cache *shared.ClassifierCache,
 	lastIO *map[int]shared.IOSample,
 ) error {
-	tlsCfg, err := beaconhunter.AgentTLSConfig(hostID)
+	tlsCfg, err := agent.AgentTLSConfig()
 	if err != nil {
 		return err
 	}
@@ -159,14 +159,14 @@ func runAgent(
 		ctx,
 		addr,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
-		grpc.WithDefaultCallOptions(grpc.ForceCodec(beaconhunter.JSONCodec())),
+		grpc.WithDefaultCallOptions(grpc.ForceCodec(agent.JSONCodec())),
 	)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	client := pb.NewBeaconHunterClient(conn)
+	client := pb.NewProxyWatchAgentClient(conn)
 	stream, err := client.StreamCandidates(ctx)
 	if err != nil {
 		return err
@@ -268,7 +268,7 @@ func runAgent(
 				cands[i].Host = hostID
 			}
 
-			env := beaconhunter.ToEnvelope(hostID, now, cands)
+			env := agent.ToEnvelope(hostID, now, cands)
 			msg := &pb.ClientMessage{Envelope: env}
 			select {
 			case sendCh <- msg:

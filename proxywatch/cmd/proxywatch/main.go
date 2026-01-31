@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"proxywatch/internal/beaconhunter"
+	"proxywatch/internal/agent"
 	"proxywatch/internal/classifier"
 	"proxywatch/internal/shared"
 	"proxywatch/internal/telemetry"
@@ -66,8 +66,8 @@ func main() {
 	}
 
 	if *listen != "" {
-		store := beaconhunter.NewStore()
-		remoteSrv, grpcServer, lis, err := beaconhunter.ListenAndServe(*listen, store)
+		store := agent.NewStore()
+		remoteSrv, grpcServer, lis, err := agent.ListenAndServe(*listen, store)
 		if err != nil {
 			fmt.Println("error:", err)
 			os.Exit(1)
@@ -79,7 +79,7 @@ func main() {
 		app.RemoteKill = func(host string, pid int) error {
 			return remoteSrv.Kill(host, pid)
 		}
-		sc := &beaconhunter.RemoteScanner{
+		sc := &agent.RemoteScanner{
 			Store:      store,
 			StaleAfter: *staleAfter,
 			MinScore:   minScore,

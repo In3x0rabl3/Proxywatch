@@ -1,4 +1,4 @@
-package beaconhunter
+package agent
 
 import (
 	"time"

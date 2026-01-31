@@ -4,7 +4,7 @@ GOARCH ?= amd64
 
 PROXYWATCH_OUT := $(OUT_DIR)/proxywatch.exe
 AGENT_OUT := $(OUT_DIR)/pwa.exe
-GEN_TLS_OUT := internal/beaconhunter/generated_tls.go
+GEN_TLS_OUT := internal/agent/generated_tls.go
 
 .PHONY: all build clean gen-tls
 

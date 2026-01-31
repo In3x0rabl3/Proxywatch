@@ -1,9 +1,9 @@
-package beaconhunter
+package agent
 
 import (
 	"time"
 
-	"proxywatch/internal/beaconhunter/pb"
+	"proxywatch/internal/agent/pb"
 	"proxywatch/internal/shared"
 )
 

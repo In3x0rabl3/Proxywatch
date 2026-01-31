@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package beaconhunter.v1;
+package proxywatch.agent.v1;
 
-option go_package = "proxywatch/internal/beaconhunter/pb";
+option go_package = "proxywatch/internal/agent/pb";
 
 message ProcessInfo {
   int32 pid = 1;
@@ -94,6 +94,6 @@ message CommandResponse {
   string error = 3;
 }
 
-service BeaconHunter {
+service ProxyWatchAgent {
   rpc StreamCandidates(stream ClientMessage) returns (stream ServerCommand);
 }

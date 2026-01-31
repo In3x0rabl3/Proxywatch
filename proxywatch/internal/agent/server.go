@@ -1,7 +1,6 @@
-package beaconhunter
+package agent
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,12 +9,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"proxywatch/internal/beaconhunter/pb"
+	"proxywatch/internal/agent/pb"
 	"proxywatch/internal/shared"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/peer"
 )
 
 type Server struct {
@@ -28,11 +26,10 @@ type Server struct {
 }
 
 type agentConn struct {
-	stream pb.BeaconHunter_StreamCandidatesServer
+	stream pb.ProxyWatchAgent_StreamCandidatesServer
 	mu     sync.Mutex
 	closed bool
 	host   string
-	ident  string
 }
 
 func (a *agentConn) Send(cmd *pb.ServerCommand) error {
@@ -50,7 +47,7 @@ func (a *agentConn) Close() {
 	a.mu.Unlock()
 }
 
-func (s *Server) StreamCandidates(stream pb.BeaconHunter_StreamCandidatesServer) error {
+func (s *Server) StreamCandidates(stream pb.ProxyWatchAgent_StreamCandidatesServer) error {
 	if s.Store == nil {
 		return fmt.Errorf("store not configured")
 	}
@@ -65,10 +62,6 @@ func (s *Server) StreamCandidates(stream pb.BeaconHunter_StreamCandidatesServer)
 	defer agent.Close()
 
 	var host string
-	identity, _ := identityFromContext(stream.Context())
-	if identity != "" {
-		agent.ident = identity
-	}
 	windowStart := time.Now()
 	windowCount := 0
 	defer func() {
@@ -105,25 +98,15 @@ func (s *Server) StreamCandidates(stream pb.BeaconHunter_StreamCandidatesServer)
 		}
 
 		if env := msg.Envelope; env != nil {
-			if env.HostId != "" {
-				if agent.ident != "" {
-					if host == "" {
-						host = agent.ident
-						agent.host = host
-						s.mu.Lock()
-						s.agents[host] = agent
-						s.mu.Unlock()
-					}
-				} else if host != env.HostId {
-					host = sanitizeHostID(env.HostId)
-					if host == "" {
-						host = "unknown"
-					}
-					agent.host = host
-					s.mu.Lock()
-					s.agents[host] = agent
-					s.mu.Unlock()
+			if env.HostId != "" && host != env.HostId {
+				host = sanitizeHostID(env.HostId)
+				if host == "" {
+					host = "unknown"
 				}
+				agent.host = host
+				s.mu.Lock()
+				s.agents[host] = agent
+				s.mu.Unlock()
 			}
 			ts := time.Unix(env.TimestampUnix, 0).UTC()
 			cands := make([]shared.Candidate, 0, len(env.Candidates))
@@ -240,36 +223,13 @@ func ListenAndServe(addr string, store *Store) (*Server, *grpc.Server, net.Liste
 		grpc.MaxRecvMsgSize(4<<20),
 		grpc.MaxSendMsgSize(4<<20),
 	)
-	pb.RegisterBeaconHunterServer(grpcServer, srv)
+	pb.RegisterProxyWatchAgentServer(grpcServer, srv)
 
 	go func() {
 		_ = grpcServer.Serve(lis)
 	}()
 
 	return srv, grpcServer, lis, nil
-}
-
-func identityFromContext(ctx context.Context) (string, bool) {
-	p, ok := peer.FromContext(ctx)
-	if !ok {
-		return "", false
-	}
-	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
-	if !ok {
-		return "", false
-	}
-	state := tlsInfo.State
-	if len(state.VerifiedChains) == 0 || len(state.VerifiedChains[0]) == 0 {
-		return "", false
-	}
-	cert := state.VerifiedChains[0][0]
-	if cert.Subject.CommonName != "" {
-		return cert.Subject.CommonName, true
-	}
-	if len(cert.DNSNames) > 0 {
-		return cert.DNSNames[0], true
-	}
-	return "", false
 }
 
 func sanitizeHostID(in string) string {

@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2026-01-30
 
 ### Added
-- ProxyWatch Agent (formerly Beaconhunter) with gRPC streaming ingest and remote kill support.
+- ProxyWatch Agent with gRPC streaming ingest and remote kill support.
 - Windows service support for the agent (`--install/--start/--stop/--uninstall`).
 - Host column in the TUI and per-endpoint remote kill handling.
 - Whitelist UI (`w` to add, `W` to manage) with on-disk storage.
@@ -37,4 +37,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - BloodHound export metadata to match ingest schema (removed unsupported fields).
 
 ### Security
-- Automatic TLS/mTLS ingest with per-build trust bundle and certificate-based host identity.
+- Automatic TLS/mTLS ingest with a per-build trust bundle.
