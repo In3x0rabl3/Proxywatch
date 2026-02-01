@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-02-01
+## [Unreleased]
+
+## [1.0.1] - 2026-02-01
 
 ### Added
 - ProxyWatch Agent with gRPC streaming ingest and remote kill support.
@@ -23,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Networking/inspect output consolidated to include TCP/UDP in/out, established, and listeners.
 - Collection runs from the TUI instead of CLI flags.
 - Build flow uses top-level `make` to output binaries into `dist/`.
+- Build now runs the TLS generator with host GOOS/GOARCH and uses an absolute GOCACHE for cross-compiles.
 - README shortened with tables for telemetry inputs and role triggers; build steps simplified.
 
 ### Removed
