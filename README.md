@@ -60,7 +60,7 @@ Notes:
 - Use `-stale 30s` to drop endpoints that stop reporting.
 - Transport is gRPC over TCP with JSON framing and automatic TLS/mTLS (generated at build time).
 - Agent and UI must be built together so they share the same trust bundle.
-- In the TUI, you'll noticed a section called 'Active' this field will only return true when traffic is actively passing.
+- In the TUI, you'll noticed a section called `Active` this field will only return true when traffic is actively passing.
 
 ---
 ## BloodHound collection
