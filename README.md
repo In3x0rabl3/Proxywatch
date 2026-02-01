@@ -133,27 +133,57 @@ No packets are captured. No kernel components are required.
 
 ## Build
 
-Prereqs:
-- Git
-- Go 1.24+ (this repo is already a Go module; no `go mod init` needed)
-- Make (or use the manual commands below)
+This repo is already a Go module (no `go mod init` needed).
 
-Clone and build:
+Linux/macOS (copy/paste):
 ```bash
+set -euo pipefail
+
+if ! command -v git >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y git; \
+  elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y git; \
+  elif command -v yum >/dev/null 2>&1; then sudo yum install -y git; \
+  elif command -v pacman >/dev/null 2>&1; then sudo pacman -Syu --noconfirm git; \
+  elif command -v brew >/dev/null 2>&1; then brew install git; \
+  else echo "Install git first."; exit 1; fi
+fi
+
+if ! command -v go >/dev/null 2>&1; then
+  GO_VERSION=$(grep -E '^toolchain ' proxywatch/go.mod | awk '{print $2}' | sed 's/^go//')
+  OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+  ARCH=$(uname -m)
+  case "$ARCH" in
+    x86_64) ARCH=amd64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+  esac
+  URL="https://go.dev/dl/go${GO_VERSION}.${OS}-${ARCH}.tar.gz"
+  curl -fsSL "$URL" -o /tmp/go.tgz
+  sudo rm -rf /usr/local/go
+  sudo tar -C /usr/local -xzf /tmp/go.tgz
+  export PATH="/usr/local/go/bin:$PATH"
+fi
+
 git clone https://github.com/In3x0rabl3/proxywatch.git
 cd proxywatch
 make
 ```
-Artifacts are placed in `dist/` by default.
 
-If you don't have `make`, run:
-```bash
-cd proxywatch/proxywatch
-go mod download
-go run ./scripts/gen_tls.go
-GOOS=windows GOARCH=amd64 go build -o dist/proxywatch.exe ./cmd/proxywatch
-GOOS=windows GOARCH=amd64 go build -o dist/pwa.exe ./cmd/proxywatch-agent
+Windows PowerShell (copy/paste):
+```powershell
+$ErrorActionPreference = "Stop"
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+  winget install --id Git.Git -e --source winget
+}
+if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
+  winget install --id GoLang.Go -e --source winget
+}
+git clone https://github.com/In3x0rabl3/proxywatch.git
+cd proxywatch
+make
 ```
+
+Artifacts are placed in `dist/` by default.
 
 ## Windows service
 
