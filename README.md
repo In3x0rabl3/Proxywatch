@@ -77,7 +77,7 @@ Works for both local mode and ingest mode (`-listen`).
 
 I've come up with multiple Cypher queries for this project which are in [queries.md](queries.md).
 
-<img width="1744" height="715" alt="image" src="https://github.com/user-attachments/assets/6a8351a8-efe4-4ff8-aa7d-2276ea0f03d3" />
+<img width="1832" height="715" alt="image" src="https://github.com/user-attachments/assets/62fca492-8495-4a92-b7f4-aef03624332b" />
 
 ---
 
