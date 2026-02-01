@@ -94,9 +94,11 @@ func touchHistoryFromCandidate(c *shared.Candidate, now time.Time) {
 	case "reverse-proxy":
 		hist.LastSuspicious = now
 		hist.SuspicionKind = shared.SuspicionProxy
-	case "reverse-control", "reverse-transport", "susp-tun", "susp-session", "susp-beacon":
-		hist.LastSuspicious = now
-		hist.SuspicionKind = shared.SuspicionControl
+	default:
+		if shared.IsControlChannelRole(c.Role) {
+			hist.LastSuspicious = now
+			hist.SuspicionKind = shared.SuspicionControl
+		}
 	}
 
 	if hist.StickyScore < c.Score {

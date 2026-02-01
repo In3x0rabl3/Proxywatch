@@ -8,7 +8,7 @@ ProxyWatch (Agent) is a service that runs on remote endpoints and streams the re
 
 ## Demo
 
-ProxyWatch has a new UI for selecting and inspecting processes!, you can now terminate a processes directly from the inspector if it looks malicious. By default the UI shows only Suspicious Sessions, Beacons, and Tunnels, use the `-roles` flag to customize what you'd see within the UI. If you’re flooded with noise or hitting false positives, tune Proxywatch or whitelist trusted processes. In the demo, the beacon is detected based on the current thresholds; the collection was started 5 minutes ahead to catch it for this demo. During the demo you have also noticed a couple processes change roles from "susp-session" -> susp-tun", this is to demostrate the detection of socks proxies. ProxyWatch also supports BloodHound collection: set the name, output path, and duration, then import the JSON into BloodHound (SpecterOps/OpenGraph). With the included queries, you can map suspicious sessions, beacons, and tunnels down to exact host, user, and binary path.
+ProxyWatch ships with a TUI for process inspection and remote kill. Tune thresholds or whitelist known-good software to reduce noise. BloodHound export is built in so you can map suspicious sessions, beacons, and tunnels to exact host, user, and binary paths.
 
 ![Demo](media/Demo-latest.gif)
 
@@ -66,33 +66,26 @@ Notes:
 
 Collection is started from the TUI:
 1) Press `c` to open the collection screen
-2) Use `UP/DOWN` to select a field
-3) Press `ENTER` to edit Output or Roles (type to change)
-4) Use `LEFT/RIGHT` to change Duration
-5) Select `Start/Stop` and press `ENTER` to start
-4) Return to the dashboard while it runs
-5) The JSON file is written automatically when the timer ends (or press `ENTER` again to stop early)
+2) Use `UP/DOWN` to select a field, `ENTER` to edit Output or Roles
+3) Use `LEFT/RIGHT` to change Duration
+4) Select `Start/Stop` and press `ENTER`
+5) The JSON file is written when the timer ends (or press `ENTER` again to stop early)
 
 Works for both local mode and ingest mode (`-listen`).
 
-I've come up with multiple Cypher queries for this project which are in [queries.md](queries.md).
-<br>
-<br>
+Cypher examples live in [queries.md](queries.md).
+
 Examples:
 
-**Query Suspicious Proccess from users**
+**Suspicious processes by user**
 
 <img width="1517" height="487" alt="Screenshot from 2026-02-01 12-05-34" src="https://github.com/user-attachments/assets/cb593db7-214e-453a-9a15-a771599f2e37" />
-<br>
-<br>
 
 ---
 
-**Suspicious Connection internally showing the Information table**
+**Suspicious internal connection with the information table**
 
 <img width="1485" height="769" alt="Screenshot from 2026-02-01 12-08-27" src="https://github.com/user-attachments/assets/abe33759-1884-48a7-b575-4f16e61e6612" />
-<br>
-<br>
 
 ---
 
@@ -140,27 +133,31 @@ ProxyWatch assigns a best-fit role per process:
 
 ### Telemetry inputs (what the classifier looks at)
 
-- TCP listeners (local ports) and whether they are loopback-only or wildcard bound
-- Active inbound client sessions to those listeners
-- Active outbound connections (internal vs external, distinct targets/ports)
-- Connection age (short‑lived vs long‑lived) and short‑lived burst intervals
-- Loopback transport activity (local↔local forwarding)
-- Internal scanning/lateral movement hints (internal targets/ports)
+| Signal | Details |
+| --- | --- |
+| TCP listeners | Local ports; loopback-only vs wildcard bindings |
+| Inbound clients | Active inbound sessions to listeners |
+| Outbound connections | Internal vs external; distinct targets/ports |
+| Connection age | Short-lived vs long-lived; burst intervals |
+| Loopback transport | Local-to-local forwarding activity |
+| Internal scan hints | Internal targets/ports that suggest lateral movement |
 
 ### Role triggers (simplified)
 
-- `reverse-control`: a persistent outbound control channel (oldest ESTABLISHED connection older than `ReverseControlMinDuration`) with only one active outbound target, not suppressed by `BenignControlPorts`.
-- `reverse-transport`: `reverse-control` plus loopback transport activity.
-- `reverse-proxy`: a control channel plus proxying activity to internal targets (lateral hints or internal target/port counts).
-- `susp-session`: a persistent control channel without proxying evidence (and not `susp-tun`).
-- `susp-tun`: a control channel plus loopback transport or internal scan activity (with reverse‑control/proxy evidence).
-- `susp-beacon`: periodic short‑lived outbound bursts at or above `BeaconSleepThreshold` for `BeaconMinIntervals` within the scan windows; no listener and no long‑lived outbound.
-- `proxy-listener`: listener + inbound clients + outbound.
-- `listener-with-clients`: listener + inbound clients, no outbound.
-- `listener-with-outbound`: listener + outbound, no inbound clients.
-- `listener-only`: listener with no inbound or outbound activity.
-- `reverse-tunnel`: no listener, outbound to multiple targets (`out >= 3`) with internal‑lateral evidence.
-- `outbound-only`: outbound activity without listener (non‑suspicious default role).
+| Role | Trigger |
+| --- | --- |
+| `reverse-control` | Persistent outbound control channel (oldest ESTABLISHED > `ReverseControlMinDuration`), single outbound target, not in `BenignControlPorts` |
+| `reverse-transport` | `reverse-control` + loopback transport activity |
+| `reverse-proxy` | Control channel + proxying to internal targets (lateral hints or internal target/port counts) |
+| `susp-session` | Persistent control channel without proxying evidence (and not `susp-tun`) |
+| `susp-tun` | Control channel + loopback transport or internal scan activity (with reverse-control/proxy evidence) |
+| `susp-beacon` | Periodic short-lived outbound bursts at/above `BeaconSleepThreshold` for `BeaconMinIntervals`; no listener and no long-lived outbound |
+| `proxy-listener` | Listener + inbound clients + outbound |
+| `listener-with-clients` | Listener + inbound clients, no outbound |
+| `listener-with-outbound` | Listener + outbound, no inbound clients |
+| `listener-only` | Listener with no inbound or outbound activity |
+| `reverse-tunnel` | No listener; outbound to multiple targets (`out >= 3`) with internal-lateral evidence |
+| `outbound-only` | Outbound activity without listener (default non-suspicious) |
 
 ### Where to edit (tuning files)
 
@@ -241,14 +238,16 @@ No packets are captured. No kernel components are required.
 
 This repo is already a Go module (no `go mod init` needed).
 
-Linux (copy/paste):
+Linux:
 ```bash
 sudo apt-get update
 sudo apt-get install -y git make golang-go
+```
 
+If Go is already installed:
+```bash
 git clone https://github.com/In3x0rabl3/proxywatch.git
-cd proxywatch
-cd proxywatch
+cd proxywatch/proxywatch
 go mod download
 make
 ```

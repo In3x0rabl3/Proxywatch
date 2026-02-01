@@ -60,7 +60,7 @@ func Classify(
 			}
 		}
 
-		if c.Score >= opts.MinScore || c.Role == "reverse-control" || c.Role == "reverse-transport" || c.Role == "susp-tun" || c.Role == "susp-session" || c.Role == "susp-beacon" {
+		if c.Score >= opts.MinScore || shared.IsControlChannelRole(c.Role) {
 			interesting = append(interesting, *c)
 		}
 	}

@@ -49,3 +49,12 @@ func RolePriority(role string) int {
 		return 0
 	}
 }
+
+func IsControlChannelRole(role string) bool {
+	switch role {
+	case "reverse-control", "reverse-transport", "susp-tun", "susp-session", "susp-beacon":
+		return true
+	default:
+		return false
+	}
+}
