@@ -10,7 +10,7 @@ ProxyWatch (Agent) is a service that runs on remote endpoints and streams the re
 
 ProxyWatch has a new UI for selecting and inspecting processes!, you can now terminate a processes directly from the inspector if it looks malicious. By default the UI shows only Suspicious Sessions, Beacons, and Tunnels, use the `-roles` flag to customize what you'd see within the UI. If you’re flooded with noise or hitting false positives, tune Proxywatch or whitelist trusted processes. In the demo, the beacon is detected based on the current thresholds; the collection was started 5 minutes ahead to catch it for this demo. During the demo you have also noticed a couple processes change roles from "susp-session" -> susp-tun", this is to demostrate the detection of socks proxies. ProxyWatch also supports BloodHound collection: set the name, output path, and duration, then import the JSON into BloodHound (SpecterOps/OpenGraph). With the included queries, you can map suspicious sessions, beacons, and tunnels down to exact host, user, and binary path.
 
-![Demo](media/Demo.gif)
+![Demo](media/Demo-latest.gif)
 
 ---
 
