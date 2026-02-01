@@ -2,7 +2,7 @@
 
 ProxyWatch is a Windows userland network inspection tool that labels processes by role (tunnels, proxies, beacons) using TCP/UDP state and process context. It does not require kernel drivers, ETW, or packet capture.
 
-ProxyWatch Agent is a companion service that runs on remote endpoints and streams the same classified results into a central ProxyWatch UI. Each build generates a unique TLS/mTLS trust bundle so only agents built from the same build can connect.
+ProxyWatch (Agent) is a service that runs on remote endpoints and streams the results into a central ProxyWatch UI. Each build generates a unique TLS/mTLS trust bundle so only agents built from the same build can connect. Security comes first.
 
 ## Demo
 
@@ -71,7 +71,7 @@ Collection is started from the TUI:
 
 Works for both local mode and ingest mode (`-listen`).
 
-Saved Cypher queries are in [queries.md](queries.md).
+I've come up with multiple Cypher queries for this project which are in [queries.md](queries.md).
 
 <img width="1744" height="715" alt="image" src="https://github.com/user-attachments/assets/6a8351a8-efe4-4ff8-aa7d-2276ea0f03d3" />
 
