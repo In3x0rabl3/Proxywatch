@@ -81,19 +81,25 @@ I've come up with multiple Cypher queries for this project which are in [queries
 <br>
 <br>
 Examples:
+
 ---
+
 <br>
 <br>
 **Query Suspicious Proccess from users**
 <img width="1517" height="487" alt="Screenshot from 2026-02-01 12-05-34" src="https://github.com/user-attachments/assets/cb593db7-214e-453a-9a15-a771599f2e37" />
 <br>
 <br>
+
 ---
+
 **Suspicious Connection internally showing the Information table**
 <img width="1485" height="769" alt="Screenshot from 2026-02-01 12-08-27" src="https://github.com/user-attachments/assets/abe33759-1884-48a7-b575-4f16e61e6612" />
 <br>
 <br>
+
 ---
+
 **Full connection chain for interal connections**
 <img width="1577" height="602" alt="Screenshot from 2026-02-01 11-54-42" src="https://github.com/user-attachments/assets/fda21094-b2bc-46f3-990a-eefd767f1bea" />
 
