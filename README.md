@@ -4,6 +4,10 @@ ProxyWatch is a Windows userland network inspection tool that labels processes b
 
 ProxyWatch Agent is a companion service that runs on remote endpoints and streams the same classified results into a central ProxyWatch UI. Each build generates a unique TLS/mTLS trust bundle so only agents built from the same build can connect.
 
+## Demo
+
+<video src="media/demo.mp4" controls preload="metadata" width="100%"></video>
+
 ---
 
 ## Quick start (local)
