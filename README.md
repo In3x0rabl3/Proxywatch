@@ -2,7 +2,11 @@
 
 ProxyWatch is a Windows userland network inspection tool that labels processes by role (tunnels, proxies, beacons) using TCP/UDP state and process context. It does not require kernel drivers, ETW, or packet capture.
 
+ProxyWatch is built to be tuned for your environment. See [Role triggers and tuning](#role-triggers-and-tuning) for the exact files and example edits.
+
 ProxyWatch (Agent) is a service that runs on remote endpoints and streams the results into a central ProxyWatch UI. Each build generates a unique TLS/mTLS trust bundle so only agents built from the same build can connect. Security comes first.
+
+ProxyWatch has a full UI for selecting and inspecting processes, and you can terminate a process directly from the inspector if it looks malicious. By default the UI shows only Suspicious Sessions, Beacons, and Tunnels—use the `-roles` flag to customize what you see. If you’re flooded with noise or hitting false positives, tune the thresholds or whitelist trusted processes. In the demo, the beacon is detected based on the current thresholds; the collection was started 5 minutes ahead to catch it. ProxyWatch also supports BloodHound collection: set the name, output path, and duration, then import the JSON into BloodHound (SpecterOps/OpenGraph). With the included queries, you can map suspicious sessions, beacons, and tunnels down to exact host, user, and binary path.
 
 ## Demo
 
@@ -110,6 +114,82 @@ ProxyWatch assigns a best-fit role per process:
 | `outbound-only`          | Outbound activity only |
 
 ---
+
+## Role triggers and tuning
+
+### Telemetry inputs (what the classifier looks at)
+
+- TCP listeners (local ports) and whether they are loopback-only or wildcard bound
+- Active inbound client sessions to those listeners
+- Active outbound connections (internal vs external, distinct targets/ports)
+- Connection age (short‑lived vs long‑lived) and short‑lived burst intervals
+- Loopback transport activity (local↔local forwarding)
+- Internal scanning/lateral movement hints (internal targets/ports)
+
+### Role triggers (simplified)
+
+- `reverse-control`: a persistent outbound control channel (oldest ESTABLISHED connection older than `ReverseControlMinDuration`) with only one active outbound target, not suppressed by `BenignControlPorts`.
+- `reverse-transport`: `reverse-control` plus loopback transport activity.
+- `reverse-proxy`: a control channel plus proxying activity to internal targets (lateral hints or internal target/port counts).
+- `susp-session`: a persistent control channel without proxying evidence (and not `susp-tun`).
+- `susp-tun`: a control channel plus loopback transport or internal scan activity (with reverse‑control/proxy evidence).
+- `susp-beacon`: periodic short‑lived outbound bursts at or above `BeaconSleepThreshold` for `BeaconMinIntervals` within the scan windows; no listener and no long‑lived outbound.
+- `proxy-listener`: listener + inbound clients + outbound.
+- `listener-with-clients`: listener + inbound clients, no outbound.
+- `listener-with-outbound`: listener + outbound, no inbound clients.
+- `listener-only`: listener with no inbound or outbound activity.
+- `reverse-tunnel`: no listener, outbound to multiple targets (`out >= 3`) with internal‑lateral evidence.
+- `outbound-only`: outbound activity without listener (non‑suspicious default role).
+
+### Where to edit (tuning files)
+
+- [proxywatch/internal/shared/classifier_state.go](proxywatch/internal/shared/classifier_state.go)  
+  Time windows, control thresholds, beacon thresholds, scoring baselines, benign control ports, and caps.
+- [proxywatch/internal/shared/telemetry_types.go](proxywatch/internal/shared/telemetry_types.go)  
+  Burst sampling windows and thresholds for short‑lived activity.
+- [proxywatch/internal/shared/constants.go](proxywatch/internal/shared/constants.go)  
+  Internal CIDRs and lateral movement ports.
+- [proxywatch/cmd/proxywatch/main.go](proxywatch/cmd/proxywatch/main.go)  
+  UI default role filter and the minimum score gate (`minScore`).
+
+### Example edits
+
+Make beacon detection stricter (longer interval, more repeats):
+```go
+// proxywatch/internal/shared/classifier_state.go
+BeaconSleepThreshold = 120 * time.Second
+BeaconMinIntervals = 3
+```
+
+Reduce false positives on common control ports:
+```go
+// proxywatch/internal/shared/classifier_state.go
+ReverseControlMinDuration = 20 * time.Second
+BenignControlPorts = map[int]bool{
+	53: true, 80: true, 443: true, 8080: true,
+	8443: true, 8000: true, 8001: true, 8008: true, 8888: true,
+	9443: true, // add your own common benign ports here
+}
+```
+
+Match your internal network ranges:
+```go
+// proxywatch/internal/shared/constants.go
+InternalCIDRs = []string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"100.64.0.0/10", // example: carrier-grade NAT
+}
+```
+
+Raise or lower the UI score gate (what shows up as suspicious):
+```go
+// proxywatch/cmd/proxywatch/main.go
+minScore := 25 // default is 15
+```
+
+After edits, rebuild to apply changes.
 
 ## Flags
 
