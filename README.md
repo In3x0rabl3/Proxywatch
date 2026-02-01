@@ -6,7 +6,7 @@ ProxyWatch Agent is a companion service that runs on remote endpoints and stream
 
 ## Demo
 
-<video src="media/Demo.mp4" controls preload="metadata" width="100%"></video>
+[▶ Demo video (MP4)](media/Demo.mp4)
 
 ---
 
