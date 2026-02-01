@@ -77,6 +77,9 @@ Works for both local mode and ingest mode (`-listen`).
 
 I've come up with multiple Cypher queries for this project which are in [queries.md](queries.md).
 <br>
+Examples:
+---
+<br>
 <br>
 **Query Suspicious Proccess from users**
 <img width="1517" height="487" alt="Screenshot from 2026-02-01 12-05-34" src="https://github.com/user-attachments/assets/cb593db7-214e-453a-9a15-a771599f2e37" />
