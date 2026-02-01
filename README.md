@@ -68,7 +68,7 @@ Collection is started from the TUI:
 
 Works for both local mode and ingest mode (`-listen`).
 
-Saved Cypher queries are in `queries.md`.
+Saved Cypher queries are in [queries.md](queries.md).
 
 ---
 
@@ -133,6 +133,11 @@ No packets are captured. No kernel components are required.
 
 ## Build
 
+Prereqs:
+- Git
+- Go 1.24+ (this repo is already a Go module; no `go mod init` needed)
+- Make (or use the manual commands below)
+
 Clone and build:
 ```bash
 git clone https://github.com/In3x0rabl3/proxywatch.git
@@ -140,6 +145,15 @@ cd proxywatch
 make
 ```
 Artifacts are placed in `dist/` by default.
+
+If you don't have `make`, run:
+```bash
+cd proxywatch/proxywatch
+go mod download
+go run ./scripts/gen_tls.go
+GOOS=windows GOARCH=amd64 go build -o dist/proxywatch.exe ./cmd/proxywatch
+GOOS=windows GOARCH=amd64 go build -o dist/pwa.exe ./cmd/proxywatch-agent
+```
 
 ## Windows service
 
