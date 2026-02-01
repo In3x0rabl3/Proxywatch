@@ -78,6 +78,9 @@ Works for both local mode and ingest mode (`-listen`).
 I've come up with multiple Cypher queries for this project which are in [queries.md](queries.md).
 
 <img width="1832" height="715" alt="image" src="https://github.com/user-attachments/assets/62fca492-8495-4a92-b7f4-aef03624332b" />
+<br>
+<br>
+<img width="1832" height="745" alt="image" src="https://github.com/user-attachments/assets/502ad5cb-851e-47fb-8f19-67c00acc66cc" />
 
 ---
 
