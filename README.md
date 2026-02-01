@@ -80,8 +80,6 @@ I've come up with multiple Cypher queries for this project which are in [queries
 <br>
 Examples:
 
----
-
 <br>
 <br>
 
