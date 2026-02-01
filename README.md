@@ -8,7 +8,7 @@ ProxyWatch (Agent) is a service that runs on remote endpoints and streams the re
 
 ## Demo
 
-ProxyWatch ships with a Terminal User Interface (TUI) for process inspection and remote kill. Tune thresholds or whitelist known-good software to reduce noise. BloodHound export is built in so you can map suspicious sessions, beacons, and tunnels to exact host, user, and binary paths.
+ProxyWatch ships with a Terminal User Interface (TUI) for process inspection and remote kill. Tune thresholds or whitelist software to reduce noise. BloodHound export is built in so you can map suspicious sessions, beacons, and tunnels to exact host, user, and binary paths.
 
 ![Demo](media/Demo-latest.gif)
 
