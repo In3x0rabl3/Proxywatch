@@ -96,7 +96,7 @@ Examples:
 
 ---
 
-**Full connection chain for interal connections**
+**Full connection chain for internal connections**
 
 <img width="1577" height="602" alt="Screenshot from 2026-02-01 11-54-42" src="https://github.com/user-attachments/assets/fda21094-b2bc-46f3-990a-eefd767f1bea" />
 
