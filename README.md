@@ -6,7 +6,7 @@ ProxyWatch Agent is a companion service that runs on remote endpoints and stream
 
 ## Demo
 
-<video src="media/demo.mp4" controls preload="metadata" width="100%"></video>
+<video src="media/Demo.mp4" controls preload="metadata" width="100%"></video>
 
 ---
 
@@ -58,12 +58,6 @@ Notes:
 - Agent and UI must be built together so they share the same trust bundle.
 
 ---
-## DEMO
-
-
-
----
-
 ## BloodHound collection
 
 Collection is started from the TUI:
