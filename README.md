@@ -46,20 +46,32 @@ pwa.exe -server 10.0.0.5:50051
 
 Optional agent flags:
 - `-id` Host identifier (default: hostname)
+
 - `-interval` Refresh interval (default `250ms`)
+
 - `-incremental` Reuse classification for unchanged PIDs
+
 - `--install` Install the ProxyWatch Agent Windows service
+
 - `--uninstall` Uninstall the service
+
 - `--start` Start the service
+
 - `--stop` Stop the service
+
 - `--service` Run under SCM (service mode only)
 
 Notes:
-- The dashboard shows a HOST column for each endpoint.
+- The TUI dashboard FOR Proxywatch shows a HOST column for each endpoint.
+
 - Kill is available for remote hosts when the agent is connected.
+
 - Use `-stale 30s` to drop endpoints that stop reporting.
+
 - Transport is gRPC over TCP with JSON framing and automatic TLS/mTLS (generated at build time).
+
 - Agent and UI must be built together so they share the same trust bundle.
+
 - In the TUI, you'll noticed a section called `Active` this field will only return true when traffic is actively passing.
 
 ---
