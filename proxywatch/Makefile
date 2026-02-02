@@ -17,8 +17,8 @@ ifneq ($(strip $(BLOODHOUND_API_TOKEN_ID)),)
 LDFLAGS += -X proxywatch/internal/bloodhound.BloodhoundAPITokenID=$(BLOODHOUND_API_TOKEN_ID)
 endif
 
-PROXYWATCH_OUT := $(OUT_DIR)/proxywatch.exe
-AGENT_OUT := $(OUT_DIR)/pwa.exe
+PROXYWATCH_OUT := $(OUT_DIR)/proxywatch-windows-amd64.exe
+AGENT_OUT := $(OUT_DIR)/pwa-windows-amd64.exe
 GEN_TLS_OUT := internal/agent/generated_tls.go
 
 .PHONY: all build clean gen-tls
