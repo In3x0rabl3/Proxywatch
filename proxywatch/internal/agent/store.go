@@ -56,29 +56,15 @@ func (s *Store) Snapshot(staleAfter time.Duration) []shared.Candidate {
 			if c.Host == "" {
 				c.Host = host
 			}
+			if c.Proc == nil {
+				continue
+			}
 			out = append(out, c)
 		}
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		pri := shared.RolePriority(out[i].Role)
-		prj := shared.RolePriority(out[j].Role)
-		if pri != prj {
-			return pri > prj
-		}
-		if out[i].ActiveProxying != out[j].ActiveProxying {
-			return out[i].ActiveProxying && !out[j].ActiveProxying
-		}
-		if out[i].OutInternal != out[j].OutInternal {
-			return out[i].OutInternal > out[j].OutInternal
-		}
-		if out[i].OutTotal != out[j].OutTotal {
-			return out[i].OutTotal > out[j].OutTotal
-		}
-		if out[i].Score == out[j].Score {
-			return out[i].Proc.Pid < out[j].Proc.Pid
-		}
-		return out[i].Score > out[j].Score
+		return shared.CandidateLess(out[i], out[j])
 	})
 
 	return out

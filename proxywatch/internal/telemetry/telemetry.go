@@ -17,6 +17,10 @@ func Collect() (*shared.Snapshot, error) {
 	}
 
 	samples := burstSampleCount(len(listeners), len(conns))
+	// If any listeners exist, force maximum burst samples to capture short-lived inbound hits.
+	if len(listeners) > 0 {
+		samples = shared.BurstSamplesMax
+	}
 	if samples > 1 {
 		listeners, conns = burstCapture(listeners, conns, samples)
 	}

@@ -71,24 +71,7 @@ func Classify(
 	}
 
 	sort.Slice(interesting, func(i, j int) bool {
-		pri := shared.RolePriority(interesting[i].Role)
-		prj := shared.RolePriority(interesting[j].Role)
-		if pri != prj {
-			return pri > prj
-		}
-		if interesting[i].ActiveProxying != interesting[j].ActiveProxying {
-			return interesting[i].ActiveProxying && !interesting[j].ActiveProxying
-		}
-		if interesting[i].OutInternal != interesting[j].OutInternal {
-			return interesting[i].OutInternal > interesting[j].OutInternal
-		}
-		if interesting[i].OutTotal != interesting[j].OutTotal {
-			return interesting[i].OutTotal > interesting[j].OutTotal
-		}
-		if interesting[i].Score == interesting[j].Score {
-			return interesting[i].Proc.Pid < interesting[j].Proc.Pid
-		}
-		return interesting[i].Score > interesting[j].Score
+		return shared.CandidateLess(interesting[i], interesting[j])
 	})
 
 	return interesting

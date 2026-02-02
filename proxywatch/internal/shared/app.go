@@ -73,21 +73,13 @@ type ScannerAdapter struct {
 
 func (s *ScannerAdapter) Refresh(app *AppState) {
 	if s.Collect == nil || s.Classify == nil {
-		app.LastError = "scanner not configured"
-		app.Candidates = nil
-		app.SelectedIdx = -1
-		app.SelectedKey = ""
-		app.LastUpdate = time.Now().UTC()
+		ResetAppState(app, "scanner not configured")
 		return
 	}
 
 	snap, err := s.Collect()
 	if err != nil {
-		app.LastError = err.Error()
-		app.Candidates = nil
-		app.SelectedIdx = -1
-		app.SelectedKey = ""
-		app.LastUpdate = time.Now().UTC()
+		ResetAppState(app, err.Error())
 		return
 	}
 
@@ -113,33 +105,8 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 		cands[i].Host = s.HostID
 	}
 	ApplyIORates(cands, now, &s.LastIO)
-	if s.Whitelist != nil {
-		cands = s.Whitelist.Filter(cands)
-	}
-
-	app.LastError = ""
-	app.Candidates = cands
-	app.LastUpdate = now
-	// app.LastError already set above
-
-	// maintain selection across refreshes
-	if len(app.Candidates) == 0 {
-		app.SelectedIdx = -1
-		app.SelectedKey = ""
-		return
-	}
-
-	if app.SelectedKey != "" {
-		for i, c := range app.Candidates {
-			if CandidateKey(c) == app.SelectedKey {
-				app.SelectedIdx = i
-				return
-			}
-		}
-	}
-
-	app.SelectedIdx = 0
-	app.SelectedKey = CandidateKey(app.Candidates[0])
+	cands = ApplyWhitelist(cands, s.Whitelist)
+	ApplySelection(app, cands, now)
 }
 
 func ApplyIORates(cands []Candidate, now time.Time, prev *map[int]IOSample) {
@@ -180,4 +147,70 @@ func ApplyIORates(cands []Candidate, now time.Time, prev *map[int]IOSample) {
 	}
 
 	*prev = next
+}
+
+// ResetAppState clears current candidates and sets an error message.
+func ResetAppState(app *AppState, msg string) {
+	if app == nil {
+		return
+	}
+	app.LastError = msg
+	app.Candidates = nil
+	app.SelectedIdx = -1
+	app.SelectedKey = ""
+	app.LastUpdate = time.Now().UTC()
+}
+
+// ApplySelection updates app selection and timestamps after a refresh.
+func ApplySelection(app *AppState, cands []Candidate, now time.Time) {
+	if app == nil {
+		return
+	}
+	app.LastError = ""
+	app.Candidates = cands
+	app.LastUpdate = now
+
+	if len(app.Candidates) == 0 {
+		app.SelectedIdx = -1
+		app.SelectedKey = ""
+		return
+	}
+
+	if app.SelectedKey != "" {
+		for i, c := range app.Candidates {
+			if CandidateKey(c) == app.SelectedKey {
+				app.SelectedIdx = i
+				return
+			}
+		}
+	}
+
+	app.SelectedIdx = 0
+	app.SelectedKey = CandidateKey(app.Candidates[0])
+}
+
+// ApplyWhitelist returns the filtered list if a whitelist is present.
+func ApplyWhitelist(cands []Candidate, w *Whitelist) []Candidate {
+	if w == nil {
+		return cands
+	}
+	return w.Filter(cands)
+}
+
+// ApplyScoreAndRoleFilters filters candidates by minimum score and role filter.
+func ApplyScoreAndRoleFilters(cands []Candidate, minScore int, roleFilter map[string]bool) []Candidate {
+	if minScore <= 0 && len(roleFilter) == 0 {
+		return cands
+	}
+	filtered := make([]Candidate, 0, len(cands))
+	for _, c := range cands {
+		if minScore > 0 && c.Score < minScore {
+			continue
+		}
+		if len(roleFilter) > 0 && !roleFilter[c.Role] {
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	return filtered
 }

@@ -42,6 +42,8 @@ var (
 	ShortLivedBurstInterval   = make(map[int]time.Duration)
 	ShortLivedBurstHits       = make(map[int]int)
 	ShortLivedBurstTarget     = make(map[int]string)
+	InboundBurstLast          = make(map[int]time.Time)
+	InboundBurstCount         = make(map[int]int)
 	BeaconSeen                = make(map[int]time.Time)
 	LocalTransportLast        = make(map[int]time.Time)
 	ActiveWindow              = 10 * time.Second

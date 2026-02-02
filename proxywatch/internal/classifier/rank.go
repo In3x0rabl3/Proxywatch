@@ -44,6 +44,10 @@ func ScoreCandidate(c *shared.Candidate) {
 		addSignal("inbound-active")
 		shared.RecentClientSeen[p.Pid] = now
 	}
+	inboundBurst := updateInboundBurst(p.Pid, activeClients, now)
+	if inboundBurst > 0 {
+		addSignal("inbound-burst")
+	}
 	if outTotal > 0 {
 		addSignal("outbound-active")
 		shared.RecentOutboundSeen[p.Pid] = now
@@ -92,7 +96,7 @@ func ScoreCandidate(c *shared.Candidate) {
 
 	reverseProxyNow := false
 
-	outboundActive, distinctTargets, distinctTargetPorts := outboundActivity(c.Conns, ports)
+	outboundActive, distinctTargets, distinctTargetPorts, targetPrefixes := outboundActivity(c.Conns, ports)
 	internalTargets, internalPorts, internalLateral := outboundInternalSummary(c.Conns, ports)
 	reverseTunnelEligible := internalLateral ||
 		len(internalTargets) >= shared.MinInternalTargetsForRev ||
@@ -178,12 +182,15 @@ func ScoreCandidate(c *shared.Candidate) {
 		}
 	}
 
-	suspTunEligible := controlConn != nil && (localTransportRecent || internalScanRecent)
+	suspTunEligible := controlConn != nil && (localTransportRecent || internalScanRecent || inboundBurst > 0)
+	lowPrefixEntropy := len(targetPrefixes) == 0 || len(targetPrefixes) <= 3
 	beaconEligible := !hasListener &&
 		!reverseProxyNow &&
 		!localTransportRecent &&
 		!internalScanRecent &&
-		outLongLived == 0
+		outLongLived == 0 &&
+		!shared.IsLikelyBenignBeacon(p) &&
+		lowPrefixEntropy
 	beaconRecent := false
 	if t, ok := shared.BeaconSeen[p.Pid]; ok && now.Sub(t) <= shared.SuspicionWindow {
 		beaconRecent = true
@@ -198,7 +205,7 @@ func ScoreCandidate(c *shared.Candidate) {
 			reverseControl = true
 		}
 		if reverseControl {
-			if localTransport {
+			if localTransport && outboundRecent {
 				scoreVal = 60 + min((controlSecs/10)*5, 40)
 				if localCount > 0 {
 					scoreVal += 20
@@ -341,7 +348,12 @@ func ScoreCandidate(c *shared.Candidate) {
 		addSignal("reverse-control")
 	}
 
-	if suspTunEligible && (reverseProxyNow || reverseControl) {
+	promoteSuspTun := suspTunEligible && (reverseProxyNow || reverseControl)
+	if promoteSuspTun && !outboundRecent && !activeProxying {
+		promoteSuspTun = false
+	}
+
+	if promoteSuspTun {
 		c.Role = "susp-tun"
 		c.ActiveProxying = forwardActiveNow || reverseProxyNow || localTransport
 		addSignal("susp-tun")
@@ -526,9 +538,10 @@ func outboundTargets(
 func outboundActivity(
 	conns []shared.ConnectionInfo,
 	ports map[int]struct{},
-) (total int, distinctTargets map[string]struct{}, distinctPorts map[int]struct{}) {
+) (total int, distinctTargets map[string]struct{}, distinctPorts map[int]struct{}, targetPrefixes map[string]struct{}) {
 	distinctTargets = make(map[string]struct{})
 	distinctPorts = make(map[int]struct{})
+	targetPrefixes = make(map[string]struct{})
 
 	for _, c := range conns {
 		if !isActiveConnState(c.State) {
@@ -548,6 +561,9 @@ func outboundActivity(
 		distinctTargets[key] = struct{}{}
 		if c.RemotePort > 0 {
 			distinctPorts[c.RemotePort] = struct{}{}
+		}
+		if prefix := shared.TargetPrefix(c.RemoteAddress); prefix != "" {
+			targetPrefixes[prefix] = struct{}{}
 		}
 	}
 	return
@@ -585,6 +601,21 @@ func outboundConnAgeStats(
 		}
 	}
 	return
+}
+
+func updateInboundBurst(pid int, activeClients int, now time.Time) int {
+	if activeClients <= 0 {
+		return shared.InboundBurstCount[pid]
+	}
+
+	last := shared.InboundBurstLast[pid]
+	if last.IsZero() || now.Sub(last) > shared.ShortLivedBurstWindow {
+		shared.InboundBurstCount[pid] = activeClients
+	} else {
+		shared.InboundBurstCount[pid] += activeClients
+	}
+	shared.InboundBurstLast[pid] = now
+	return shared.InboundBurstCount[pid]
 }
 
 func outboundInternalSummary(

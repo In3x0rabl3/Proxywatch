@@ -97,3 +97,22 @@ func DefaultHostID(fallback string) string {
 	}
 	return name
 }
+
+// IsLikelyBenignBeacon heuristically skips known-legit updater/AV beacons.
+func IsLikelyBenignBeacon(p *ProcessInfo) bool {
+	if p == nil {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(p.Name))
+	path := strings.ToLower(strings.TrimSpace(p.ExePath))
+	company := strings.ToLower(strings.TrimSpace(p.Company))
+
+	if strings.Contains(company, "microsoft") {
+		if strings.Contains(name, "mpdefender") ||
+			strings.Contains(name, "msmpeng") ||
+			strings.Contains(path, "windows defender") {
+			return true
+		}
+	}
+	return false
+}
