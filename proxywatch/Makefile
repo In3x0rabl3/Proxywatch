@@ -30,7 +30,7 @@ build: gen-tls
 	@for t in $(TARGETS); do \
 		goos=$${t%/*}; goarch=$${t#*/}; \
 		ext=""; suffix="-$${goos}-$${goarch}"; \
-		if [ "$$goos" = "windows" ]; then ext=".exe"; suffix=""; fi; \
+		if [ "$$goos" = "windows" ]; then ext=".exe"; fi; \
 		printf "Building $$goos/$$goarch...\n"; \
 		GOCACHE=$(GOCACHE) GOOS=$$goos GOARCH=$$goarch go build -ldflags '$(LDFLAGS)' -o $(OUT_DIR)/proxywatch$${suffix}$${ext} ./cmd/proxywatch || exit $$?; \
 		GOCACHE=$(GOCACHE) GOOS=$$goos GOARCH=$$goarch go build -ldflags '$(LDFLAGS)' -o $(OUT_DIR)/pwa$${suffix}$${ext} ./cmd/proxywatch-agent || exit $$?; \
