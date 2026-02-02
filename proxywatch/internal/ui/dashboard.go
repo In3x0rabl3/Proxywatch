@@ -45,6 +45,11 @@ func DrawDashboard(app *shared.AppState) {
 	}
 
 	hostWidth := len("HOST")
+	pidWidth := len("PID")
+	nameWidth := len("NAME")
+	roleWidth := len("ROLE")
+	intExtWidth := len("INT/EXT/LO")
+
 	for i := range app.Candidates {
 		host := app.Candidates[i].Host
 		if host == "" {
@@ -53,24 +58,51 @@ func DrawDashboard(app *shared.AppState) {
 		if len(host) > hostWidth {
 			hostWidth = len(host)
 		}
+		pidLen := len(fmt.Sprintf("%d", app.Candidates[i].Proc.Pid))
+		if pidLen > pidWidth {
+			pidWidth = pidLen
+		}
+		n := shared.TrimName(app.Candidates[i].Proc.Name, 40)
+		if len(n) > nameWidth {
+			nameWidth = len(n)
+		}
+		if len(app.Candidates[i].Role) > roleWidth {
+			roleWidth = len(app.Candidates[i].Role)
+		}
+		udpInt, udpExt, udpLo := shared.UDPScopeCounts(app.Candidates[i].UDPListeners)
+		intExt := fmt.Sprintf("%d/%d/%d",
+			app.Candidates[i].OutInternal+udpInt,
+			app.Candidates[i].OutExternal+udpExt,
+			app.Candidates[i].OutLoopback+udpLo,
+		)
+		if len(intExt) > intExtWidth {
+			intExtWidth = len(intExt)
+		}
 	}
 
-	PutString(s, 0, y,
-		fmt.Sprintf("%-1s %-*s %-6s %-22s %-26s %-7s %-11s",
-			" ", hostWidth, "HOST", "PID", "NAME", "ROLE", "ACTIVE", "INT/EXT/LO"),
-	)
+	// Cap excessively wide columns to keep UI readable.
+	if nameWidth > 32 {
+		nameWidth = 32
+	}
+	if roleWidth < len("ROLE") {
+		roleWidth = len("ROLE")
+	}
+
+	headerFmt := fmt.Sprintf("%%-1s %%-%ds %%-%ds %%-%ds %%-%ds %%-%ds %%-%ds",
+		hostWidth, pidWidth, nameWidth, roleWidth, len("ACTIVE"), intExtWidth)
+
+	PutString(s, 0, y, fmt.Sprintf(headerFmt,
+		" ", "HOST", "PID", "NAME", "ROLE", "ACTIVE", "INT/EXT/LO"))
 	y++
-	PutString(s, 0, y,
-		fmt.Sprintf("%-1s %-*s %-6s %-22s %-26s %-7s %-11s",
-			" ",
-			hostWidth,
-			strings.Repeat("-", hostWidth),
-			"-----",
-			strings.Repeat("-", 22),
-			strings.Repeat("-", 26),
-			"------",
-			"-----------"),
-	)
+	PutString(s, 0, y, fmt.Sprintf(headerFmt,
+		" ",
+		strings.Repeat("-", hostWidth),
+		strings.Repeat("-", pidWidth),
+		strings.Repeat("-", nameWidth),
+		strings.Repeat("-", roleWidth),
+		"------",
+		strings.Repeat("-", intExtWidth),
+	))
 	y++
 
 	for i, c := range app.Candidates {
@@ -79,7 +111,7 @@ func DrawDashboard(app *shared.AppState) {
 			arrow = ">"
 		}
 
-		name := shared.TrimName(c.Proc.Name, 22)
+		name := shared.TrimName(c.Proc.Name, nameWidth)
 		host := c.Host
 		if host == "" {
 			host = "local"
@@ -91,14 +123,13 @@ func DrawDashboard(app *shared.AppState) {
 			c.OutLoopback+udpLo,
 		)
 
-		line := fmt.Sprintf("%-1s %-*s %-6d %-22s %-26s %-7v %-11s",
+		line := fmt.Sprintf(headerFmt,
 			arrow,
-			hostWidth,
 			host,
-			c.Proc.Pid,
+			fmt.Sprintf("%d", c.Proc.Pid),
 			name,
 			c.Role,
-			c.ActiveProxying,
+			fmt.Sprintf("%v", c.ActiveProxying),
 			intExt,
 		)
 
