@@ -43,3 +43,12 @@ func TargetPrefix(ip string) string {
 	}
 	return strings.ToLower(strings.Join(parts[:4], ":"))
 }
+
+// TargetASNHash approximates an ASN bucket using coarse prefix.
+func TargetASNHash(ip string) string {
+	prefix := TargetPrefix(ip)
+	if prefix == "" {
+		return ""
+	}
+	return prefix
+}

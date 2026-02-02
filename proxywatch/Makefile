@@ -4,6 +4,7 @@ GOARCH ?= amd64
 GOCACHE ?= $(abspath $(OUT_DIR)/.go-cache)
 GEN_TLS_GOOS ?= $(shell go env GOOS)
 GEN_TLS_GOARCH ?= $(shell go env GOARCH)
+TARGETS ?= windows/amd64 linux/amd64
 
 PROXYWATCH_OUT := $(OUT_DIR)/proxywatch.exe
 AGENT_OUT := $(OUT_DIR)/pwa.exe
@@ -15,8 +16,14 @@ all: build
 
 build: gen-tls
 	mkdir -p $(OUT_DIR)
-	GOCACHE=$(GOCACHE) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(PROXYWATCH_OUT) ./cmd/proxywatch
-	GOCACHE=$(GOCACHE) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(AGENT_OUT) ./cmd/proxywatch-agent
+	@for t in $(TARGETS); do \
+		goos=$${t%/*}; goarch=$${t#*/}; \
+		ext=""; suffix="-$${goos}-$${goarch}"; \
+		if [ "$$goos" = "windows" ]; then ext=".exe"; suffix=""; fi; \
+		printf "Building $$goos/$$goarch...\n"; \
+		GOCACHE=$(GOCACHE) GOOS=$$goos GOARCH=$$goarch go build -o $(OUT_DIR)/proxywatch$${suffix}$${ext} ./cmd/proxywatch || exit $$?; \
+		GOCACHE=$(GOCACHE) GOOS=$$goos GOARCH=$$goarch go build -o $(OUT_DIR)/pwa$${suffix}$${ext} ./cmd/proxywatch-agent || exit $$?; \
+	done
 
 gen-tls:
 	GOCACHE=$(GOCACHE) GOOS=$(GEN_TLS_GOOS) GOARCH=$(GEN_TLS_GOARCH) go run ./scripts/gen_tls.go

@@ -2,6 +2,7 @@ package classifier
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"proxywatch/internal/shared"
@@ -24,6 +25,9 @@ func ScoreCandidate(c *shared.Candidate) {
 	now := time.Now()
 	hist := getHistory(p.Pid, now)
 	updateConnHistory(p.Pid, c.Conns, now)
+	updateParentFreq(p)
+	parentKey := fmt.Sprintf("%d|%s|%s", p.ParentPid, p.Name, p.ExePath)
+	rareParent := shared.ParentChildFreq[parentKey] <= 1
 
 	ports, loopbackOnly, anyWildcard := socksListenerPorts(c.Listeners)
 	hasListener := len(ports) > 0
@@ -39,6 +43,25 @@ func ScoreCandidate(c *shared.Candidate) {
 	c.OutLongLived = outLongLived
 	c.OutShortLived = outShortLived
 	c.InboundTotal = activeClients
+
+	// Shape drift detection
+	totalNet := c.OutTotal + c.InboundTotal + c.OutLoopback
+	if totalNet > 0 {
+		curOut := float64(c.OutTotal) / float64(totalNet)
+		curIn := float64(c.InboundTotal) / float64(totalNet)
+		curLoop := float64(c.OutLoopback) / float64(totalNet)
+		if hist.ShapeSamples > 0 {
+			if shapeDelta(curOut, hist.LastOutRatio) > shared.ShapeDeltaThreshold ||
+				shapeDelta(curIn, hist.LastInRatio) > shared.ShapeDeltaThreshold ||
+				shapeDelta(curLoop, hist.LastLoopRatio) > shared.ShapeDeltaThreshold {
+				addSignal("shape-drift")
+			}
+		}
+		hist.LastOutRatio = curOut
+		hist.LastInRatio = curIn
+		hist.LastLoopRatio = curLoop
+		hist.ShapeSamples++
+	}
 
 	if activeClients > 0 {
 		addSignal("inbound-active")
@@ -98,9 +121,19 @@ func ScoreCandidate(c *shared.Candidate) {
 
 	outboundActive, distinctTargets, distinctTargetPorts, targetPrefixes := outboundActivity(c.Conns, ports)
 	internalTargets, internalPorts, internalLateral := outboundInternalSummary(c.Conns, ports)
+	internalFanoutScore := internalFanoutBoost(internalTargets, internalPorts)
 	reverseTunnelEligible := internalLateral ||
 		len(internalTargets) >= shared.MinInternalTargetsForRev ||
 		len(internalPorts) >= shared.MinInternalPortsForRev
+
+	// Cross-proc rare tuple tracking (remote prefix + port) to surface repeated rare C2 patterns.
+	for pref := range targetPrefixes {
+		key := pref
+		shared.RareTupleCount[key]++
+		if shared.RareTupleCount[key] > 1 {
+			addSignal("rare-target-repeat")
+		}
+	}
 
 	updateBurstHistory(p.Pid, burstCount, distinctTargets, now)
 	internalScanNow := reverseTunnelEligible
@@ -162,10 +195,12 @@ func ScoreCandidate(c *shared.Candidate) {
 		beaconInterval = iv
 	}
 	beaconHits := shared.ShortLivedBurstHits[p.Pid]
+	intervalCoV := intervalCoV(shared.ShortLivedIntervals[p.Pid])
 	beaconConfirmed := false
 	if last, ok := shared.ShortLivedBurstLast[p.Pid]; ok && now.Sub(last) <= shared.SlowScanWindow {
 		beaconConfirmed = beaconHits >= shared.BeaconMinIntervals &&
-			beaconInterval >= shared.BeaconSleepThreshold
+			beaconInterval >= shared.BeaconSleepThreshold &&
+			intervalCoV <= 0.5
 	}
 
 	localTransportRecent := localTransport
@@ -184,13 +219,15 @@ func ScoreCandidate(c *shared.Candidate) {
 
 	suspTunEligible := controlConn != nil && (localTransportRecent || internalScanRecent || inboundBurst > 0)
 	lowPrefixEntropy := len(targetPrefixes) == 0 || len(targetPrefixes) <= 3
+	lowASNEntropy := asnEntropy(targetPrefixes) <= 3
 	beaconEligible := !hasListener &&
 		!reverseProxyNow &&
 		!localTransportRecent &&
 		!internalScanRecent &&
 		outLongLived == 0 &&
 		!shared.IsLikelyBenignBeacon(p) &&
-		lowPrefixEntropy
+		lowPrefixEntropy &&
+		lowASNEntropy
 	beaconRecent := false
 	if t, ok := shared.BeaconSeen[p.Pid]; ok && now.Sub(t) <= shared.SuspicionWindow {
 		beaconRecent = true
@@ -258,6 +295,10 @@ func ScoreCandidate(c *shared.Candidate) {
 	if outboundActive >= 8 {
 		scoreVal += 40
 	}
+	if internalFanoutScore > 0 {
+		scoreVal += internalFanoutScore
+		addSignal("internal-fanout")
+	}
 
 	if outLongLived > 0 {
 		scoreVal += 10
@@ -287,6 +328,10 @@ func ScoreCandidate(c *shared.Candidate) {
 
 	if activeClients > 0 {
 		scoreVal += 25
+	}
+	if rareParent {
+		scoreVal += 10
+		addSignal("rare-parent")
 	}
 
 	if internalLateral {
@@ -782,6 +827,9 @@ func getHistory(pid int, now time.Time) *shared.ProcHistory {
 		shared.ProcHistoryByPID[pid] = h
 	}
 	h.LastSeen = now
+
+	// Track shape drift (ratios of in/out/loopback) to flag sudden behavioral changes.
+	// Ratios are updated by callers after computing candidate scores.
 	return h
 }
 
@@ -904,6 +952,68 @@ func min(a, b int) int {
 	return b
 }
 
+func shapeDelta(cur, prev float64) float64 {
+	if prev == 0 && cur == 0 {
+		return 0
+	}
+	diff := cur - prev
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff
+}
+
+func intervalCoV(intervals []time.Duration) float64 {
+	if len(intervals) < 2 {
+		return 0
+	}
+	var sum float64
+	for _, iv := range intervals {
+		sum += float64(iv)
+	}
+	mean := sum / float64(len(intervals))
+	if mean == 0 {
+		return 0
+	}
+	var variance float64
+	for _, iv := range intervals {
+		d := float64(iv) - mean
+		variance += d * d
+	}
+	variance /= float64(len(intervals))
+	stddev := math.Sqrt(variance)
+	return stddev / mean
+}
+
+func internalFanoutBoost(targets map[string]struct{}, ports map[int]struct{}) int {
+	score := 0
+	if len(targets) >= 3 {
+		score += 15
+	}
+	if len(ports) >= 2 {
+		score += 10
+	}
+	for p := range ports {
+		if shared.LateralPorts[p] {
+			score += 10
+			break
+		}
+	}
+	return score
+}
+
+func asnEntropy(prefixes map[string]struct{}) int {
+	return len(prefixes)
+}
+
+func updateParentFreq(p *shared.ProcessInfo) {
+	if p == nil {
+		return
+	}
+	key := fmt.Sprintf("%d|%s|%s", p.ParentPid, p.Name, p.ExePath)
+	shared.ParentChildFreq[key]++
+}
+
 func updateBurstHistory(pid int, burstCount int, targets map[string]struct{}, now time.Time) {
 	if burstCount <= 0 {
 		return
@@ -929,6 +1039,7 @@ func updateBurstHistory(pid int, burstCount int, targets map[string]struct{}, no
 	if burstTarget == "" {
 		shared.ShortLivedBurstHits[pid] = 0
 		delete(shared.ShortLivedBurstInterval, pid)
+		delete(shared.ShortLivedIntervals, pid)
 		delete(shared.ShortLivedBurstTarget, pid)
 		shared.ShortLivedBurstLast[pid] = now
 		return
@@ -942,6 +1053,12 @@ func updateBurstHistory(pid int, burstCount int, targets map[string]struct{}, no
 			return
 		}
 		shared.ShortLivedBurstInterval[pid] = interval
+		intervals := shared.ShortLivedIntervals[pid]
+		intervals = append(intervals, interval)
+		if len(intervals) > 4 {
+			intervals = intervals[len(intervals)-4:]
+		}
+		shared.ShortLivedIntervals[pid] = intervals
 		if interval >= shared.BeaconSleepThreshold {
 			shared.ShortLivedBurstHits[pid]++
 		} else {

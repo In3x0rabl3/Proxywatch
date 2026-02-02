@@ -16,6 +16,10 @@ type ProcHistory struct {
 	LastSuspicious time.Time
 	SuspicionKind  int
 	StickyScore    int
+	LastOutRatio   float64
+	LastInRatio    float64
+	LastLoopRatio  float64
+	ShapeSamples   int
 }
 
 const (
@@ -42,10 +46,13 @@ var (
 	ShortLivedBurstInterval   = make(map[int]time.Duration)
 	ShortLivedBurstHits       = make(map[int]int)
 	ShortLivedBurstTarget     = make(map[int]string)
+	ShortLivedIntervals       = make(map[int][]time.Duration)
 	InboundBurstLast          = make(map[int]time.Time)
 	InboundBurstCount         = make(map[int]int)
 	BeaconSeen                = make(map[int]time.Time)
 	LocalTransportLast        = make(map[int]time.Time)
+	ParentChildFreq           = make(map[string]int)
+	RareTupleCount            = make(map[string]int)
 	ActiveWindow              = 10 * time.Second
 	ActiveHoldWindow          = 30 * time.Second
 	SuspicionWindow           = 5 * time.Minute
@@ -57,6 +64,7 @@ var (
 	MinInternalTargetsForRev  = 2
 	MinInternalPortsForRev    = 2
 	OutboundOnlyExternalCap   = 30
+	ShapeDeltaThreshold       = 0.35 // 35% shift triggers shape anomaly
 	ProcHistoryByPID          = make(map[int]*ProcHistory)
 	LastHistoryCleanup        time.Time
 	BenignControlPorts        = map[int]bool{
