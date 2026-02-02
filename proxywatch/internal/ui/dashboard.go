@@ -13,15 +13,6 @@ func DrawDashboard(app *shared.AppState) {
 	s.Clear()
 
 	w, _ := s.Size()
-	nowUTC := time.Now().UTC()
-
-	PutString(s, 0, 0,
-		TruncateToWidth(fmt.Sprintf("UTC: %s", nowUTC.Format("2006-01-02 15:04:05")), w),
-	)
-
-	PutString(s, 0, 2,
-		TruncateToWidth("Use UP/DOWN arrows | ENTER inspect | c collect | w whitelist | W manage whitelist | q quit", w),
-	)
 
 	status := app.LastError
 	if app.CollectActive {
@@ -34,9 +25,10 @@ func DrawDashboard(app *shared.AppState) {
 		}
 		status += "Collecting (" + remaining.String() + " left)"
 	}
-	if status != "" {
-		PutString(s, 0, 3, TruncateToWidth("Status: "+status, w))
-	}
+	drawHeader(s, w,
+		"Use UP/DOWN arrows | ENTER inspect | c collect | w whitelist | W manage whitelist | q quit",
+		status,
+	)
 
 	y := 5
 	if len(app.Candidates) == 0 {

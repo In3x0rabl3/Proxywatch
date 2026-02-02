@@ -13,11 +13,7 @@ func DrawInspector(app *shared.AppState) {
 	s.Clear()
 
 	w, h := s.Size()
-	nowUTC := time.Now().UTC()
-
-	PutString(s, 0, 0,
-		TruncateToWidth(fmt.Sprintf("UTC: %s", nowUTC.Format("2006-01-02 15:04:05")), w),
-	)
+	drawHeader(s, w, "", "")
 
 	var cand *shared.Candidate
 	for i := range app.Candidates {

@@ -14,19 +14,10 @@ func DrawCollect(app *shared.AppState) {
 	s.Clear()
 
 	w, _ := s.Size()
-	nowUTC := time.Now().UTC()
-
-	PutString(s, 0, 0,
-		TruncateToWidth(fmt.Sprintf("UTC: %s", nowUTC.Format("2006-01-02 15:04:05")), w),
+	drawHeader(s, w,
+		"Collection | UP/DOWN select | ENTER edit/start | LEFT/RIGHT time | ESC back | q quit",
+		app.LastError,
 	)
-
-	PutString(s, 0, 2,
-		TruncateToWidth("Collection | UP/DOWN select | ENTER edit/start | LEFT/RIGHT time | ESC back | q quit", w),
-	)
-
-	if app.LastError != "" {
-		PutString(s, 0, 3, TruncateToWidth("Status: "+app.LastError, w))
-	}
 
 	y := 5
 	fields := []struct {

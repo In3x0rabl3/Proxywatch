@@ -65,17 +65,7 @@ func burstCapture(
 		mergeConns(connMap, conns)
 	}
 
-	outListeners := make([]shared.ListenerInfo, 0, len(listenerMap))
-	for _, l := range listenerMap {
-		outListeners = append(outListeners, l)
-	}
-
-	outConns := make([]shared.ConnectionInfo, 0, len(connMap))
-	for _, c := range connMap {
-		outConns = append(outConns, c)
-	}
-
-	return outListeners, outConns
+	return buildSnapshots(listenerMap, connMap)
 }
 
 // fastBurstCapture runs captures until duration elapses, with a tight sleep.
@@ -102,17 +92,7 @@ func fastBurstCapture(
 		mergeConns(connMap, conns)
 	}
 
-	outListeners := make([]shared.ListenerInfo, 0, len(listenerMap))
-	for _, l := range listenerMap {
-		outListeners = append(outListeners, l)
-	}
-
-	outConns := make([]shared.ConnectionInfo, 0, len(connMap))
-	for _, c := range connMap {
-		outConns = append(outConns, c)
-	}
-
-	return outListeners, outConns
+	return buildSnapshots(listenerMap, connMap)
 }
 
 func burstSampleCount(listenerCount, connCount int) int {
@@ -157,4 +137,21 @@ func mergeConns(dest map[shared.ConnKey]shared.ConnectionInfo, in []shared.Conne
 			dest[key] = c
 		}
 	}
+}
+
+func buildSnapshots(
+	listenerMap map[shared.ListenerKey]shared.ListenerInfo,
+	connMap map[shared.ConnKey]shared.ConnectionInfo,
+) ([]shared.ListenerInfo, []shared.ConnectionInfo) {
+	outListeners := make([]shared.ListenerInfo, 0, len(listenerMap))
+	for _, l := range listenerMap {
+		outListeners = append(outListeners, l)
+	}
+
+	outConns := make([]shared.ConnectionInfo, 0, len(connMap))
+	for _, c := range connMap {
+		outConns = append(outConns, c)
+	}
+
+	return outListeners, outConns
 }

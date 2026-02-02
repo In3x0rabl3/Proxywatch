@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"proxywatch/internal/shared"
 
@@ -14,6 +15,20 @@ import (
 func PutString(s tcell.Screen, x, y int, text string) {
 	for i, r := range text {
 		s.SetContent(x+i, y, r, nil, tcell.StyleDefault)
+	}
+}
+
+const utcTimeFormat = "2006-01-02 15:04:05"
+
+func drawHeader(s tcell.Screen, w int, subtitle, status string) {
+	PutString(s, 0, 0,
+		TruncateToWidth(fmt.Sprintf("UTC: %s", time.Now().UTC().Format(utcTimeFormat)), w),
+	)
+	if subtitle != "" {
+		PutString(s, 0, 2, TruncateToWidth(subtitle, w))
+	}
+	if status != "" {
+		PutString(s, 0, 3, TruncateToWidth("Status: "+status, w))
 	}
 }
 

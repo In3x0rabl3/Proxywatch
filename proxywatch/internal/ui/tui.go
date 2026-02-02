@@ -324,20 +324,7 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 							app.CollectEditing = !app.CollectEditing
 						case 3:
 							if app.CollectActive {
-								payload := bloodhound.BuildGraph(app.CollectData, app.CollectRoleFilter)
-								if err := bloodhound.WriteJSON(app.CollectOutput, payload); err != nil {
-									app.LastError = "collection failed: " + err.Error()
-								} else {
-									app.LastError = "collection written: " + app.CollectOutput
-									if err := bloodhound.UploadIfConfigured(filepath.Base(app.CollectOutput), payload); err != nil {
-										app.LastError = "collection written, upload failed: " + err.Error()
-									}
-								}
-								app.CollectActive = false
-								app.CollectData = nil
-								app.CollectRoleFilter = nil
-								app.RoleFilterOverride = nil
-								app.CollectEditing = false
+								finalizeCollection(app)
 								break
 							}
 							dur, err := time.ParseDuration(app.CollectDurationStr)
@@ -426,24 +413,27 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 					app.CollectData = append(app.CollectData, c)
 				}
 				if time.Now().After(app.CollectUntil) {
-					payload := bloodhound.BuildGraph(app.CollectData, app.CollectRoleFilter)
-					if err := bloodhound.WriteJSON(app.CollectOutput, payload); err != nil {
-						app.LastError = "collection failed: " + err.Error()
-					} else {
-						if err := bloodhound.UploadIfConfigured(filepath.Base(app.CollectOutput), payload); err != nil {
-							app.LastError = "collection written, upload failed: " + err.Error()
-						} else {
-							app.LastError = "collection written: " + app.CollectOutput
-						}
-					}
-					app.CollectActive = false
-					app.CollectData = nil
-					app.CollectRoleFilter = nil
-					app.RoleFilterOverride = nil
+					finalizeCollection(app)
 				}
 			}
 		}
 	}
+}
+
+func finalizeCollection(app *shared.AppState) {
+	payload := bloodhound.BuildGraph(app.CollectData, app.CollectRoleFilter)
+	if err := bloodhound.WriteJSON(app.CollectOutput, payload); err != nil {
+		app.LastError = "collection failed: " + err.Error()
+	} else if err := bloodhound.UploadIfConfigured(filepath.Base(app.CollectOutput), payload); err != nil {
+		app.LastError = "collection written, upload failed: " + err.Error()
+	} else {
+		app.LastError = "collection written: " + app.CollectOutput
+	}
+	app.CollectActive = false
+	app.CollectData = nil
+	app.CollectRoleFilter = nil
+	app.RoleFilterOverride = nil
+	app.CollectEditing = false
 }
 
 func trimLastRune(s string) string {
