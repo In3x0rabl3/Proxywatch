@@ -183,10 +183,13 @@ ProxyWatch assigns a best-fit role per process:
 
 - [proxywatch/internal/shared/classifier_state.go](proxywatch/internal/shared/classifier_state.go)  
   Time windows, control thresholds, beacon thresholds, scoring baselines, benign control ports, and caps.
+
 - [proxywatch/internal/shared/telemetry_types.go](proxywatch/internal/shared/telemetry_types.go)  
   Burst sampling windows and thresholds for short‑lived activity.
+
 - [proxywatch/internal/shared/constants.go](proxywatch/internal/shared/constants.go)  
   Internal CIDRs and lateral movement ports.
+
 - [proxywatch/cmd/proxywatch/main.go](proxywatch/cmd/proxywatch/main.go)  
   UI default role filter and the minimum score gate (`minScore`).
 
