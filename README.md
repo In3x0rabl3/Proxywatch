@@ -111,12 +111,19 @@ Examples:
 ## Features
 
 - Behavior-based detection without signatures
+
 - Role assignment for tunnels, proxies, and beacons
+
 - Reverse-control and reverse-transport detection
+
 - Listener and client mapping (TCP + UDP)
+
 - Short-lived connection capture for fast scans
+
 - TUI with per-process inspector and manual kill
+
 - Multi-endpoint ingest with ProxyWatch Agent
+
 - BloodHound collection output (JSON file)
 
 ---
@@ -225,9 +232,13 @@ After edits, rebuild to apply changes.
 ## Flags
 
 - `-roles` Comma-separated list of roles to display (overrides the default UI filter)
+
 - `-interval` Refresh interval (default `250ms`)
+
 - `-incremental` Reuse classification for unchanged PIDs
+
 - `-listen` Listen address for ProxyWatch Agent ingest (for example `0.0.0.0:50051`)
+
 - `-stale` Drop remote hosts after this duration without updates (0 = keep)
 
 ---
@@ -237,10 +248,15 @@ After edits, rebuild to apply changes.
 ProxyWatch uses:
 
 - `GetExtendedTcpTable` (IPv4/IPv6) for TCP state and PID association
+
 - `GetExtendedUdpTable` for UDP listeners
+
 - Toolhelp process snapshots and Win32 APIs for process metadata
+
 - Timestamped tracking of outbound connections for control-channel inference
+
 - Heuristic scoring and role classification
+
 - Burst sampling per refresh to capture short-lived connections
 
 No packets are captured. No kernel components are required.
@@ -290,6 +306,9 @@ Notes:
 ## Notes
 
 - Terminating processes may require elevated privileges depending on target.
+
 - Lateral ports are used as heuristic hints (SMB, RDP, WinRM, LDAP, MSSQL, SSH).
+
 - The TUI defaults to showing only `susp-session`, `susp-beacon`, and `susp-tun`. Use `-roles` to override.
+
 - Whitelisted processes are stored in the user config directory at `proxywatch/whitelist.json`.
