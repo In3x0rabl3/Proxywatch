@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -328,6 +329,9 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 									app.LastError = "collection failed: " + err.Error()
 								} else {
 									app.LastError = "collection written: " + app.CollectOutput
+									if err := bloodhound.UploadIfConfigured(filepath.Base(app.CollectOutput), payload); err != nil {
+										app.LastError = "collection written, upload failed: " + err.Error()
+									}
 								}
 								app.CollectActive = false
 								app.CollectData = nil
@@ -426,7 +430,11 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 					if err := bloodhound.WriteJSON(app.CollectOutput, payload); err != nil {
 						app.LastError = "collection failed: " + err.Error()
 					} else {
-						app.LastError = "collection written: " + app.CollectOutput
+						if err := bloodhound.UploadIfConfigured(filepath.Base(app.CollectOutput), payload); err != nil {
+							app.LastError = "collection written, upload failed: " + err.Error()
+						} else {
+							app.LastError = "collection written: " + app.CollectOutput
+						}
 					}
 					app.CollectActive = false
 					app.CollectData = nil

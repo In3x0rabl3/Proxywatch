@@ -5,6 +5,17 @@ GOCACHE ?= $(abspath $(OUT_DIR)/.go-cache)
 GEN_TLS_GOOS ?= $(shell go env GOOS)
 GEN_TLS_GOARCH ?= $(shell go env GOARCH)
 TARGETS ?= windows/amd64 linux/amd64
+LDFLAGS :=
+
+ifneq ($(strip $(BLOODHOUND_API_URL)),)
+LDFLAGS += -X proxywatch/internal/bloodhound.BloodhoundAPIURL=$(BLOODHOUND_API_URL)
+endif
+ifneq ($(strip $(BLOODHOUND_API_TOKEN)),)
+LDFLAGS += -X proxywatch/internal/bloodhound.BloodhoundAPIToken=$(BLOODHOUND_API_TOKEN)
+endif
+ifneq ($(strip $(BLOODHOUND_API_TOKEN_ID)),)
+LDFLAGS += -X proxywatch/internal/bloodhound.BloodhoundAPITokenID=$(BLOODHOUND_API_TOKEN_ID)
+endif
 
 PROXYWATCH_OUT := $(OUT_DIR)/proxywatch.exe
 AGENT_OUT := $(OUT_DIR)/pwa.exe
@@ -21,8 +32,8 @@ build: gen-tls
 		ext=""; suffix="-$${goos}-$${goarch}"; \
 		if [ "$$goos" = "windows" ]; then ext=".exe"; suffix=""; fi; \
 		printf "Building $$goos/$$goarch...\n"; \
-		GOCACHE=$(GOCACHE) GOOS=$$goos GOARCH=$$goarch go build -o $(OUT_DIR)/proxywatch$${suffix}$${ext} ./cmd/proxywatch || exit $$?; \
-		GOCACHE=$(GOCACHE) GOOS=$$goos GOARCH=$$goarch go build -o $(OUT_DIR)/pwa$${suffix}$${ext} ./cmd/proxywatch-agent || exit $$?; \
+		GOCACHE=$(GOCACHE) GOOS=$$goos GOARCH=$$goarch go build -ldflags '$(LDFLAGS)' -o $(OUT_DIR)/proxywatch$${suffix}$${ext} ./cmd/proxywatch || exit $$?; \
+		GOCACHE=$(GOCACHE) GOOS=$$goos GOARCH=$$goarch go build -ldflags '$(LDFLAGS)' -o $(OUT_DIR)/pwa$${suffix}$${ext} ./cmd/proxywatch-agent || exit $$?; \
 	done
 
 gen-tls:
