@@ -88,6 +88,14 @@ Works for both local mode and ingest mode (`-listen`).
 
 Cypher examples live in [queries.md](queries.md).
 
+### Automatic upload to BloodHound
+- Set env vars (or build with ldflags):
+  - `BLOODHOUND_API_URL` (e.g., `http://127.0.0.1:18080/api/v2`)
+  - `BLOODHOUND_API_TOKEN` (API key or bearer token)
+  - `BLOODHOUND_API_TOKEN_ID` (only for HMAC keys; leave empty for bearer)
+- After a collection finishes, ProxyWatch uploads the JSON via `file-upload/start -> file-upload/{id} -> file-upload/{id}/end`.
+- Content-Type is `application/json`; HMAC signing matches BloodHound docs (METHOD+URI → hour-truncated RequestDate → body).
+
 Examples:
 
 **Suspicious processes by user**
@@ -146,6 +154,23 @@ ProxyWatch assigns a best-fit role per process:
 | `listener-with-outbound` | Listener, no clients, outbound activity |
 | `listener-only`          | Listener without traffic |
 | `outbound-only`          | Outbound activity only |
+
+### Role groups for `-roles`
+
+Use short group names (case-insensitive) instead of long comma lists:
+
+| Group       | Expands to |
+|-------------|------------|
+| `all`       | all roles |
+| `reverse`   | reverse-control, reverse-transport, reverse-proxy, reverse-tunnel |
+| `listeners` | proxy-listener, listener-with-clients, listener-with-outbound, listener-only |
+| `susp`      | susp-beacon, susp-session, susp-tun |
+| `control`   | reverse-control, reverse-transport, susp-session, susp-beacon, susp-tun |
+
+Examples:
+- `proxywatch.exe -roles susp`
+- `proxywatch.exe -roles reverse,listeners`
+- `proxywatch.exe -roles control,susp-beacon`
 
 ---
 

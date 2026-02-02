@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Build flow uses top-level `make` to output binaries into `dist/`.
 - Build now runs the TLS generator with host GOOS/GOARCH and uses an absolute GOCACHE for cross-compiles.
 - README shortened with tables for telemetry inputs and role triggers; build steps simplified.
+- BloodHound auto-upload from TUI collections via API token (HMAC or bearer) and configurable env/ldflags.
+- Role group shortcuts for `-roles` flag (`all`, `reverse`, `listeners`, `susp`, `control`) with case-insensitive parsing.
+- Cross-platform BloodHound upload: JSON upload (correct content-type), HMAC chain aligned to BloodHound docs.
 
 ### Removed
 - One-shot `-once` mode.

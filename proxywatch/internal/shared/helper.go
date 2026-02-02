@@ -73,6 +73,31 @@ func TrimName(name string, max int) string {
 }
 
 func ParseRoleFilter(s string) map[string]bool {
+	// Known atomic roles
+	allRoles := []string{
+		"reverse-control",
+		"reverse-transport",
+		"reverse-proxy",
+		"reverse-tunnel",
+		"proxy-listener",
+		"listener-with-clients",
+		"listener-with-outbound",
+		"listener-only",
+		"susp-beacon",
+		"susp-session",
+		"susp-tun",
+		"outbound-only",
+	}
+
+	// Group shortcuts (limit of 5 per user request)
+	roleGroups := map[string][]string{
+		"all":       allRoles,
+		"reverse":   {"reverse-control", "reverse-transport", "reverse-proxy", "reverse-tunnel"},
+		"listeners": {"proxy-listener", "listener-with-clients", "listener-with-outbound", "listener-only"},
+		"susp":      {"susp-beacon", "susp-session", "susp-tun"},
+		"control":   {"reverse-control", "reverse-transport", "susp-session", "susp-beacon", "susp-tun"},
+	}
+
 	out := make(map[string]bool)
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -81,6 +106,12 @@ func ParseRoleFilter(s string) map[string]bool {
 	for _, r := range strings.Split(s, ",") {
 		r = strings.TrimSpace(r)
 		if r != "" {
+			if expanded, ok := roleGroups[strings.ToLower(r)]; ok {
+				for _, er := range expanded {
+					out[er] = true
+				}
+				continue
+			}
 			out[r] = true
 		}
 	}
