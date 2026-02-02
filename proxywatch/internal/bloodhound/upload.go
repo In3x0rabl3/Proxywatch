@@ -26,14 +26,14 @@ var (
 )
 
 func init() {
-	if BloodhoundAPIURL == "" {
-		BloodhoundAPIURL = os.Getenv("BLOODHOUND_API_URL")
+	if v := os.Getenv("BLOODHOUND_API_URL"); v != "" {
+		BloodhoundAPIURL = v
 	}
-	if BloodhoundAPIToken == "" {
-		BloodhoundAPIToken = os.Getenv("BLOODHOUND_API_TOKEN")
+	if v := os.Getenv("BLOODHOUND_API_TOKEN"); v != "" {
+		BloodhoundAPIToken = v
 	}
-	if BloodhoundAPITokenID == "" {
-		BloodhoundAPITokenID = os.Getenv("BLOODHOUND_API_TOKEN_ID")
+	if v := os.Getenv("BLOODHOUND_API_TOKEN_ID"); v != "" {
+		BloodhoundAPITokenID = v
 	}
 }
 
