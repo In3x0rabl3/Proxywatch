@@ -93,8 +93,6 @@ Cypher examples live in [queries.md](docs/queries.md).
   - `BLOODHOUND_API_URL` (e.g., `http://127.0.0.1:18080/api/v2`)
   - `BLOODHOUND_API_TOKEN` (API key or bearer token)
   - `BLOODHOUND_API_TOKEN_ID` (only for HMAC keys; leave empty for bearer)
-- After a collection finishes, ProxyWatch uploads the JSON via `file-upload/start -> file-upload/{id} -> file-upload/{id}/end`.
-- Content-Type is `application/json`; HMAC signing matches BloodHound docs (METHOD+URI → hour-truncated RequestDate → body).
 
 Examples:
 
