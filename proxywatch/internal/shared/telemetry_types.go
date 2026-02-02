@@ -17,10 +17,10 @@ type ListenerKey struct {
 }
 
 const (
-	BurstSamplesMax = 5
-	BurstSamplesMid = 3
+	BurstSamplesMax = 10
+	BurstSamplesMid = 4
 	BurstSamplesMin = 1
-	BurstSleep      = 40 * time.Millisecond
+	BurstSleep      = 10 * time.Millisecond
 
 	BurstIdleConnThreshold     = 5
 	BurstModerateConnThreshold = 25

@@ -16,13 +16,14 @@ func Collect() (*shared.Snapshot, error) {
 		return nil, fmt.Errorf("netstat: %w", err)
 	}
 
-	samples := burstSampleCount(len(listeners), len(conns))
-	// If any listeners exist, force maximum burst samples to capture short-lived inbound hits.
 	if len(listeners) > 0 {
-		samples = shared.BurstSamplesMax
-	}
-	if samples > 1 {
-		listeners, conns = burstCapture(listeners, conns, samples)
+		// Tight loop to capture very short-lived inbound hits (fast scans).
+		listeners, conns = fastBurstCapture(listeners, conns, 100*time.Millisecond, 2*time.Millisecond)
+	} else {
+		samples := burstSampleCount(len(listeners), len(conns))
+		if samples > 1 {
+			listeners, conns = burstCapture(listeners, conns, samples, shared.BurstSleep)
+		}
 	}
 
 	procs, err := GetProcessInfoMap()
@@ -45,6 +46,7 @@ func burstCapture(
 	baseListeners []shared.ListenerInfo,
 	baseConns []shared.ConnectionInfo,
 	samples int,
+	sleep time.Duration,
 ) ([]shared.ListenerInfo, []shared.ConnectionInfo) {
 
 	listenerMap := make(map[shared.ListenerKey]shared.ListenerInfo, len(baseListeners))
@@ -54,7 +56,44 @@ func burstCapture(
 	mergeConns(connMap, baseConns)
 
 	for i := 1; i < samples; i++ {
-		time.Sleep(shared.BurstSleep)
+		time.Sleep(sleep)
+		listeners, conns, err := GetTCPTable()
+		if err != nil {
+			continue
+		}
+		mergeListeners(listenerMap, listeners)
+		mergeConns(connMap, conns)
+	}
+
+	outListeners := make([]shared.ListenerInfo, 0, len(listenerMap))
+	for _, l := range listenerMap {
+		outListeners = append(outListeners, l)
+	}
+
+	outConns := make([]shared.ConnectionInfo, 0, len(connMap))
+	for _, c := range connMap {
+		outConns = append(outConns, c)
+	}
+
+	return outListeners, outConns
+}
+
+// fastBurstCapture runs captures until duration elapses, with a tight sleep.
+func fastBurstCapture(
+	baseListeners []shared.ListenerInfo,
+	baseConns []shared.ConnectionInfo,
+	duration time.Duration,
+	sleep time.Duration,
+) ([]shared.ListenerInfo, []shared.ConnectionInfo) {
+
+	listenerMap := make(map[shared.ListenerKey]shared.ListenerInfo, len(baseListeners))
+	connMap := make(map[shared.ConnKey]shared.ConnectionInfo, len(baseConns))
+	mergeListeners(listenerMap, baseListeners)
+	mergeConns(connMap, baseConns)
+
+	deadline := time.Now().Add(duration)
+	for time.Now().Before(deadline) {
+		time.Sleep(sleep)
 		listeners, conns, err := GetTCPTable()
 		if err != nil {
 			continue
