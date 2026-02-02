@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Whitelist UI (`w` to add, `W` to manage) with on-disk storage.
 - TUI collection screen for BloodHound graph output (output path, duration, roles).
 - BloodHound OpenGraph JSON export including Host/User/Process/Endpoint nodes and susp-* edges.
-- Queries guide (`queries.md`) with prebuilt Cypher examples.
+- Queries guide (`docs/queries.md`) with prebuilt Cypher examples.
 
 ### Changed
 - Default refresh interval set to 250ms for both UI and agent.
@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent binary renamed to `pwa.exe` and service name updated to ProxyWatch Agent.
 - Networking/inspect output consolidated to include TCP/UDP in/out, established, and listeners.
 - Collection runs from the TUI instead of CLI flags.
-- Build flow uses top-level `make` to output binaries into `dist/`.
+- Build flow uses top-level `make` to output binaries into `build/`.
 - Build now runs the TLS generator with host GOOS/GOARCH and uses an absolute GOCACHE for cross-compiles.
 - README shortened with tables for telemetry inputs and role triggers; build steps simplified.
 - BloodHound auto-upload from TUI collections via API token (HMAC or bearer) and configurable env/ldflags.
@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - JSON logging flags and logger implementation.
 - `no-network-activity` role.
 - `likely-tunnel` role.
-- Local build artifacts in `dist/` (repo cleanup).
+- Local build artifacts in `build/` (repo cleanup).
 
 ### Fixed
 - Remote kill support now routes through the agent stream.

@@ -10,7 +10,7 @@ ProxyWatch (Agent) is a service that runs on remote endpoints and streams the re
 
 ProxyWatch ships with a Terminal User Interface (TUI) for process inspection and remote kill. Tune thresholds or whitelist software to reduce noise. BloodHound export is built in so you can map suspicious sessions, beacons, and tunnels to exact host, user, and binary paths.
 
-![Demo](media/Demo-latest.gif)
+![Demo](docs/media/Demo-latest.gif)
 
 ---
 
@@ -86,7 +86,7 @@ Collection is started from the TUI:
 
 Works for both local mode and ingest mode (`-listen`).
 
-Cypher examples live in [queries.md](queries.md).
+Cypher examples live in [queries.md](docs/queries.md).
 
 ### Automatic upload to BloodHound
 - Set env vars (or build with ldflags):
@@ -309,7 +309,7 @@ go mod download
 make
 ```
 
-Artifacts are placed in `dist/` by default.
+Artifacts are placed in `build/` by default.
 
 ## Windows service
 

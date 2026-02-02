@@ -1,4 +1,4 @@
-OUT_DIR ?= dist
+OUT_DIR ?= build
 GOOS ?= windows
 GOARCH ?= amd64
 GOCACHE ?= $(abspath $(OUT_DIR)/.go-cache)
