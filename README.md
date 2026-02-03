@@ -14,7 +14,7 @@ ProxyWatch ships with a Terminal User Interface (TUI) for process inspection and
 
 ---
 
-## Quick start (local)
+## Quick start
 
 Interactive TUI:
 ```bash
@@ -27,39 +27,17 @@ Keys:
 - `ESC` to return to dashboard
 - `w` to whitelist the selected process
 - `W` to open the whitelist manager (remove entries)
-- `k` to kill the inspected process
+- `k` only functions within inspect mode
 - `q` to quit
 
 ---
 
-## Multi-endpoint mode (ProxyWatch Agent)
+## ProxyWatch Agent
 
-1) Start ProxyWatch in ingest mode:
+1) Start ProxyWatch Agent:
 ```bash
-proxywatch.exe -listen 0.0.0.0:50051
+pwa-windows-amd64.exe server <listener-ip>:50051
 ```
-
-2) Run the agent on each endpoint:
-```bash
-pwa.exe -server 10.0.0.5:50051
-```
-
-Optional agent flags:
-- `-id` Host identifier (default: hostname)
-
-- `-interval` Refresh interval (default `250ms`)
-
-- `-incremental` Reuse classification for unchanged PIDs
-
-- `--install` Install the ProxyWatch Agent Windows service
-
-- `--uninstall` Uninstall the service
-
-- `--start` Start the service
-
-- `--stop` Stop the service
-
-- `--service` Run under SCM (service mode only)
 
 Notes:
 - The TUI dashboard FOR Proxywatch shows a HOST column for each endpoint.
