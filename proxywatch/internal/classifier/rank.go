@@ -123,8 +123,8 @@ func ScoreCandidate(c *shared.Candidate) {
 	internalTargets, internalPorts, internalLateral := outboundInternalSummary(c.Conns, ports)
 	internalFanoutScore := internalFanoutBoost(internalTargets, internalPorts)
 	reverseTunnelEligible := internalLateral ||
-		len(internalTargets) >= shared.MinInternalTargetsForRev ||
-		len(internalPorts) >= shared.MinInternalPortsForRev
+		(len(internalTargets) >= shared.MinInternalTargetsForRev &&
+			len(internalPorts) >= shared.MinInternalPortsForRev)
 
 	// Cross-proc rare tuple tracking (remote prefix + port) to surface repeated rare C2 patterns.
 	for pref := range targetPrefixes {
@@ -142,7 +142,8 @@ func ScoreCandidate(c *shared.Candidate) {
 	}
 
 	localTransport, localCount := localTransportActivity(c.Conns)
-	if localTransport {
+	localTransportForwarding := localTransport && (hasListener || activeClients > 0)
+	if localTransportForwarding {
 		addSignal("loopback-transport")
 		shared.LocalTransportLast[p.Pid] = now
 	}
@@ -181,7 +182,7 @@ func ScoreCandidate(c *shared.Candidate) {
 
 	suspiciousRecent := !hist.LastSuspicious.IsZero() && now.Sub(hist.LastSuspicious) <= shared.SuspicionWindow
 
-	activeProxying := forwardActiveNow || reverseProxyNow || localTransport
+	activeProxying := forwardActiveNow || reverseProxyNow || localTransportForwarding
 
 	burstRecent := burstCount > 0
 	if !burstRecent {
@@ -203,7 +204,7 @@ func ScoreCandidate(c *shared.Candidate) {
 			intervalCoV <= 0.5
 	}
 
-	localTransportRecent := localTransport
+	localTransportRecent := localTransportForwarding
 	if !localTransportRecent {
 		if t, ok := shared.LocalTransportLast[p.Pid]; ok && now.Sub(t) <= shared.LocalTransportWindow {
 			localTransportRecent = true
@@ -216,6 +217,15 @@ func ScoreCandidate(c *shared.Candidate) {
 			internalScanRecent = true
 		}
 	}
+
+	strongEvidence := reverseProxyNow ||
+		localTransportRecent ||
+		internalScanRecent ||
+		internalLateral ||
+		inboundBurst > 0
+
+	outboundForVerification := outboundConnsForVerification(c.Conns, ports)
+	trafficVerified := trafficVerifiedByDest(outboundForVerification, outExternal, internalLateral)
 
 	suspTunEligible := controlConn != nil && (localTransportRecent || internalScanRecent || inboundBurst > 0)
 	lowPrefixEntropy := len(targetPrefixes) == 0 || len(targetPrefixes) <= 3
@@ -242,7 +252,7 @@ func ScoreCandidate(c *shared.Candidate) {
 			reverseControl = true
 		}
 		if reverseControl {
-			if localTransport && outboundRecent {
+			if localTransportForwarding && outboundRecent {
 				scoreVal = 60 + min((controlSecs/10)*5, 40)
 				if localCount > 0 {
 					scoreVal += 20
@@ -400,7 +410,7 @@ func ScoreCandidate(c *shared.Candidate) {
 
 	if promoteSuspTun {
 		c.Role = "susp-tun"
-		c.ActiveProxying = forwardActiveNow || reverseProxyNow || localTransport
+		c.ActiveProxying = forwardActiveNow || reverseProxyNow || localTransportForwarding
 		addSignal("susp-tun")
 
 		base := 55
@@ -479,6 +489,12 @@ func ScoreCandidate(c *shared.Candidate) {
 				hist.StickyScore = c.Score
 			}
 		}
+	}
+
+	c.TrafficVerified = trafficVerified
+	c.StrongEvidence = strongEvidence
+	if trafficVerified && !strongEvidence {
+		c.Reasons = append(c.Reasons, "Traffic matches verified destinations (de-emphasized)")
 	}
 
 	c.Signals = signals
@@ -646,6 +662,62 @@ func outboundConnAgeStats(
 		}
 	}
 	return
+}
+
+func outboundConnsForVerification(
+	conns []shared.ConnectionInfo,
+	ports map[int]struct{},
+) []shared.ConnectionInfo {
+	out := make([]shared.ConnectionInfo, 0, len(conns))
+	for _, c := range conns {
+		if !isActiveConnState(c.State) {
+			continue
+		}
+		if c.RemoteAddress == "" ||
+			shared.IsWildcardIP(c.RemoteAddress) ||
+			shared.IsLoopbackIP(c.RemoteAddress) {
+			continue
+		}
+		if _, ok := ports[c.LocalPort]; ok {
+			continue
+		}
+		out = append(out, c)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func trafficVerifiedByDest(
+	conns []shared.ConnectionInfo,
+	outExternal int,
+	internalLateral bool,
+) bool {
+	if len(conns) == 0 {
+		return false
+	}
+	if outExternal == 0 && !internalLateral {
+		return true
+	}
+
+	benignExternal := true
+	externalPrefixes := make(map[string]struct{})
+	for _, c := range conns {
+		if shared.IsInternalIP(c.RemoteAddress) || shared.IsLoopbackIP(c.RemoteAddress) {
+			continue
+		}
+		if !shared.BenignControlPorts[c.RemotePort] {
+			benignExternal = false
+		}
+		if prefix := shared.TargetPrefix(c.RemoteAddress); prefix != "" {
+			externalPrefixes[prefix] = struct{}{}
+		}
+	}
+	if !benignExternal {
+		return false
+	}
+	return len(externalPrefixes) >= shared.VerifiedExternalMinPrefixes
 }
 
 func updateInboundBurst(pid int, activeClients int, now time.Time) int {

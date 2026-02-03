@@ -65,9 +65,17 @@ var (
 	MinInternalPortsForRev    = 2
 	OutboundOnlyExternalCap   = 30
 	ShapeDeltaThreshold       = 0.35 // 35% shift triggers shape anomaly
-	ProcHistoryByPID          = make(map[int]*ProcHistory)
-	LastHistoryCleanup        time.Time
-	BenignControlPorts        = map[int]bool{
+	// If true, only treat external control channels as suspicious unless the target is a lateral port.
+	ControlRequireExternal = true
+	// If true, only treat external-only periodic traffic as a beacon.
+	BeaconRequireExternal = true
+	// How far to demote traffic that matches verified destinations without strong evidence in the TUI ranking.
+	TrafficVerifiedPenalty = 100
+	// Minimum external target prefix diversity to treat traffic as verified on benign ports.
+	VerifiedExternalMinPrefixes = 5
+	ProcHistoryByPID            = make(map[int]*ProcHistory)
+	LastHistoryCleanup          time.Time
+	BenignControlPorts          = map[int]bool{
 		53:   true,
 		80:   true,
 		443:  true,

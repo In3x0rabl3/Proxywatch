@@ -28,6 +28,9 @@ type Candidate struct {
 	OutShortLived int
 
 	InboundTotal int
+
+	TrafficVerified bool
+	StrongEvidence  bool
 }
 
 func CandidateKey(c Candidate) string {

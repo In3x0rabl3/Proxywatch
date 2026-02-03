@@ -2,8 +2,8 @@ package shared
 
 // CandidateLess defines a consistent ordering for candidates.
 func CandidateLess(a, b Candidate) bool {
-	priA := RolePriority(a.Role)
-	priB := RolePriority(b.Role)
+	priA := candidatePriority(a)
+	priB := candidatePriority(b)
 	if priA != priB {
 		return priA > priB
 	}
@@ -20,4 +20,12 @@ func CandidateLess(a, b Candidate) bool {
 		return a.Proc.Pid < b.Proc.Pid
 	}
 	return a.Score > b.Score
+}
+
+func candidatePriority(c Candidate) int {
+	pri := RolePriority(c.Role)
+	if c.TrafficVerified && !c.StrongEvidence {
+		pri -= TrafficVerifiedPenalty
+	}
+	return pri
 }

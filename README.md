@@ -231,6 +231,17 @@ Raise or lower the UI score gate (what shows up as suspicious):
 minScore := 25 // default is 15
 ```
 
+Destination-based verification (no hardcoded process lists):
+- Internal-only outbound traffic (non-lateral) is de-emphasized.
+- External traffic on benign ports is de-emphasized only if it’s diverse enough.
+
+Tune thresholds:
+```go
+// proxywatch/internal/shared/classifier_state.go
+TrafficVerifiedPenalty = 100
+VerifiedExternalMinPrefixes = 5
+```
+
 After edits, rebuild to apply changes.
 
 ## Flags
