@@ -23,6 +23,7 @@ func ScoreCandidate(c *shared.Candidate) {
 
 	p := c.Proc
 	now := time.Now()
+	benignClient := shared.IsLikelyBenignControlClient(p)
 	hist := getHistory(p.Pid, now)
 	updateConnHistory(p.Pid, c.Conns, now)
 	updateParentFreq(p)
@@ -125,6 +126,10 @@ func ScoreCandidate(c *shared.Candidate) {
 	reverseTunnelEligible := internalLateral ||
 		(len(internalTargets) >= shared.MinInternalTargetsForRev &&
 			len(internalPorts) >= shared.MinInternalPortsForRev)
+	if benignClient && !internalLateral {
+		reverseTunnelEligible = false
+		addSignal("reverse-tunnel-shape-suppressed-benign")
+	}
 
 	// Cross-proc rare tuple tracking (remote prefix + port) to surface repeated rare C2 patterns.
 	for pref := range targetPrefixes {
@@ -135,7 +140,7 @@ func ScoreCandidate(c *shared.Candidate) {
 		}
 	}
 
-	updateBurstHistory(p.Pid, burstCount, distinctTargets, now)
+	updateBurstHistory(p.Pid, burstCount, now)
 	internalScanNow := reverseTunnelEligible
 	if internalScanNow {
 		shared.RecentInternalScanSeen[p.Pid] = now
@@ -146,6 +151,14 @@ func ScoreCandidate(c *shared.Candidate) {
 	if localTransportForwarding {
 		addSignal("loopback-transport")
 		shared.LocalTransportLast[p.Pid] = now
+	}
+	localServiceProxyLikely := isLikelyLocalServiceProxy(controlConn, ports, c.Conns)
+	if localServiceProxyLikely {
+		addSignal("local-service-proxy-shape")
+	}
+	forwardTunnelLikely := isLikelyForwardTunnel(hasListener, loopbackOnly, controlConn, ports, outTotal, len(distinctTargets), activeClients, inboundRecent) && !localServiceProxyLikely
+	if forwardTunnelLikely {
+		addSignal("forward-tunnel-shape")
 	}
 
 	if controlConn != nil && !hasListener {
@@ -158,6 +171,15 @@ func ScoreCandidate(c *shared.Candidate) {
 
 	if !reverseProxyNow && !hasListener && outInternal > 0 && reverseTunnelEligible {
 		reverseProxyNow = true
+	}
+	if reverseProxyNow && benignClient && !internalLateral && outExternal > 0 {
+		reverseProxyNow = false
+		addSignal("reverse-proxy-suppressed-benign-fanout")
+	}
+	singleControlNoProxy := isLikelySingleControlNoProxy(controlConn, hasListener, outTotal, outInternal, internalTargets, localTransportForwarding, inboundBurst)
+	if singleControlNoProxy {
+		reverseProxyNow = false
+		addSignal("single-control-no-proxy")
 	}
 
 	if reverseProxyNow {
@@ -191,18 +213,7 @@ func ScoreCandidate(c *shared.Candidate) {
 			burstCount = shared.ShortLivedBurstCount[p.Pid]
 		}
 	}
-	beaconInterval := time.Duration(0)
-	if iv, ok := shared.ShortLivedBurstInterval[p.Pid]; ok {
-		beaconInterval = iv
-	}
-	beaconHits := shared.ShortLivedBurstHits[p.Pid]
-	intervalCoV := intervalCoV(shared.ShortLivedIntervals[p.Pid])
-	beaconConfirmed := false
-	if last, ok := shared.ShortLivedBurstLast[p.Pid]; ok && now.Sub(last) <= shared.SlowScanWindow {
-		beaconConfirmed = beaconHits >= shared.BeaconMinIntervals &&
-			beaconInterval >= shared.BeaconSleepThreshold &&
-			intervalCoV <= 0.5
-	}
+	beaconConfirmed, beaconInterval, beaconJitter, beaconHits := beaconPatternConfirmed(p.Pid, now)
 
 	localTransportRecent := localTransportForwarding
 	if !localTransportRecent {
@@ -223,33 +234,76 @@ func ScoreCandidate(c *shared.Candidate) {
 		internalScanRecent ||
 		internalLateral ||
 		inboundBurst > 0
+	if strongEvidence {
+		addSignal("strong-evidence")
+	}
 
 	outboundForVerification := outboundConnsForVerification(c.Conns, ports)
 	trafficVerified := trafficVerifiedByDest(outboundForVerification, outExternal, internalLateral)
+	if trafficVerified {
+		addSignal("traffic-verified")
+	}
 
-	suspTunEligible := controlConn != nil && (localTransportRecent || internalScanRecent || inboundBurst > 0)
-	lowPrefixEntropy := len(targetPrefixes) == 0 || len(targetPrefixes) <= 3
-	lowASNEntropy := asnEntropy(targetPrefixes) <= 3
-	beaconEligible := !hasListener &&
-		!reverseProxyNow &&
-		!localTransportRecent &&
-		!internalScanRecent &&
-		outLongLived == 0 &&
-		!shared.IsLikelyBenignBeacon(p) &&
-		lowPrefixEntropy &&
-		lowASNEntropy
+	suspTunEligible := controlConn != nil && (localTransportRecent || internalScanRecent || inboundBurst > 0 || forwardTunnelLikely)
+	if suspTunEligible {
+		addSignal("susp-tun-eligible")
+	}
 	beaconRecent := false
 	if t, ok := shared.BeaconSeen[p.Pid]; ok && now.Sub(t) <= shared.SuspicionWindow {
 		beaconRecent = true
+		addSignal("beacon-recent")
 	}
+	beaconEligible := !reverseProxyNow &&
+		!localTransportRecent &&
+		!internalScanRecent &&
+		outLongLived == 0 &&
+		(burstRecent || beaconRecent) &&
+		!shared.IsLikelyBenignBeacon(p)
+	if beaconEligible {
+		addSignal("beacon-eligible")
+	}
+	if beaconConfirmed {
+		addSignal("beacon-confirmed")
+	}
+	benignOnlyExternal := outboundUsesOnlyBenignControlPorts(outboundForVerification)
+	beaconBlockedByVerified := beaconEligible && outExternal > 0 && trafficVerified && !strongEvidence
+	beaconBlockedByBenignExternal := beaconEligible && benignClient && outExternal > 0 && benignOnlyExternal && !strongEvidence
+	beaconBlockedByStaleBenign := beaconEligible && benignClient && !outboundRecent && outTotal == 0
+	beaconBlockedByStaleUnconfirmed := beaconEligible && !beaconConfirmed && !outboundRecent && outTotal == 0
+	if beaconBlockedByVerified {
+		addSignal("beacon-blocked-verified")
+	}
+	if beaconBlockedByBenignExternal {
+		addSignal("beacon-blocked-benign-external")
+	}
+	if beaconBlockedByStaleBenign {
+		addSignal("beacon-blocked-stale-benign")
+	}
+	if beaconBlockedByStaleUnconfirmed {
+		addSignal("beacon-blocked-stale-unconfirmed")
+	}
+	beaconBlocked := beaconBlockedByVerified ||
+		beaconBlockedByBenignExternal ||
+		beaconBlockedByStaleBenign ||
+		beaconBlockedByStaleUnconfirmed
 
 	// ---------------- Reverse control detection ----------------
 	reverseControl := false
-	if !hasListener && outTotal == 1 && len(distinctTargets) == 1 && controlConn != nil {
-		if isLikelyBenignControlPort(controlConn.RemotePort) && !internalLateral && outInternal == 0 {
+	reverseControlSuppressed := false
+	reverseControlShape := !hasListener && outTotal == 1 && len(distinctTargets) == 1 && controlConn != nil
+	if reverseControlShape {
+		addSignal("reverse-control-shape")
+		reverseControlSuppressed = suppressReverseControlForBenignChannel(controlConn, p, internalLateral, outInternal)
+		if reverseControlSuppressed {
+			addSignal("reverse-control-suppressed-benign")
 			reverseControl = false
 		} else {
 			reverseControl = true
+			addSignal("reverse-control")
+		}
+		if reverseControl && !shouldPromoteReverseControl(controlConn, outInternal, strongEvidence) {
+			reverseControl = false
+			addSignal("reverse-control-weak-shape")
 		}
 		if reverseControl {
 			if localTransportForwarding && outboundRecent {
@@ -275,6 +329,11 @@ func ScoreCandidate(c *shared.Candidate) {
 				return
 			}
 		}
+	}
+	if singleControlNoProxy && benignClient {
+		reverseControl = false
+		reverseControlSuppressed = true
+		addSignal("reverse-control-suppressed-shape")
 	}
 	if reverseControl {
 		addSignal("reverse-control")
@@ -373,7 +432,7 @@ func ScoreCandidate(c *shared.Candidate) {
 		}
 	}
 
-	if reverseProxyNow || (suspiciousRecent && hist.SuspicionKind == shared.SuspicionProxy) {
+	if reverseProxyNow || (suspiciousRecent && hist.SuspicionKind == shared.SuspicionProxy && !singleControlNoProxy) {
 		c.Role = "reverse-proxy"
 		if hist.StickyScore > c.Score {
 			c.Score = hist.StickyScore
@@ -382,7 +441,7 @@ func ScoreCandidate(c *shared.Candidate) {
 			c.Reasons = append(c.Reasons, "Persistent control channel with proxied outbound activity")
 		}
 		addSignal("reverse-proxy")
-	} else if reverseControl || (suspiciousRecent && hist.SuspicionKind == shared.SuspicionControl) {
+	} else if reverseControl || (suspiciousRecent && hist.SuspicionKind == shared.SuspicionControl && controlConn != nil && !reverseControlSuppressed) {
 		c.Role = "reverse-control"
 		c.ActiveProxying = false
 		c.Reasons = []string{
@@ -454,9 +513,25 @@ func ScoreCandidate(c *shared.Candidate) {
 			hist.StickyScore = c.Score
 		}
 	}
+	if forwardTunnelLikely &&
+		c.Role != "reverse-proxy" &&
+		c.Role != "reverse-transport" &&
+		c.Role != "reverse-control" &&
+		c.Role != "susp-session" {
+		c.Role = "susp-tun"
+		c.ActiveProxying = activeClients > 0 || localTransportRecent
+		addSignal("forward-tunnel")
+		c.Reasons = append(c.Reasons, "Loopback forward-listener with persistent control channel")
+		if c.Score < 65 {
+			c.Score = 65
+		}
+	}
 
-	if c.Role != "susp-tun" && c.Role != "reverse-proxy" {
-		if beaconEligible && (beaconConfirmed || beaconRecent) {
+	if canPromoteBeaconRole(c.Role, reverseControl, controlConn) {
+		if beaconBlocked {
+			addSignal("beacon-promotion-blocked")
+		}
+		if !beaconBlocked && beaconEligible && (beaconConfirmed || beaconRecent) {
 			c.Role = "susp-beacon"
 			c.ActiveProxying = false
 			addSignal("susp-beacon")
@@ -464,21 +539,27 @@ func ScoreCandidate(c *shared.Candidate) {
 				shared.BeaconSeen[p.Pid] = now
 				if beaconInterval > 0 {
 					interval := beaconInterval.Round(time.Second)
-					c.Reasons = []string{
-						fmt.Sprintf("Periodic outbound beacon interval ~%s", interval),
+					if beaconJitter > 0 {
+						c.Reasons = []string{
+							fmt.Sprintf("Recurring outbound callback pattern (~%s cadence, jitter CoV %.2f)", interval, beaconJitter),
+						}
+					} else {
+						c.Reasons = []string{
+							fmt.Sprintf("Recurring outbound callback pattern (~%s cadence)", interval),
+						}
 					}
 				} else {
 					c.Reasons = []string{
-						"Periodic short-lived outbound beacon activity",
+						"Recurring short-lived outbound callback activity",
 					}
 				}
 			} else if len(c.Reasons) == 0 {
 				c.Reasons = []string{
-					"Recent periodic beacon activity",
+					"Recent recurring outbound callback activity",
 				}
 			}
 
-			base := 60 + min(burstCount*5, 20)
+			base := 60 + min(burstCount*4, 20) + min(beaconHits*5, 15)
 			if c.Score < base {
 				c.Score = base
 			}
@@ -689,6 +770,23 @@ func outboundConnsForVerification(
 	return out
 }
 
+func outboundUsesOnlyBenignControlPorts(conns []shared.ConnectionInfo) bool {
+	if len(conns) == 0 {
+		return false
+	}
+	hasExternal := false
+	for _, c := range conns {
+		if shared.IsInternalIP(c.RemoteAddress) || shared.IsLoopbackIP(c.RemoteAddress) {
+			continue
+		}
+		hasExternal = true
+		if !shared.BenignControlPorts[c.RemotePort] {
+			return false
+		}
+	}
+	return hasExternal
+}
+
 func trafficVerifiedByDest(
 	conns []shared.ConnectionInfo,
 	outExternal int,
@@ -722,6 +820,11 @@ func trafficVerifiedByDest(
 
 func updateInboundBurst(pid int, activeClients int, now time.Time) int {
 	if activeClients <= 0 {
+		last := shared.InboundBurstLast[pid]
+		if last.IsZero() || now.Sub(last) > shared.ShortLivedBurstWindow {
+			shared.InboundBurstCount[pid] = 0
+			return 0
+		}
 		return shared.InboundBurstCount[pid]
 	}
 
@@ -803,9 +906,11 @@ func outboundTargetsExcluding(
 
 func hasInternalLateral(conns []shared.ConnectionInfo) bool {
 	for _, c := range conns {
-		if isActiveConnState(c.State) &&
-			shared.IsInternalIP(c.RemoteAddress) &&
-			shared.LateralPorts[c.RemotePort] {
+		if !isActiveConnState(c.State) ||
+			!shared.IsInternalIP(c.RemoteAddress) {
+			continue
+		}
+		if shared.LateralPorts[c.RemotePort] {
 			return true
 		}
 	}
@@ -924,7 +1029,6 @@ func purgeHistory(now time.Time) {
 		delete(shared.ShortLivedBurstCount, pid)
 		delete(shared.ShortLivedBurstInterval, pid)
 		delete(shared.ShortLivedBurstHits, pid)
-		delete(shared.ShortLivedBurstTarget, pid)
 		delete(shared.BeaconSeen, pid)
 		delete(shared.LocalTransportLast, pid)
 
@@ -1017,6 +1121,38 @@ func isLikelyBenignControlPort(port int) bool {
 	return shared.BenignControlPorts[port]
 }
 
+func suppressReverseControlForBenignChannel(cn *shared.ConnectionInfo, proc *shared.ProcessInfo, internalLateral bool, outInternal int) bool {
+	if cn == nil || internalLateral {
+		return false
+	}
+	if !shared.IsLikelyBenignControlClient(proc) {
+		return false
+	}
+
+	// Suppress common benign control channels for system/client binaries when traffic is purely external.
+	if !isLikelyBenignControlPort(cn.RemotePort) {
+		return false
+	}
+	if shared.IsInternalIP(cn.RemoteAddress) || outInternal > 0 {
+		return false
+	}
+	return true
+}
+
+func shouldPromoteReverseControl(cn *shared.ConnectionInfo, outInternal int, strongEvidence bool) bool {
+	if cn == nil {
+		return false
+	}
+	if outInternal > 0 || shared.IsInternalIP(cn.RemoteAddress) {
+		return true
+	}
+	if !isLikelyBenignControlPort(cn.RemotePort) {
+		return true
+	}
+	// External control-looking channels on common ports need extra evidence.
+	return strongEvidence
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -1057,6 +1193,39 @@ func intervalCoV(intervals []time.Duration) float64 {
 	return stddev / mean
 }
 
+func beaconPatternConfirmed(pid int, now time.Time) (confirmed bool, interval time.Duration, jitter float64, hits int) {
+	last, ok := shared.ShortLivedBurstLast[pid]
+	if !ok || now.Sub(last) > shared.SlowScanWindow {
+		return false, 0, 0, 0
+	}
+
+	interval = shared.ShortLivedBurstInterval[pid]
+	hits = shared.ShortLivedBurstHits[pid]
+	intervals := shared.ShortLivedIntervals[pid]
+	jitter = intervalCoV(intervals)
+
+	// For highly jittered callbacks we only require broad cadence recurrence.
+	if hits < shared.BeaconMinIntervals || interval < shared.BeaconSleepThreshold {
+		return false, interval, jitter, hits
+	}
+	if len(intervals) >= 2 && jitter > shared.BeaconJitterCoVMax {
+		return false, interval, jitter, hits
+	}
+	return true, interval, jitter, hits
+}
+
+func canPromoteBeaconRole(role string, reverseControl bool, controlConn *shared.ConnectionInfo) bool {
+	switch role {
+	case "susp-tun", "reverse-proxy", "reverse-transport":
+		return false
+	case "reverse-control", "susp-session":
+		// Allow beacon to take over stale session labels only when no current control channel exists.
+		return !reverseControl && controlConn == nil
+	default:
+		return true
+	}
+}
+
 func internalFanoutBoost(targets map[string]struct{}, ports map[int]struct{}) int {
 	score := 0
 	if len(targets) >= 3 {
@@ -1074,8 +1243,96 @@ func internalFanoutBoost(targets map[string]struct{}, ports map[int]struct{}) in
 	return score
 }
 
-func asnEntropy(prefixes map[string]struct{}) int {
-	return len(prefixes)
+func isLikelySingleControlNoProxy(
+	controlConn *shared.ConnectionInfo,
+	hasListener bool,
+	outTotal int,
+	outInternal int,
+	internalTargets map[string]struct{},
+	localTransportForwarding bool,
+	inboundBurst int,
+) bool {
+	if controlConn == nil {
+		return false
+	}
+	if hasListener || outTotal != 1 || outInternal != 1 {
+		return false
+	}
+	if len(internalTargets) > 1 || localTransportForwarding {
+		return false
+	}
+	return inboundBurst == 0
+}
+
+func isLikelyLocalServiceProxy(
+	controlConn *shared.ConnectionInfo,
+	listenerPorts map[int]struct{},
+	conns []shared.ConnectionInfo,
+) bool {
+	if controlConn == nil || !shared.IsInternalIP(controlConn.RemoteAddress) {
+		return false
+	}
+	if _, ok := listenerPorts[controlConn.RemotePort]; !ok {
+		return false
+	}
+
+	for _, cn := range conns {
+		if !isEstablishedState(cn.State) {
+			continue
+		}
+		if !shared.IsLoopbackIP(cn.LocalAddress) || !shared.IsLoopbackIP(cn.RemoteAddress) {
+			continue
+		}
+		if cn.LocalPort == cn.RemotePort {
+			continue
+		}
+		if _, ok := listenerPorts[cn.LocalPort]; ok {
+			return true
+		}
+		if _, ok := listenerPorts[cn.RemotePort]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func isLikelyForwardTunnel(
+	hasListener bool,
+	loopbackOnly bool,
+	controlConn *shared.ConnectionInfo,
+	listenerPorts map[int]struct{},
+	outTotal int,
+	distinctTargets int,
+	activeClients int,
+	inboundRecent bool,
+) bool {
+	if !hasListener ||
+		controlConn == nil ||
+		outTotal != 1 ||
+		distinctTargets != 1 {
+		return false
+	}
+	nonControlListener := 0
+	for port := range listenerPorts {
+		if port != controlConn.LocalPort {
+			nonControlListener++
+		}
+	}
+	if nonControlListener == 0 {
+		return false
+	}
+	// Strong shape: loopback listener plus persistent control channel.
+	if loopbackOnly {
+		return true
+	}
+
+	// Internal control channels with listener shape are commonly operator tunnels.
+	if shared.IsInternalIP(controlConn.RemoteAddress) {
+		return true
+	}
+
+	// Non-loopback listeners must have real client activity to be considered tunnels.
+	return activeClients > 0 || inboundRecent
 }
 
 func updateParentFreq(p *shared.ProcessInfo) {
@@ -1086,60 +1343,33 @@ func updateParentFreq(p *shared.ProcessInfo) {
 	shared.ParentChildFreq[key]++
 }
 
-func updateBurstHistory(pid int, burstCount int, targets map[string]struct{}, now time.Time) {
+func updateBurstHistory(pid int, burstCount int, now time.Time) {
 	if burstCount <= 0 {
 		return
 	}
 
 	shared.ShortLivedBurstCount[pid] = burstCount
 	prevTime, hasPrev := shared.ShortLivedBurstLast[pid]
-
-	burstTarget := ""
-	if prevTarget, ok := shared.ShortLivedBurstTarget[pid]; ok {
-		if _, ok := targets[prevTarget]; ok {
-			burstTarget = prevTarget
-		}
-	}
-
-	if burstTarget == "" && len(targets) == 1 {
-		for t := range targets {
-			burstTarget = t
-			break
-		}
-	}
-
-	if burstTarget == "" {
-		shared.ShortLivedBurstHits[pid] = 0
-		delete(shared.ShortLivedBurstInterval, pid)
-		delete(shared.ShortLivedIntervals, pid)
-		delete(shared.ShortLivedBurstTarget, pid)
-		shared.ShortLivedBurstLast[pid] = now
-		return
-	}
+	shared.ShortLivedBurstLast[pid] = now
 
 	if hasPrev {
 		interval := now.Sub(prevTime)
 		if interval < shared.ShortLivedBurstWindow {
-			shared.ShortLivedBurstLast[pid] = now
-			shared.ShortLivedBurstTarget[pid] = burstTarget
 			return
 		}
 		shared.ShortLivedBurstInterval[pid] = interval
 		intervals := shared.ShortLivedIntervals[pid]
 		intervals = append(intervals, interval)
-		if len(intervals) > 4 {
-			intervals = intervals[len(intervals)-4:]
+		if len(intervals) > 6 {
+			intervals = intervals[len(intervals)-6:]
 		}
 		shared.ShortLivedIntervals[pid] = intervals
 		if interval >= shared.BeaconSleepThreshold {
 			shared.ShortLivedBurstHits[pid]++
-		} else {
-			shared.ShortLivedBurstHits[pid] = 0
+		} else if shared.ShortLivedBurstHits[pid] > 0 {
+			shared.ShortLivedBurstHits[pid]--
 		}
 	} else {
 		shared.ShortLivedBurstHits[pid] = 0
 	}
-
-	shared.ShortLivedBurstTarget[pid] = burstTarget
-	shared.ShortLivedBurstLast[pid] = now
 }

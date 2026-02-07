@@ -4,11 +4,14 @@ package telemetry
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"proxywatch/internal/shared"
 )
@@ -180,4 +183,94 @@ func buildInodePIDMap() (map[string]int, error) {
 		}
 	}
 	return out, nil
+}
+
+func GetUDPTable() ([]shared.UDPListenerInfo, error) {
+	rows, err := readUDP("/proc/net/udp")
+	if err != nil {
+		return nil, err
+	}
+	rows6, _ := readUDP("/proc/net/udp6")
+	rows = append(rows, rows6...)
+
+	inodePIDs, err := buildInodePIDMap()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]shared.UDPListenerInfo, 0, len(rows))
+	for _, r := range rows {
+		pid := inodePIDs[r.inode]
+		out = append(out, shared.UDPListenerInfo{
+			Pid:          pid,
+			LocalAddress: r.localIP,
+			LocalPort:    r.localPort,
+		})
+	}
+	return out, nil
+}
+
+type udpRow struct {
+	localIP   string
+	localPort int
+	inode     string
+}
+
+func readUDP(path string) ([]udpRow, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var out []udpRow
+	sc := bufio.NewScanner(f)
+	if sc.Scan() {
+		// skip header
+	}
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) < 10 {
+			continue
+		}
+		lip, lport := parseHexAddr(fields[1])
+		inode := fields[9]
+		out = append(out, udpRow{
+			localIP:   lip,
+			localPort: lport,
+			inode:     inode,
+		})
+	}
+	return out, nil
+}
+
+// Collect gathers a snapshot of processes, TCP/UDP state on Linux.
+func Collect() (*shared.Snapshot, error) {
+	listeners, conns, err := GetTCPTable()
+	if err != nil {
+		return nil, fmt.Errorf("netstat: %w", err)
+	}
+
+	udpListeners, err := GetUDPTable()
+	if err != nil {
+		udpListeners = nil
+	}
+
+	procs, err := GetProcessInfoMap()
+	if err != nil {
+		return nil, fmt.Errorf("process: %w", err)
+	}
+
+	return &shared.Snapshot{
+		Timestamp:    time.Now().UTC(),
+		Processes:    procs,
+		Listeners:    listeners,
+		Connections:  conns,
+		UDPListeners: udpListeners,
+	}, nil
+}
+
+// KillProcess terminates a PID on Linux.
+func KillProcess(pid int) error {
+	return syscall.Kill(pid, syscall.SIGKILL)
 }

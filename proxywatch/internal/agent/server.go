@@ -1,10 +1,14 @@
 package agent
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,14 +18,125 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/encoding"
 )
 
+const jsonCodecName = "json"
+
+type jsonCodec struct{}
+
+func (jsonCodec) Marshal(v any) ([]byte, error) {
+	return json.Marshal(v)
+}
+
+func (jsonCodec) Unmarshal(data []byte, v any) error {
+	return json.Unmarshal(data, v)
+}
+
+func (jsonCodec) Name() string {
+	return jsonCodecName
+}
+
+func init() {
+	encoding.RegisterCodec(jsonCodec{})
+}
+
+func JSONCodec() encoding.Codec {
+	return jsonCodec{}
+}
+
+type Store struct {
+	mu    sync.RWMutex
+	hosts map[string]hostState
+}
+
+type hostState struct {
+	updated time.Time
+	cands   []shared.Candidate
+}
+
+func NewStore() *Store {
+	return &Store{
+		hosts: make(map[string]hostState),
+	}
+}
+
+func (s *Store) Update(host string, ts time.Time, cands []shared.Candidate) {
+	if host == "" {
+		host = "unknown"
+	}
+	for i := range cands {
+		if cands[i].Host == "" {
+			cands[i].Host = host
+		}
+	}
+	s.mu.Lock()
+	s.hosts[host] = hostState{
+		updated: ts,
+		cands:   cands,
+	}
+	s.mu.Unlock()
+}
+
+func (s *Store) Snapshot(staleAfter time.Duration) []shared.Candidate {
+	now := time.Now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []shared.Candidate
+	for host, state := range s.hosts {
+		if staleAfter > 0 && now.Sub(state.updated) > staleAfter {
+			continue
+		}
+		for i := range state.cands {
+			c := state.cands[i]
+			if c.Host == "" {
+				c.Host = host
+			}
+			if c.Proc == nil {
+				continue
+			}
+			out = append(out, c)
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return shared.CandidateLess(out[i], out[j])
+	})
+
+	return out
+}
+
+type RemoteScanner struct {
+	Store      *Store
+	StaleAfter time.Duration
+	MinScore   int
+	RoleFilter map[string]bool
+	Whitelist  *shared.Whitelist
+}
+
+func (r *RemoteScanner) Refresh(app *shared.AppState) {
+	if r.Store == nil {
+		shared.ResetAppState(app, "remote store not configured")
+		return
+	}
+
+	roleFilter := r.RoleFilter
+	if app != nil && len(app.RoleFilterOverride) > 0 {
+		roleFilter = app.RoleFilterOverride
+	}
+	cands := r.Store.Snapshot(r.StaleAfter)
+	cands = shared.ApplyScoreAndRoleFilters(cands, r.MinScore, roleFilter)
+	cands = shared.ApplyWhitelist(cands, r.Whitelist)
+	shared.ApplySelection(app, cands, time.Now().UTC())
+}
+
 type Server struct {
-	Store   *Store
-	mu      sync.RWMutex
-	agents  map[string]*agentConn
-	pending map[string]chan error
-	seq     uint64
+	Store         *Store
+	mu            sync.RWMutex
+	agents        map[string]*agentConn
+	pending       map[string]chan error
+	seq           uint64
 	maxMessagesPS int
 }
 
@@ -29,7 +144,6 @@ type agentConn struct {
 	stream pb.ProxyWatchAgent_StreamCandidatesServer
 	mu     sync.Mutex
 	closed bool
-	host   string
 }
 
 func (a *agentConn) Send(cmd *pb.ServerCommand) error {
@@ -51,12 +165,7 @@ func (s *Server) StreamCandidates(stream pb.ProxyWatchAgent_StreamCandidatesServ
 	if s.Store == nil {
 		return fmt.Errorf("store not configured")
 	}
-	if s.agents == nil {
-		s.agents = make(map[string]*agentConn)
-	}
-	if s.pending == nil {
-		s.pending = make(map[string]chan error)
-	}
+	s.ensureRuntimeMaps()
 
 	agent := &agentConn{stream: stream}
 	defer agent.Close()
@@ -64,15 +173,7 @@ func (s *Server) StreamCandidates(stream pb.ProxyWatchAgent_StreamCandidatesServ
 	var host string
 	windowStart := time.Now()
 	windowCount := 0
-	defer func() {
-		if host != "" {
-			s.mu.Lock()
-			if cur, ok := s.agents[host]; ok && cur == agent {
-				delete(s.agents, host)
-			}
-			s.mu.Unlock()
-		}
-	}()
+	defer s.unregisterAgentIfCurrent(host, agent)
 
 	for {
 		msg, err := stream.Recv()
@@ -85,44 +186,90 @@ func (s *Server) StreamCandidates(stream pb.ProxyWatchAgent_StreamCandidatesServ
 		if msg == nil {
 			continue
 		}
-		if s.maxMessagesPS > 0 {
-			now := time.Now()
-			if now.Sub(windowStart) >= time.Second {
-				windowStart = now
-				windowCount = 0
-			}
-			windowCount++
-			if windowCount > s.maxMessagesPS {
-				return fmt.Errorf("agent rate limit exceeded")
-			}
+		if err := enforceRateLimit(s.maxMessagesPS, &windowStart, &windowCount); err != nil {
+			return err
 		}
 
-		if env := msg.Envelope; env != nil {
-			if env.HostId != "" && host != env.HostId {
-				host = sanitizeHostID(env.HostId)
-				if host == "" {
-					host = "unknown"
-				}
-				agent.host = host
-				s.mu.Lock()
-				s.agents[host] = agent
-				s.mu.Unlock()
-			}
-			ts := time.Unix(env.TimestampUnix, 0).UTC()
-			cands := make([]shared.Candidate, 0, len(env.Candidates))
-			for _, c := range env.Candidates {
-				if c == nil {
-					continue
-				}
-				cands = append(cands, FromPBCandidate(c, host))
-			}
-			s.Store.Update(host, ts, cands)
-		}
+		host = s.processEnvelope(msg.Envelope, host, agent)
 
 		if resp := msg.CommandResponse; resp != nil {
 			s.handleCommandResponse(resp)
 		}
 	}
+}
+
+func (s *Server) ensureRuntimeMaps() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.agents == nil {
+		s.agents = make(map[string]*agentConn)
+	}
+	if s.pending == nil {
+		s.pending = make(map[string]chan error)
+	}
+}
+
+func enforceRateLimit(maxMessagesPS int, windowStart *time.Time, windowCount *int) error {
+	if maxMessagesPS <= 0 {
+		return nil
+	}
+	now := time.Now()
+	if now.Sub(*windowStart) >= time.Second {
+		*windowStart = now
+		*windowCount = 0
+	}
+	*windowCount++
+	if *windowCount > maxMessagesPS {
+		return fmt.Errorf("agent rate limit exceeded")
+	}
+	return nil
+}
+
+func (s *Server) processEnvelope(env *pb.CandidateEnvelope, currentHost string, agent *agentConn) string {
+	if env == nil {
+		return currentHost
+	}
+
+	host := currentHost
+	if env.HostId != "" && host != env.HostId {
+		host = sanitizeHostID(env.HostId)
+		if host == "" {
+			host = "unknown"
+		}
+		s.registerAgent(host, agent)
+	}
+
+	ts := time.Unix(env.TimestampUnix, 0).UTC()
+	s.Store.Update(host, ts, envelopeCandidatesToShared(env.Candidates, host))
+	return host
+}
+
+func envelopeCandidatesToShared(in []*pb.Candidate, host string) []shared.Candidate {
+	out := make([]shared.Candidate, 0, len(in))
+	for _, c := range in {
+		if c == nil {
+			continue
+		}
+		out = append(out, FromPBCandidate(c, host))
+	}
+	return out
+}
+
+func (s *Server) registerAgent(host string, agent *agentConn) {
+	s.mu.Lock()
+	s.agents[host] = agent
+	s.mu.Unlock()
+}
+
+func (s *Server) unregisterAgentIfCurrent(host string, agent *agentConn) {
+	if host == "" {
+		return
+	}
+	s.mu.Lock()
+	if cur, ok := s.agents[host]; ok && cur == agent {
+		delete(s.agents, host)
+	}
+	s.mu.Unlock()
 }
 
 func (s *Server) Kill(host string, pid int) error {
@@ -250,4 +397,50 @@ func sanitizeHostID(in string) string {
 		}
 	}
 	return string(out)
+}
+
+func ServerTLSConfig() (*tls.Config, error) {
+	serverCert, err := tls.X509KeyPair([]byte(generatedServerCertPEM), []byte(generatedServerKeyPEM))
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := embeddedCAPool()
+	if err != nil {
+		return nil, err
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    pool,
+		MinVersion:   tls.VersionTLS12,
+	}, nil
+}
+
+func AgentTLSConfig() (*tls.Config, error) {
+	clientCert, err := tls.X509KeyPair([]byte(generatedClientCertPEM), []byte(generatedClientKeyPEM))
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := embeddedCAPool()
+	if err != nil {
+		return nil, err
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      pool,
+		ServerName:   "proxywatch",
+		MinVersion:   tls.VersionTLS12,
+	}, nil
+}
+
+func embeddedCAPool() (*x509.CertPool, error) {
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM([]byte(generatedCACertPEM)) {
+		return nil, errors.New("failed to parse embedded CA")
+	}
+	return pool, nil
 }

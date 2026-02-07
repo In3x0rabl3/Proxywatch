@@ -54,10 +54,8 @@ func Classify(
 			ScoreCandidate(c)
 		}
 
-		if len(opts.RoleFilter) > 0 {
-			if _, ok := opts.RoleFilter[c.Role]; !ok {
-				continue
-			}
+		if !shared.RoleMatchesFilter(c.Role, opts.RoleFilter) {
+			continue
 		}
 
 		if c.Score >= opts.MinScore || shared.IsControlChannelRole(c.Role) {

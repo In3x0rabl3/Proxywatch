@@ -64,6 +64,8 @@ func reuseCandidate(dst, src *shared.Candidate) {
 	dst.OutLongLived = src.OutLongLived
 	dst.OutShortLived = src.OutShortLived
 	dst.InboundTotal = src.InboundTotal
+	dst.TrafficVerified = src.TrafficVerified
+	dst.StrongEvidence = src.StrongEvidence
 	dst.ControlDurationSeconds = src.ControlDurationSeconds
 	if src.ControlChannel != nil {
 		tmp := *src.ControlChannel

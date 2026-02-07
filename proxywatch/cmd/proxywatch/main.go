@@ -27,7 +27,7 @@ func defaultUIRoleFilter() map[string]bool {
 /* ---------------- main ---------------- */
 
 func main() {
-	roles := flag.String("roles", "", "Comma-separated list of roles to display")
+	roles := flag.String("roles", "", "Comma-separated list of roles to display (supports families: tunnel, session, beacon, listener, outbound)")
 	interval := flag.Duration("interval", 250*time.Millisecond, "Refresh interval (e.g. 250ms, 1s)")
 	incremental := flag.Bool("incremental", false, "Reuse classification for unchanged PIDs (faster, slightly less accurate)")
 	listen := flag.String("listen", "", "Listen address for Proxywatch agent ingest (e.g. 0.0.0.0:50051)")
@@ -54,7 +54,7 @@ func main() {
 	app.Whitelist = whitelist
 
 	app.CollectDurationStr = "5m"
-	app.CollectRoles = "susp-session,susp-beacon,susp-tun"
+	app.CollectRoles = "tunnel,session,beacon"
 	app.CollectOutput = "proxywatch-collection.json"
 
 	uiRoleFilter := roleFilter

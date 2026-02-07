@@ -164,10 +164,7 @@ func (w *Whitelist) Remove(key string) error {
 }
 
 func whitelistKey(c Candidate) string {
-	host := c.Host
-	if host == "" {
-		host = "local"
-	}
+	host := DisplayHost(c.Host)
 	if c.Proc == nil {
 		return ""
 	}

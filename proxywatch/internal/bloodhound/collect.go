@@ -45,9 +45,7 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 		if ip == "" || shared.IsWildcardIP(ip) || shared.IsLoopbackIP(ip) {
 			return
 		}
-		if host == "" {
-			host = "local"
-		}
+		host = shared.DisplayHost(host)
 		ips := hostIPs[host]
 		if ips == nil {
 			ips = make(map[string]struct{})
@@ -60,13 +58,10 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 		if c.Proc == nil {
 			continue
 		}
-		if len(roleFilter) > 0 && !roleFilter[c.Role] {
+		if !shared.RoleMatchesFilter(c.Role, roleFilter) {
 			continue
 		}
-		host := c.Host
-		if host == "" {
-			host = "local"
-		}
+		host := shared.DisplayHost(c.Host)
 		for _, l := range c.Listeners {
 			addHostIP(host, l.LocalAddress)
 		}
@@ -164,14 +159,11 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 		if c.Proc == nil {
 			continue
 		}
-		if len(roleFilter) > 0 && !roleFilter[c.Role] {
+		if !shared.RoleMatchesFilter(c.Role, roleFilter) {
 			continue
 		}
 
-		host := c.Host
-		if host == "" {
-			host = "local"
-		}
+		host := shared.DisplayHost(c.Host)
 
 		hostID := "host:" + host
 		addNode(Node{
@@ -203,17 +195,24 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 		}
 
 		procID := fmt.Sprintf("proc:%s:%d", host, c.Proc.Pid)
+		roleFamily := shared.RoleFamily(c.Role)
 		addNode(Node{
 			ID:    procID,
 			Kinds: []string{"Process"},
 			Properties: map[string]any{
-				"pid":       c.Proc.Pid,
-				"name":      c.Proc.Name,
-				"path":      c.Proc.ExePath,
-				"user":      c.Proc.UserName,
-				"role":      c.Role,
-				"host":      host,
-				"integrity": c.Proc.Integrity,
+				"pid":          c.Proc.Pid,
+				"name":         c.Proc.Name,
+				"path":         c.Proc.ExePath,
+				"user":         c.Proc.UserName,
+				"role":         c.Role,
+				"role_family":  roleFamily,
+				"host":         host,
+				"integrity":    c.Proc.Integrity,
+				"score":        c.Score,
+				"confidence":   c.Confidence,
+				"active_proxy": c.ActiveProxying,
+				"signals":      append([]string(nil), c.Signals...),
+				"reasons":      append([]string(nil), c.Reasons...),
 			},
 		})
 
@@ -228,10 +227,13 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 				MatchBy: "id",
 			},
 			Properties: map[string]any{
-				"host":    host,
-				"process": c.Proc.Name,
-				"pid":     c.Proc.Pid,
-				"role":    c.Role,
+				"host":        host,
+				"process":     c.Proc.Name,
+				"pid":         c.Proc.Pid,
+				"role":        c.Role,
+				"role_family": roleFamily,
+				"score":       c.Score,
+				"confidence":  c.Confidence,
 			},
 		}, "HasSuspProcess|"+hostID+"|"+procID)
 
@@ -257,10 +259,13 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 					MatchBy: "id",
 				},
 				Properties: map[string]any{
-					"user":    userName,
-					"process": c.Proc.Name,
-					"pid":     c.Proc.Pid,
-					"role":    c.Role,
+					"user":        userName,
+					"process":     c.Proc.Name,
+					"pid":         c.Proc.Pid,
+					"role":        c.Role,
+					"role_family": roleFamily,
+					"score":       c.Score,
+					"confidence":  c.Confidence,
 				},
 			}, "UserHasSuspProcess|"+userID+"|"+procID)
 		}
@@ -318,6 +323,7 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 					"local_port":    cn.LocalPort,
 					"state":         cn.State,
 					"role":          c.Role,
+					"role_family":   roleFamily,
 				},
 			}, "SuspUsesLocalEndpoint|"+procID+"|"+localEndpointID+"|"+cn.State)
 
@@ -338,6 +344,7 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 					"local_port":    cn.LocalPort,
 					"state":         cn.State,
 					"role":          c.Role,
+					"role_family":   roleFamily,
 				},
 			}, "LocalEndpointUsedBySuspProcess|"+localEndpointID+"|"+procID+"|"+cn.State)
 
@@ -350,14 +357,13 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 				scope = "internal"
 			}
 
-			hostEdgeKind := "SuspConnectsToHostExternal"
-			if scope == "internal" {
-				hostEdgeKind = "SuspConnectsToHostInternal"
-			} else if scope == "loopback" {
-				hostEdgeKind = "SuspConnectsToHostLoopback"
-			}
+			hostEdgeKind := kindForScope(
+				scope,
+				"SuspConnectsToHostExternal",
+				"SuspConnectsToHostInternal",
+				"SuspConnectsToHostLoopback",
+			)
 			hostIPID := resolveRemoteHostID(cn.RemoteAddress)
-			knownHost := strings.HasPrefix(hostIPID, "host:")
 			hostKey := fmt.Sprintf("%s|%s|%s|%d|%d", hostEdgeKind, procID, hostIPID, cn.LocalPort, cn.RemotePort)
 			addEdge(Edge{
 				Kind: hostEdgeKind,
@@ -378,34 +384,164 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 					"remote_address": cn.RemoteAddress,
 					"remote_port":    cn.RemotePort,
 					"role":           c.Role,
+					"role_family":    roleFamily,
 					"active_proxy":   c.ActiveProxying,
 					"scope":          scope,
 				},
 			}, hostKey)
 
-			if !knownHost {
-				addNode(Node{
-					ID:    endpointID,
-					Kinds: []string{"Endpoint"},
-					Properties: map[string]any{
-						"ip":       cn.RemoteAddress,
-						"port":     cn.RemotePort,
-						"protocol": "tcp",
-						"scope":    scope,
-					},
-				})
+			localHostKind := kindForScope(
+				scope,
+				"LocalEndpointConnectsToHostExternal",
+				"LocalEndpointConnectsToHostInternal",
+				"LocalEndpointConnectsToHostLoopback",
+			)
+			localHostKey := fmt.Sprintf("%s|%s|%s|%d|%d", localHostKind, localEndpointID, hostIPID, cn.LocalPort, cn.RemotePort)
+			addEdge(Edge{
+				Kind: localHostKind,
+				Start: Ref{
+					Value:   localEndpointID,
+					MatchBy: "id",
+				},
+				End: Ref{
+					Value:   hostIPID,
+					MatchBy: "id",
+				},
+				Properties: map[string]any{
+					"local_address":  cn.LocalAddress,
+					"local_port":     cn.LocalPort,
+					"remote_address": cn.RemoteAddress,
+					"remote_port":    cn.RemotePort,
+					"role":           c.Role,
+					"role_family":    roleFamily,
+					"process":        c.Proc.Name,
+					"pid":            c.Proc.Pid,
+					"scope":          scope,
+				},
+			}, localHostKey)
 
-				edgeKind := "SuspConnectsToExternal"
-				if scope == "internal" {
-					edgeKind = "SuspConnectsToInternal"
-				} else if scope == "loopback" {
-					edgeKind = "SuspConnectsToLoopback"
-				}
-				key := fmt.Sprintf("%s|%s|%s|%d|%d", edgeKind, procID, endpointID, cn.LocalPort, cn.RemotePort)
+			if userName != "" && userName != "(unknown)" {
+				userID := "user:" + strings.ToLower(userName)
+				userHostKind := kindForScope(
+					scope,
+					"UserSuspTrafficHostExternal",
+					"UserSuspTrafficHostInternal",
+					"UserSuspTrafficHostLoopback",
+				)
+				userHostKey := fmt.Sprintf("%s|%s|%s|%d|%d", userHostKind, userID, hostIPID, cn.LocalPort, cn.RemotePort)
 				addEdge(Edge{
-					Kind: edgeKind,
+					Kind: userHostKind,
 					Start: Ref{
-						Value:   procID,
+						Value:   userID,
+						MatchBy: "id",
+					},
+					End: Ref{
+						Value:   hostIPID,
+						MatchBy: "id",
+					},
+					Properties: map[string]any{
+						"user":           userName,
+						"local_address":  cn.LocalAddress,
+						"local_port":     cn.LocalPort,
+						"remote_address": cn.RemoteAddress,
+						"remote_port":    cn.RemotePort,
+						"role":           c.Role,
+						"role_family":    roleFamily,
+						"process":        c.Proc.Name,
+						"pid":            c.Proc.Pid,
+						"scope":          scope,
+					},
+				}, userHostKey)
+			}
+
+			// Keep endpoint edges for compatibility with existing BloodHound queries.
+			// Host edges remain for enriched host-to-host pivoting.
+			addNode(Node{
+				ID:    endpointID,
+				Kinds: []string{"Endpoint"},
+				Properties: map[string]any{
+					"ip":       cn.RemoteAddress,
+					"port":     cn.RemotePort,
+					"protocol": "tcp",
+					"scope":    scope,
+				},
+			})
+
+			edgeKind := kindForScope(
+				scope,
+				"SuspConnectsToExternal",
+				"SuspConnectsToInternal",
+				"SuspConnectsToLoopback",
+			)
+			key := fmt.Sprintf("%s|%s|%s|%d|%d", edgeKind, procID, endpointID, cn.LocalPort, cn.RemotePort)
+			addEdge(Edge{
+				Kind: edgeKind,
+				Start: Ref{
+					Value:   procID,
+					MatchBy: "id",
+				},
+				End: Ref{
+					Value:   endpointID,
+					MatchBy: "id",
+				},
+				Properties: map[string]any{
+					"process":        c.Proc.Name,
+					"pid":            c.Proc.Pid,
+					"state":          cn.State,
+					"local_address":  cn.LocalAddress,
+					"local_port":     cn.LocalPort,
+					"remote_address": cn.RemoteAddress,
+					"remote_port":    cn.RemotePort,
+					"role":           c.Role,
+					"role_family":    roleFamily,
+					"active_proxy":   c.ActiveProxying,
+					"scope":          scope,
+				},
+			}, key)
+
+			linkKind := kindForScope(
+				scope,
+				"LocalEndpointConnectsToExternal",
+				"LocalEndpointConnectsToInternal",
+				"LocalEndpointConnectsToLoopback",
+			)
+			linkKey := fmt.Sprintf("%s|%s|%s|%d|%d", linkKind, localEndpointID, endpointID, cn.LocalPort, cn.RemotePort)
+			addEdge(Edge{
+				Kind: linkKind,
+				Start: Ref{
+					Value:   localEndpointID,
+					MatchBy: "id",
+				},
+				End: Ref{
+					Value:   endpointID,
+					MatchBy: "id",
+				},
+				Properties: map[string]any{
+					"local_address":  cn.LocalAddress,
+					"local_port":     cn.LocalPort,
+					"remote_address": cn.RemoteAddress,
+					"remote_port":    cn.RemotePort,
+					"role":           c.Role,
+					"role_family":    roleFamily,
+					"process":        c.Proc.Name,
+					"pid":            c.Proc.Pid,
+					"scope":          scope,
+				},
+			}, linkKey)
+
+			if userName != "" && userName != "(unknown)" {
+				userID := "user:" + strings.ToLower(userName)
+				userEdgeKind := kindForScope(
+					scope,
+					"UserSuspTrafficExternal",
+					"UserSuspTrafficInternal",
+					"UserSuspTrafficLoopback",
+				)
+				userKey := fmt.Sprintf("%s|%s|%s|%d|%d", userEdgeKind, userID, endpointID, cn.LocalPort, cn.RemotePort)
+				addEdge(Edge{
+					Kind: userEdgeKind,
+					Start: Ref{
+						Value:   userID,
 						MatchBy: "id",
 					},
 					End: Ref{
@@ -413,80 +549,18 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 						MatchBy: "id",
 					},
 					Properties: map[string]any{
-						"process":        c.Proc.Name,
-						"pid":            c.Proc.Pid,
-						"state":          cn.State,
+						"user":           userName,
 						"local_address":  cn.LocalAddress,
 						"local_port":     cn.LocalPort,
 						"remote_address": cn.RemoteAddress,
 						"remote_port":    cn.RemotePort,
 						"role":           c.Role,
-						"active_proxy":   c.ActiveProxying,
-						"scope":          scope,
-					},
-				}, key)
-
-				linkKind := "LocalEndpointConnectsToExternal"
-				if scope == "internal" {
-					linkKind = "LocalEndpointConnectsToInternal"
-				} else if scope == "loopback" {
-					linkKind = "LocalEndpointConnectsToLoopback"
-				}
-				linkKey := fmt.Sprintf("%s|%s|%s|%d|%d", linkKind, localEndpointID, endpointID, cn.LocalPort, cn.RemotePort)
-				addEdge(Edge{
-					Kind: linkKind,
-					Start: Ref{
-						Value:   localEndpointID,
-						MatchBy: "id",
-					},
-					End: Ref{
-						Value:   endpointID,
-						MatchBy: "id",
-					},
-					Properties: map[string]any{
-						"local_address":  cn.LocalAddress,
-						"local_port":     cn.LocalPort,
-						"remote_address": cn.RemoteAddress,
-						"remote_port":    cn.RemotePort,
-						"role":           c.Role,
+						"role_family":    roleFamily,
 						"process":        c.Proc.Name,
 						"pid":            c.Proc.Pid,
 						"scope":          scope,
 					},
-				}, linkKey)
-
-				if userName != "" && userName != "(unknown)" {
-					userID := "user:" + strings.ToLower(userName)
-					userEdgeKind := "UserSuspTrafficExternal"
-					if scope == "internal" {
-						userEdgeKind = "UserSuspTrafficInternal"
-					} else if scope == "loopback" {
-						userEdgeKind = "UserSuspTrafficLoopback"
-					}
-					userKey := fmt.Sprintf("%s|%s|%s|%d|%d", userEdgeKind, userID, endpointID, cn.LocalPort, cn.RemotePort)
-					addEdge(Edge{
-						Kind: userEdgeKind,
-						Start: Ref{
-							Value:   userID,
-							MatchBy: "id",
-						},
-						End: Ref{
-							Value:   endpointID,
-							MatchBy: "id",
-						},
-						Properties: map[string]any{
-							"user":           userName,
-							"local_address":  cn.LocalAddress,
-							"local_port":     cn.LocalPort,
-							"remote_address": cn.RemoteAddress,
-							"remote_port":    cn.RemotePort,
-							"role":           c.Role,
-							"process":        c.Proc.Name,
-							"pid":            c.Proc.Pid,
-							"scope":          scope,
-						},
-					}, userKey)
-				}
+				}, userKey)
 			}
 		}
 	}
@@ -546,8 +620,12 @@ func edgeDescription(kind string, props map[string]any) string {
 		return fmt.Sprintf("Suspicious process %s (pid %s) connects to %s endpoint %s from %s (%s).", process, pid, scope, remote, local, state)
 	case "SuspConnectsToHostExternal", "SuspConnectsToHostInternal", "SuspConnectsToHostLoopback":
 		return fmt.Sprintf("Suspicious process %s (pid %s) connects to %s host %s from %s (%s).", process, pid, scope, remoteAddr, local, state)
+	case "LocalEndpointConnectsToHostExternal", "LocalEndpointConnectsToHostInternal", "LocalEndpointConnectsToHostLoopback":
+		return fmt.Sprintf("Local endpoint %s connects to %s host %s.", local, scope, remoteAddr)
 	case "LocalEndpointConnectsToExternal", "LocalEndpointConnectsToInternal", "LocalEndpointConnectsToLoopback":
 		return fmt.Sprintf("Local endpoint %s connects to %s endpoint %s.", local, scope, remote)
+	case "UserSuspTrafficHostExternal", "UserSuspTrafficHostInternal", "UserSuspTrafficHostLoopback":
+		return fmt.Sprintf("User %s has suspicious %s traffic to host %s via %s (pid %s).", user, scope, remoteAddr, process, pid)
 	case "UserSuspTrafficExternal", "UserSuspTrafficInternal", "UserSuspTrafficLoopback":
 		return fmt.Sprintf("User %s has suspicious %s traffic to %s via %s (pid %s).", user, scope, remote, process, pid)
 	default:
@@ -590,6 +668,17 @@ func hostOr(process, host string) string {
 	return process
 }
 
+func kindForScope(scope, externalKind, internalKind, loopbackKind string) string {
+	switch scope {
+	case "internal":
+		return internalKind
+	case "loopback":
+		return loopbackKind
+	default:
+		return externalKind
+	}
+}
+
 func WriteJSON(path string, payload Payload) error {
 	if path == "" {
 		return fmt.Errorf("output path is required")
@@ -615,17 +704,29 @@ func WriteJSON(path string, payload Payload) error {
 }
 
 func mapToSlice(m map[string]Node) []Node {
-	out := make([]Node, 0, len(m))
-	for _, v := range m {
-		out = append(out, v)
+	ids := make([]string, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	out := make([]Node, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, m[id])
 	}
 	return out
 }
 
 func edgeMapToSlice(m map[string]Edge) []Edge {
-	out := make([]Edge, 0, len(m))
-	for _, v := range m {
-		out = append(out, v)
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	out := make([]Edge, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, m[key])
 	}
 	return out
 }

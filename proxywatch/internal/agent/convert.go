@@ -39,6 +39,8 @@ func ToPBCandidate(c shared.Candidate) *pb.Candidate {
 		OutLongLived:           int32(c.OutLongLived),
 		OutShortLived:          int32(c.OutShortLived),
 		InboundTotal:           int32(c.InboundTotal),
+		TrafficVerified:        c.TrafficVerified,
+		StrongEvidence:         c.StrongEvidence,
 	}
 	for _, l := range c.Listeners {
 		out.Listeners = append(out.Listeners, ToPBListener(l))
@@ -74,6 +76,8 @@ func FromPBCandidate(p *pb.Candidate, host string) shared.Candidate {
 		OutLongLived:           int(p.OutLongLived),
 		OutShortLived:          int(p.OutShortLived),
 		InboundTotal:           int(p.InboundTotal),
+		TrafficVerified:        p.TrafficVerified,
+		StrongEvidence:         p.StrongEvidence,
 	}
 	for _, l := range p.Listeners {
 		if l == nil {

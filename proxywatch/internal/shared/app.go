@@ -43,11 +43,12 @@ type AppState struct {
 	CollectField       int
 	CollectEditing     bool
 
-	Candidates  []Candidate
-	Mode        AppMode
-	SelectedKey string
-	SelectedIdx int
-	InspectKey  string
+	Candidates     []Candidate
+	Mode           AppMode
+	SelectedKey    string
+	SelectedIdx    int
+	InspectKey     string
+	InspectExplain bool
 }
 
 type Scanner interface {
@@ -207,7 +208,7 @@ func ApplyScoreAndRoleFilters(cands []Candidate, minScore int, roleFilter map[st
 		if minScore > 0 && c.Score < minScore {
 			continue
 		}
-		if len(roleFilter) > 0 && !roleFilter[c.Role] {
+		if !RoleMatchesFilter(c.Role, roleFilter) {
 			continue
 		}
 		filtered = append(filtered, c)

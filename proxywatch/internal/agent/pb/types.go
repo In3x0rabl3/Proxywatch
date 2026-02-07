@@ -65,6 +65,8 @@ type Candidate struct {
 	OutLongLived           int32              `json:"out_long_lived"`
 	OutShortLived          int32              `json:"out_short_lived"`
 	InboundTotal           int32              `json:"inbound_total"`
+	TrafficVerified        bool               `json:"traffic_verified"`
+	StrongEvidence         bool               `json:"strong_evidence"`
 }
 
 type CandidateEnvelope struct {

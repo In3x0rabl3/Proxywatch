@@ -1,5 +1,7 @@
 package shared
 
+import "time"
+
 type ClassifyOptions struct {
 	MinScore    int
 	RoleFilter  map[string]bool
@@ -19,34 +21,132 @@ type ClassifierCache struct {
 
 type ClassifyFunc func(*Snapshot, ClassifyOptions, *ClassifierCache) []Candidate
 
+type ConnKey struct {
+	Pid        int
+	LocalAddr  string
+	LocalPort  int
+	RemoteAddr string
+	RemotePort int
+}
+
+type ProcHistory struct {
+	LastSeen       time.Time
+	LastActive     time.Time
+	LastSuspicious time.Time
+	SuspicionKind  int
+	StickyScore    int
+	LastOutRatio   float64
+	LastInRatio    float64
+	LastLoopRatio  float64
+	ShapeSamples   int
+}
+
+const (
+	SuspicionControl = 1
+	SuspicionProxy   = 2
+)
+
+var (
+	ConnFirstSeen             = make(map[ConnKey]time.Time)
+	ReverseControlMinDuration = 10 * time.Second
+	LongLivedOutboundMinAge   = 60 * time.Second
+	ShortLivedOutboundMaxAge  = 10 * time.Second
+	ShortLivedBurstWindow     = 30 * time.Second
+	SlowScanWindow            = 3 * time.Minute
+	BeaconSleepThreshold      = 60 * time.Second
+	BeaconMinIntervals        = 2
+	LocalTransportWindow      = 30 * time.Second
+	RecentClientSeen          = make(map[int]time.Time)
+	RecentOutboundSeen        = make(map[int]time.Time)
+	RecentInternalScanSeen    = make(map[int]time.Time)
+	ShortLivedBurstLast       = make(map[int]time.Time)
+	ShortLivedBurstCount      = make(map[int]int)
+	ShortLivedBurstInterval   = make(map[int]time.Duration)
+	ShortLivedBurstHits       = make(map[int]int)
+	ShortLivedIntervals       = make(map[int][]time.Duration)
+	InboundBurstLast          = make(map[int]time.Time)
+	InboundBurstCount         = make(map[int]int)
+	BeaconSeen                = make(map[int]time.Time)
+	LocalTransportLast        = make(map[int]time.Time)
+	ParentChildFreq           = make(map[string]int)
+	RareTupleCount            = make(map[string]int)
+	ActiveWindow              = 10 * time.Second
+	SuspicionWindow           = 5 * time.Minute
+	HistoryTTL                = 5 * time.Minute
+	CleanupInterval           = 30 * time.Second
+	ReverseStickyScore        = 90
+	ForwardStickyScore        = 70
+	ReverseControlBaseScore   = 40
+	MinInternalTargetsForRev  = 2
+	MinInternalPortsForRev    = 2
+	OutboundOnlyExternalCap   = 30
+	ShapeDeltaThreshold       = 0.35 // 35% shift triggers shape anomaly
+	BeaconJitterCoVMax        = 1.5  // tolerate broad jitter for callback cadence
+	// How far to demote traffic that matches verified destinations without strong evidence in the TUI ranking.
+	TrafficVerifiedPenalty = 100
+	// Minimum external target prefix diversity to treat traffic as verified on benign ports.
+	VerifiedExternalMinPrefixes = 5
+	ProcHistoryByPID            = make(map[int]*ProcHistory)
+	LastHistoryCleanup          time.Time
+	BenignControlPorts          = map[int]bool{
+		53:   true,
+		22:   true,
+		80:   true,
+		443:  true,
+		8080: true,
+		8443: true,
+		8000: true,
+		8001: true,
+		8008: true,
+		8888: true,
+	}
+)
+
 func RolePriority(role string) int {
 	switch role {
 	case "reverse-transport":
-		return 90
+		return 100
 	case "reverse-proxy":
-		return 80
-	case "proxy-listener":
-		return 70
+		return 96
 	case "susp-tun":
-		return 68
+		return 94
+	case "reverse-tunnel":
+		return 92
+	case "reverse-control":
+		return 90
 	case "susp-session":
-		return 66
+		return 88
 	case "susp-beacon":
-		return 65
-	case "listener-with-clients":
+		return 86
+	case "proxy-listener":
 		return 60
+	case "listener-with-clients":
+		return 55
 	case "listener-with-outbound":
 		return 50
-	case "reverse-control":
-		return 40
-	case "reverse-tunnel":
-		return 35
 	case "listener-only":
-		return 30
+		return 45
 	case "outbound-only":
-		return 10
+		return 20
 	default:
 		return 0
+	}
+}
+
+func RoleFamily(role string) string {
+	switch role {
+	case "reverse-transport", "reverse-proxy", "reverse-tunnel", "susp-tun":
+		return "tunnel"
+	case "reverse-control", "susp-session":
+		return "session"
+	case "susp-beacon":
+		return "beacon"
+	case "proxy-listener", "listener-with-clients", "listener-with-outbound", "listener-only":
+		return "listener"
+	case "outbound-only":
+		return "outbound"
+	default:
+		return "other"
 	}
 }
 
@@ -57,4 +157,53 @@ func IsControlChannelRole(role string) bool {
 	default:
 		return false
 	}
+}
+
+// CandidateLess defines a consistent ordering for candidates.
+func CandidateLess(a, b Candidate) bool {
+	famA := roleFamilyPriority(a.Role)
+	famB := roleFamilyPriority(b.Role)
+	if famA != famB {
+		return famA > famB
+	}
+
+	priA := candidatePriority(a)
+	priB := candidatePriority(b)
+	if priA != priB {
+		return priA > priB
+	}
+	if a.ActiveProxying != b.ActiveProxying {
+		return a.ActiveProxying && !b.ActiveProxying
+	}
+	if a.OutInternal != b.OutInternal {
+		return a.OutInternal > b.OutInternal
+	}
+	if a.OutTotal != b.OutTotal {
+		return a.OutTotal > b.OutTotal
+	}
+	if a.Score == b.Score && a.Proc != nil && b.Proc != nil {
+		return a.Proc.Pid < b.Proc.Pid
+	}
+	return a.Score > b.Score
+}
+
+func roleFamilyPriority(role string) int {
+	switch RoleFamily(role) {
+	case "tunnel":
+		return 4
+	case "session":
+		return 3
+	case "beacon":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func candidatePriority(c Candidate) int {
+	pri := RolePriority(c.Role)
+	if c.TrafficVerified && !c.StrongEvidence {
+		pri -= TrafficVerifiedPenalty
+	}
+	return pri
 }
