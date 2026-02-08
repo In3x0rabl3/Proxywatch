@@ -1,24 +1,19 @@
 # Proxywatch TODO
 
-## Ranking & Telemetry
-- Validate process traffic by destination (ASN/org, domain/SNI, cert, port fit) and weight score by mismatch.
-- Add publisher/path trust signals (signed vendor + system path) as a soft demotion only when destinations are benign.
-- Reduce false positives for developer tools (VS Code, browsers)
+## Classification Tuning
+- Further reduce false positives for common enterprise apps (`OneDrive`, browsers, IDE traffic) without hardcoded process names.
+- Refine beacon/session separation for mixed traffic workloads (long-lived control + periodic bursts).
+- Expand delegated-egress attribution confidence for proxy-brokered traffic on Windows.
 
-## BloodHound Export / Graph Quality
-- Ensure host identity (e.g., HOST:LOK vs ENDPOINT:172.16.1.130 or just HOST).
-- Prefer Host nodes when IPs map to known hosts; avoid creating duplicate endpoint nodes.
-- Provide host → process → host query examples in `docs/queries.md`.
-- Verify graph roots start at Host nodes in common queries.
+## BloodHound Workflow
+- Add a release validation checklist that verifies all queries in `docs/queries.md` against a fresh collection.
+- Add operator-facing query presets in the TUI collection workflow (export/copy helper).
+- Document troubleshooting flow for upload auth failures (`401`, missing env, HMAC vs bearer mismatch).
 
-## Collection / Endpoint Context
-- Attach host IPs reliably to telemetry snapshots.
-- Improve mapping of known hosts vs unknown endpoints in collection output.
-- Track multi-hop / double-pivot flows and expose them in queries.
+## Operator UX
+- Add a compact status line for why a role changed since last refresh.
+- Add optional operator control for candidate linger duration in the TUI.
+- Improve inspect-mode readability for dense process connection sets (paging/filtering).
 
-## Build / Packaging
-- Windows binaries should include architecture in name (e.g., `proxywatch-windows-amd64`, `pwa-windows-amd64`).
-
-## Codebase Hygiene
-- Slim unused code paths, remove dead flags/config (e.g., unused policy JSON).
-- Reorganize project structure for clarity (group telemetry, classifier, UI, BH export).
+## Packaging
+- Standardize artifact naming and release manifest across Linux and Windows builds.

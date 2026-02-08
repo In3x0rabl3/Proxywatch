@@ -63,13 +63,15 @@ type IOSample struct {
 }
 
 type ScannerAdapter struct {
-	Options   ClassifyOptions
-	Cache     ClassifierCache
-	LastIO    map[int]IOSample
-	HostID    string
-	Whitelist *Whitelist
-	Collect   func() (*Snapshot, error)
-	Classify  ClassifyFunc
+	Options     ClassifyOptions
+	Cache       ClassifierCache
+	LastIO      map[int]IOSample
+	HostID      string
+	Whitelist   *Whitelist
+	LingerFor   time.Duration
+	LingerCache map[string]LingerEntry
+	Collect     func() (*Snapshot, error)
+	Classify    ClassifyFunc
 }
 
 func (s *ScannerAdapter) Refresh(app *AppState) {
@@ -106,6 +108,7 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 		cands[i].Host = s.HostID
 	}
 	ApplyIORates(cands, now, &s.LastIO)
+	cands = ApplyCandidateLinger(cands, now, s.LingerFor, &s.LingerCache)
 	cands = ApplyWhitelist(cands, s.Whitelist)
 	ApplySelection(app, cands, now)
 }

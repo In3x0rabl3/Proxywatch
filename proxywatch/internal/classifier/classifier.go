@@ -54,6 +54,10 @@ func Classify(
 			ScoreCandidate(c)
 		}
 
+		if !shouldDisplayCandidate(c, now) {
+			continue
+		}
+
 		if !shared.RoleMatchesFilter(c.Role, opts.RoleFilter) {
 			continue
 		}
@@ -76,6 +80,11 @@ func Classify(
 }
 
 func buildCandidates(snap *shared.Snapshot) []shared.Candidate {
+	now := snap.Timestamp
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
 	lmap := make(map[int][]shared.ListenerInfo)
 	for _, l := range snap.Listeners {
 		lmap[l.Pid] = append(lmap[l.Pid], l)
@@ -101,7 +110,9 @@ func buildCandidates(snap *shared.Snapshot) []shared.Candidate {
 	for pid := range umap {
 		seen[pid] = true
 	}
-	now := time.Now()
+	seedConnHistoryFromSnapshot(cmap, now)
+	delegated := correlateDelegatedEgress(snap, cmap, seen, now)
+
 	for pid, t := range shared.BeaconSeen {
 		if now.Sub(t) <= shared.SuspicionWindow {
 			seen[pid] = true
@@ -116,10 +127,14 @@ func buildCandidates(snap *shared.Snapshot) []shared.Candidate {
 		}
 
 		out = append(out, shared.Candidate{
-			Proc:         proc,
-			Listeners:    lmap[pid],
-			Conns:        cmap[pid],
-			UDPListeners: umap[pid],
+			Proc:              proc,
+			Listeners:         lmap[pid],
+			Conns:             cmap[pid],
+			UDPListeners:      umap[pid],
+			DelegatedEgress:   delegated[pid].ownerPID > 0,
+			DelegatedStrong:   delegated[pid].strong,
+			DelegatedOwnerPID: delegated[pid].ownerPID,
+			DelegatedOwner:    delegated[pid].ownerName,
 		})
 	}
 

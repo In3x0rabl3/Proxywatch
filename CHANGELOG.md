@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-02-08
+
+### Added
+- ASN organization resolution in inspect mode for external destinations.
+- ASN-assisted scoring as a bounded secondary signal (alignment/mismatch with process context).
+- Candidate linger window so short-lived suspicious processes remain visible briefly in the TUI.
+- Collection upload configuration diagnostics in TUI status (explicit missing env feedback).
+
+### Changed
+- Beacon/session precedence: active long-lived control channels now stay session-oriented instead of flipping to beacon.
+- BloodHound collector now emits endpoint edges consistently and includes known-host context in endpoint labels.
+- Known host mappings now annotate endpoint relationships with remote host context when available.
+- BloodHound upload env loading accepts common aliases for URL/token/token-id variables.
+- Collector code path simplified to reduce repeated edge-property construction.
+
+### Fixed
+- Frequent mislabeling where persistent session channels were promoted to beacons.
+- BloodHound collection troubleshooting visibility when env vars are missing in the running process (common with `sudo`).
+- Graph readability in BloodHound by including hostname context on endpoint nodes when IP-to-host mapping exists.
+
+### Removed
+- Unused upload helper path in BloodHound auth code.
+- Repository `*_test.go` files.
+
 ## [1.0.1] - 2026-02-01
 
 ### Added

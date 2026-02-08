@@ -550,6 +550,8 @@ func finalizeCollection(app *shared.AppState) {
 	payload := bloodhound.BuildGraph(app.CollectData, app.CollectRoleFilter)
 	if err := bloodhound.WriteJSON(app.CollectOutput, payload); err != nil {
 		app.LastError = "collection failed: " + err.Error()
+	} else if configured, reason := bloodhound.UploadConfigStatus(); !configured {
+		app.LastError = "collection written: " + app.CollectOutput + " (upload skipped: " + reason + ")"
 	} else if err := bloodhound.UploadIfConfigured(filepath.Base(app.CollectOutput), payload); err != nil {
 		app.LastError = "collection written, upload failed: " + err.Error()
 	} else {

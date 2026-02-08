@@ -255,6 +255,8 @@ func parseUDPv6(r *shared.MIBUDP6OwnerPID) shared.UDPListenerInfo {
 }
 
 func Collect() (*shared.Snapshot, error) {
+	preProcs, _ := GetProcessInfoMap()
+
 	listeners, conns, err := GetTCPTable()
 	if err != nil {
 		return nil, fmt.Errorf("netstat: %w", err)
@@ -274,6 +276,8 @@ func Collect() (*shared.Snapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("process: %w", err)
 	}
+	procs = mergeProcessMaps(preProcs, procs)
+	procs = burstProcessCapture(procs, 2, 5*time.Millisecond)
 
 	udpListeners, _ := GetUDPTable()
 
@@ -284,6 +288,60 @@ func Collect() (*shared.Snapshot, error) {
 		Connections:  conns,
 		UDPListeners: udpListeners,
 	}, nil
+}
+
+func mergeProcessMaps(base map[int]*shared.ProcessInfo, extra map[int]*shared.ProcessInfo) map[int]*shared.ProcessInfo {
+	if len(base) == 0 {
+		return extra
+	}
+	if len(extra) == 0 {
+		return base
+	}
+
+	out := make(map[int]*shared.ProcessInfo, len(base)+len(extra))
+	for pid, proc := range base {
+		if proc == nil {
+			continue
+		}
+		out[pid] = proc
+	}
+	for pid, proc := range extra {
+		if proc == nil {
+			continue
+		}
+		out[pid] = proc
+	}
+	return out
+}
+
+func burstProcessCapture(base map[int]*shared.ProcessInfo, samples int, sleep time.Duration) map[int]*shared.ProcessInfo {
+	if samples <= 1 {
+		return base
+	}
+
+	out := make(map[int]*shared.ProcessInfo, len(base))
+	for pid, proc := range base {
+		if proc == nil {
+			continue
+		}
+		out[pid] = proc
+	}
+
+	for i := 1; i < samples; i++ {
+		time.Sleep(sleep)
+		procs, err := GetProcessInfoMap()
+		if err != nil {
+			continue
+		}
+		for pid, proc := range procs {
+			if proc == nil {
+				continue
+			}
+			out[pid] = proc
+		}
+	}
+
+	return out
 }
 
 func burstCapture(

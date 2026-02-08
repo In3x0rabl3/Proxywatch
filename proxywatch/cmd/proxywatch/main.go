@@ -82,6 +82,7 @@ func main() {
 			MinScore:   minScore,
 			RoleFilter: uiRoleFilter,
 			Whitelist:  whitelist,
+			LingerFor:  shared.CandidateLingerTTL,
 		}
 
 		if err := ui.Run(app, sc); err != nil {
@@ -103,6 +104,7 @@ func main() {
 		Classify:  classifier.Classify,
 		HostID:    hostID,
 		Whitelist: whitelist,
+		LingerFor: shared.CandidateLingerTTL,
 	}
 
 	if err := ui.Run(app, sc); err != nil {

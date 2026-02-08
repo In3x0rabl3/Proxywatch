@@ -30,15 +30,17 @@ type ConnKey struct {
 }
 
 type ProcHistory struct {
-	LastSeen       time.Time
-	LastActive     time.Time
-	LastSuspicious time.Time
-	SuspicionKind  int
-	StickyScore    int
-	LastOutRatio   float64
-	LastInRatio    float64
-	LastLoopRatio  float64
-	ShapeSamples   int
+	LastSeen        time.Time
+	LastActive      time.Time
+	LastSuspicious  time.Time
+	SuspicionKind   int
+	StickyScore     int
+	DisplayStreak   int
+	LastDisplayEval time.Time
+	LastOutRatio    float64
+	LastInRatio     float64
+	LastLoopRatio   float64
+	ShapeSamples    int
 }
 
 const (

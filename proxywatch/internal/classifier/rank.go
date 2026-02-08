@@ -3,6 +3,7 @@ package classifier
 import (
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"proxywatch/internal/shared"
@@ -24,6 +25,26 @@ func ScoreCandidate(c *shared.Candidate) {
 	p := c.Proc
 	now := time.Now()
 	benignClient := shared.IsLikelyBenignControlClient(p)
+	delegatedReason := ""
+	if c.DelegatedEgress {
+		addSignal("delegated-egress")
+		if c.DelegatedStrong {
+			addSignal("delegated-egress-strong")
+		}
+		owner := c.DelegatedOwner
+		if owner == "" {
+			owner = "(unknown)"
+		}
+		if c.DelegatedOwnerPID > 0 {
+			delegatedReason = fmt.Sprintf(
+				"No direct socket ownership observed; likely delegated via %s (PID %d)",
+				owner,
+				c.DelegatedOwnerPID,
+			)
+		} else {
+			delegatedReason = "No direct socket ownership observed; likely delegated via proxy broker process"
+		}
+	}
 	hist := getHistory(p.Pid, now)
 	updateConnHistory(p.Pid, c.Conns, now)
 	updateParentFreq(p)
@@ -253,11 +274,13 @@ func ScoreCandidate(c *shared.Candidate) {
 		beaconRecent = true
 		addSignal("beacon-recent")
 	}
+	beaconCadenceEvidence := burstRecent || beaconRecent || beaconConfirmed
+	beaconLongLivedOK := outLongLived == 0 || beaconConfirmed || beaconRecent
 	beaconEligible := !reverseProxyNow &&
 		!localTransportRecent &&
 		!internalScanRecent &&
-		outLongLived == 0 &&
-		(burstRecent || beaconRecent) &&
+		beaconLongLivedOK &&
+		beaconCadenceEvidence &&
 		!shared.IsLikelyBenignBeacon(p)
 	if beaconEligible {
 		addSignal("beacon-eligible")
@@ -334,6 +357,17 @@ func ScoreCandidate(c *shared.Candidate) {
 		reverseControl = false
 		reverseControlSuppressed = true
 		addSignal("reverse-control-suppressed-shape")
+	}
+	if reverseControl &&
+		outLongLived == 0 &&
+		(beaconConfirmed || (beaconRecent && burstRecent)) &&
+		!hasListener &&
+		!localTransportRecent &&
+		!internalScanRecent &&
+		!reverseProxyNow {
+		reverseControl = false
+		reverseControlSuppressed = true
+		addSignal("reverse-control-suppressed-beacon-shape")
 	}
 	if reverseControl {
 		addSignal("reverse-control")
@@ -527,7 +561,32 @@ func ScoreCandidate(c *shared.Candidate) {
 		}
 	}
 
-	if canPromoteBeaconRole(c.Role, reverseControl, controlConn) {
+	if c.DelegatedStrong &&
+		c.Role == "outbound-only" &&
+		controlConn != nil &&
+		!hasListener &&
+		!localTransportRecent &&
+		!internalScanRecent {
+		c.Role = "susp-session"
+		c.ActiveProxying = false
+		addSignal("susp-session")
+		c.Reasons = append(c.Reasons, "Delegated control-channel shape is consistent with a reverse session")
+		if c.Score < 45 {
+			c.Score = 45
+		}
+	}
+
+	if canPromoteBeaconRole(
+		c.Role,
+		reverseControl,
+		controlConn,
+		beaconConfirmed,
+		beaconRecent,
+		hasListener,
+		localTransportRecent,
+		internalScanRecent,
+		outLongLived,
+	) {
 		if beaconBlocked {
 			addSignal("beacon-promotion-blocked")
 		}
@@ -574,9 +633,13 @@ func ScoreCandidate(c *shared.Candidate) {
 
 	c.TrafficVerified = trafficVerified
 	c.StrongEvidence = strongEvidence
+	if delegatedReason != "" {
+		c.Reasons = append(c.Reasons, delegatedReason)
+	}
 	if trafficVerified && !strongEvidence {
 		c.Reasons = append(c.Reasons, "Traffic matches verified destinations (de-emphasized)")
 	}
+	applyASNRankAssist(c, p, addSignal)
 
 	c.Signals = signals
 	c.Confidence = confidenceFor(c.Role, c.Score, c.ActiveProxying)
@@ -1160,6 +1223,62 @@ func min(a, b int) int {
 	return b
 }
 
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func applyASNRankAssist(c *shared.Candidate, p *shared.ProcessInfo, addSignal func(string)) {
+	if c == nil || p == nil || addSignal == nil {
+		return
+	}
+	if c.ControlChannel == nil || c.OutExternal == 0 {
+		return
+	}
+
+	orgs, pending, _ := shared.ResolveExternalASNOrgs(c.Conns)
+	if len(orgs) == 0 {
+		if pending > 0 {
+			addSignal("asn-org-pending")
+		}
+		return
+	}
+
+	aligned := shared.ASNOrgAlignedWithProcess(p, orgs)
+	companyKnown := strings.TrimSpace(p.Company) != ""
+	if aligned {
+		addSignal("asn-org-aligned")
+		c.Reasons = append(c.Reasons, "ASN organization aligns with process publisher/path context")
+		if c.StrongEvidence {
+			return
+		}
+		penalty := 6
+		if companyKnown {
+			penalty = 10
+		}
+		c.Score = max(0, c.Score-penalty)
+		return
+	}
+
+	if !companyKnown || c.StrongEvidence {
+		return
+	}
+
+	family := shared.RoleFamily(c.Role)
+	switch family {
+	case "session", "beacon", "tunnel":
+		c.Score += 8
+		addSignal("asn-org-mismatch")
+		c.Reasons = append(c.Reasons, "ASN organization does not align with process publisher context")
+	case "outbound":
+		c.Score += 4
+		addSignal("asn-org-mismatch")
+		c.Reasons = append(c.Reasons, "ASN organization does not align with process publisher context")
+	}
+}
+
 func shapeDelta(cur, prev float64) float64 {
 	if prev == 0 && cur == 0 {
 		return 0
@@ -1214,12 +1333,33 @@ func beaconPatternConfirmed(pid int, now time.Time) (confirmed bool, interval ti
 	return true, interval, jitter, hits
 }
 
-func canPromoteBeaconRole(role string, reverseControl bool, controlConn *shared.ConnectionInfo) bool {
+func canPromoteBeaconRole(
+	role string,
+	reverseControl bool,
+	controlConn *shared.ConnectionInfo,
+	beaconConfirmed bool,
+	beaconRecent bool,
+	hasListener bool,
+	localTransportRecent bool,
+	internalScanRecent bool,
+	outLongLived int,
+) bool {
 	switch role {
 	case "susp-tun", "reverse-proxy", "reverse-transport":
 		return false
 	case "reverse-control", "susp-session":
-		// Allow beacon to take over stale session labels only when no current control channel exists.
+		// Active long-lived control channels should stay session/tunnel roles.
+		if reverseControl || controlConn != nil || outLongLived > 0 {
+			return false
+		}
+		// Allow strong beacon evidence to override session labels when there is no tunnel shape.
+		if (beaconConfirmed || beaconRecent) &&
+			!hasListener &&
+			!localTransportRecent &&
+			!internalScanRecent {
+			return true
+		}
+		// Otherwise beacon can only take over stale session labels with no current control channel.
 		return !reverseControl && controlConn == nil
 	default:
 		return true

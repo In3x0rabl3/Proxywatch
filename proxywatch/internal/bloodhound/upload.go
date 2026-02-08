@@ -82,10 +82,6 @@ func UploadIfConfigured(filename string, payload Payload) error {
 	return nil
 }
 
-func signOrBearer(req *http.Request, body []byte) error {
-	return signOrBearerWithKeyMode(req, body, false)
-}
-
 func signOrBearerWithKeyMode(req *http.Request, body []byte, decodedKey bool) error {
 	if BloodhoundAPITokenID == "" {
 		// Prevent a confusing 401 when users provide an HMAC token key without token id.
@@ -180,15 +176,39 @@ func refreshConfigFromEnv() {
 	BloodhoundAPIToken = ""
 	BloodhoundAPITokenID = ""
 
-	if v := strings.TrimSpace(os.Getenv("BLOODHOUND_API_URL")); v != "" {
+	if v := readFirstEnv("BLOODHOUND_API_URL", "BLOODHOUND_URL"); v != "" {
 		BloodhoundAPIURL = strings.TrimRight(v, "/")
 	}
-	if v := readFirstEnv("BLOODHOUND_API_TOKEN", "BLOODHOUND_API_KEY"); v != "" {
+	if v := readFirstEnv("BLOODHOUND_API_TOKEN", "BLOODHOUND_API_KEY", "BLOODHOUND_TOKEN"); v != "" {
 		BloodhoundAPIToken = v
 	}
-	if v := readFirstEnv("BLOODHOUND_API_TOKEN_ID", "BLOODHOUND_API_ID"); v != "" {
+	if v := readFirstEnv("BLOODHOUND_API_TOKEN_ID", "BLOODHOUND_API_ID", "BLOODHOUND_TOKEN_ID"); v != "" {
 		BloodhoundAPITokenID = v
 	}
+}
+
+// UploadConfigStatus reports if upload is configured and, if not, why.
+func UploadConfigStatus() (configured bool, reason string) {
+	refreshConfigFromEnv()
+
+	missing := make([]string, 0, 3)
+	if BloodhoundAPIURL == "" {
+		missing = append(missing, "BLOODHOUND_API_URL")
+	}
+	if BloodhoundAPIToken == "" {
+		missing = append(missing, "BLOODHOUND_API_TOKEN")
+	}
+	if len(missing) > 0 {
+		return false, "missing " + strings.Join(missing, ", ")
+	}
+
+	if looksLikeTokenKey(BloodhoundAPIToken) &&
+		!looksLikeJWT(BloodhoundAPIToken) &&
+		BloodhoundAPITokenID == "" {
+		return false, "missing BLOODHOUND_API_TOKEN_ID (or BLOODHOUND_API_ID) for HMAC token key"
+	}
+
+	return true, ""
 }
 
 func authMode() string {

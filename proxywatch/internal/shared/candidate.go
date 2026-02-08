@@ -14,6 +14,12 @@ type Candidate struct {
 	Conns        []ConnectionInfo
 	UDPListeners []UDPListenerInfo
 
+	// Delegated egress: process likely initiated traffic socket-owned by another process.
+	DelegatedEgress   bool
+	DelegatedStrong   bool
+	DelegatedOwnerPID int
+	DelegatedOwner    string
+
 	// classifier-owned fields
 	Score          int
 	Confidence     int
@@ -108,6 +114,7 @@ const (
 	BurstModerateConnThreshold = 25
 
 	ProcessMetaCacheTTL = 60 * time.Second
+	CandidateLingerTTL  = 20 * time.Second
 )
 
 func CandidateKey(c Candidate) string {

@@ -108,11 +108,13 @@ func (s *Store) Snapshot(staleAfter time.Duration) []shared.Candidate {
 }
 
 type RemoteScanner struct {
-	Store      *Store
-	StaleAfter time.Duration
-	MinScore   int
-	RoleFilter map[string]bool
-	Whitelist  *shared.Whitelist
+	Store       *Store
+	StaleAfter  time.Duration
+	MinScore    int
+	RoleFilter  map[string]bool
+	Whitelist   *shared.Whitelist
+	LingerFor   time.Duration
+	LingerCache map[string]shared.LingerEntry
 }
 
 func (r *RemoteScanner) Refresh(app *shared.AppState) {
@@ -125,10 +127,12 @@ func (r *RemoteScanner) Refresh(app *shared.AppState) {
 	if app != nil && len(app.RoleFilterOverride) > 0 {
 		roleFilter = app.RoleFilterOverride
 	}
+	now := time.Now().UTC()
 	cands := r.Store.Snapshot(r.StaleAfter)
+	cands = shared.ApplyCandidateLinger(cands, now, r.LingerFor, &r.LingerCache)
 	cands = shared.ApplyScoreAndRoleFilters(cands, r.MinScore, roleFilter)
 	cands = shared.ApplyWhitelist(cands, r.Whitelist)
-	shared.ApplySelection(app, cands, time.Now().UTC())
+	shared.ApplySelection(app, cands, now)
 }
 
 type Server struct {
