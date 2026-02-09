@@ -26,14 +26,6 @@ go mod download
 make
 ```
 
-Artifacts are written to `proxywatch/build`.
-
-### Run Local TUI
-```bash
-cd build
-sudo ./proxywatch-linux-amd64
-```
-
 ### Run Ingest Mode (multi-host)
 ```bash
 sudo ./proxywatch-linux-amd64 -listen 0.0.0.0:50051
@@ -54,7 +46,7 @@ Agent example:
 - `c`: open collection workflow
 - `q`: quit
 
-## Roles (Operator View)
+## Roles
 
 | Role | Meaning |
 | --- | --- |
@@ -64,39 +56,49 @@ Agent example:
 | `listener-*` | Listener variants (`clients`, `outbound`, or `only`) |
 | `outbound-only` | Outbound traffic with no suspicious control shape |
 
-## How Classification Works (Low-Level)
+## How Classification Works
 
 Classification logic is in `proxywatch/internal/classifier/rank.go`.
 State/threshold values are in `proxywatch/internal/shared/classify.go`.
 
 Core signals:
-- Control channel: long-lived `ESTABLISHED` outbound connection (age-based).
-- Tunnel shape: listener + control + local/internal fanout patterns.
-- Beacon shape: recurring short-lived callbacks with cadence/jitter checks.
-- Destination verification: internal/external scope and prefix diversity.
+- Control channel: long lived `ESTABLISHED` outbound connection (age-based).
+
+- Tunnel: listener + control + local/internal patterns.
+
+- Beacon: recurring short lived callbacks with cadence/jitter checks.
+
+- Destination verification: internal/external scope and prefix.
+
 - ASN assist: resolved ASN org alignment/mismatch as a bounded secondary score adjustment.
+
 - Stability guards: session/beacon precedence and display smoothing to reduce role thrash.
 
 Current behavior notes:
-- Active long-lived control channels stay session-oriented (avoid random beacon flips).
-- Short-lived suspicious processes are retained briefly in UI (linger window) so operators can inspect them.
+- Active long lived control channels stay as sessions.
+
+- Short lived suspicious processes are retained briefly in TUI so operators can inspect them before they disappear.
 
 ## Inspect Mode
 
 Inspect mode displays:
 - Process identity: user, path, parent PID, integrity.
+
 - Traffic summary: `Proto In/Out`, established, listeners.
+
 - Connection list: local/remote/state/scope.
+
 - ASN orgs: resolved external destination org context.
+
 - Explain block (`x`): reasons + signals used for current role.
 
 ## BloodHound Collection
 
-Collection is TUI-driven:
+Collection:
 1. Press `c`
 2. Set output/duration/roles
 3. Start collection
-4. JSON is written when timer ends (or stop early)
+4. JSON is written or uploaded via API
 
 Cypher query pack:
 - `docs/queries.md`
@@ -109,24 +111,9 @@ export BLOODHOUND_API_TOKEN='<token-or-key>'
 export BLOODHOUND_API_ID='<id-for-hmac-keys>'
 ```
 
-If running as root, preserve env:
-```bash
-sudo --preserve-env=BLOODHOUND_API_URL,BLOODHOUND_API_TOKEN,BLOODHOUND_API_ID ./proxywatch-linux-amd64
-```
-
-Accepted aliases:
-- URL: `BLOODHOUND_API_URL`, `BLOODHOUND_URL`
-- Token: `BLOODHOUND_API_TOKEN`, `BLOODHOUND_API_KEY`, `BLOODHOUND_TOKEN`
-- Token ID: `BLOODHOUND_API_TOKEN_ID`, `BLOODHOUND_API_ID`, `BLOODHOUND_TOKEN_ID`
-
 ### Collector Graph Behavior
 Collector logic: `proxywatch/internal/bloodhound/collect.go`
 
-- Emits Host/User/Process/Endpoint nodes.
-- If a remote IP maps to a known host, collection emits both:
-  - host pivot edges (`SuspConnectsToHost*`), and
-  - endpoint edges (`SuspConnectsTo*`) for endpoint-based queries.
-- Endpoint labels include hostname context when known.
 
 ### BloodHound Examples
 
@@ -147,10 +134,13 @@ Collector logic: `proxywatch/internal/bloodhound/collect.go`
 Edit these files for tuning:
 - `proxywatch/internal/shared/classify.go`
   - time windows, scoring caps, beacon thresholds, role family ordering.
+
 - `proxywatch/internal/classifier/rank.go`
   - role promotion/demotion logic and evidence handling.
+
 - `proxywatch/internal/shared/helper.go`
   - benign-context helpers (path/company/service context checks).
+
 - `proxywatch/cmd/proxywatch/main.go`
   - startup defaults (`minScore`, refresh interval, role filter defaults).
 
@@ -164,4 +154,3 @@ Edit these files for tuning:
 ## Notes
 - Whitelist is stored on disk and applied after classification.
 - Kill actions may require elevation.
-- For release notes, see `CHANGELOG.md`.
