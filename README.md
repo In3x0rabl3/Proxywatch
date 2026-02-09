@@ -1,12 +1,12 @@
 # ProxyWatch
 
-ProxyWatch is a process network monitor that classifies processes into roles based on a number of signals, nothing complicated, we just simply are mapping out the patterns of common and malicious processes. We then take this data and apply it to each process!
+ProxyWatch is a process network monitor that classifies processes into roles based on a number of signals. It's nothing complicated, we just simply are mapping and learning how legitimate processes act, while doing the same for malicious processes. We then take this data, train, learn and apply a role to each process.
 
 ## Features
 
-- Terminal User Interface (TUI), giving operators a clean view
+- Proxywatch has a Terminal User Interface (TUI), giving operators a clean view of each process.
 
-- Processes are assigned via roles (`tunnel`, `session`, `beacon` pushed to the top of the TUI). Operator can also view roles such as (`outbound`, `listner`, `reverse proxy`)
+- Processes are assigned via roles (`Tunnel`, `session`, `beacon` pushed to the top of the TUI). Operator can also view roles such as (`outbound`, `listner`, `reverse proxy`)
 
 - Run ProxyWatch locally or ingest multiple endpoints
 
