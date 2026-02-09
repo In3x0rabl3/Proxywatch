@@ -58,9 +58,9 @@ sudo ./proxywatch-linux-amd64 -listen 0.0.0.0:50051
 
 | Role | Meaning |
 | --- | --- |
-| `susp-tun` | Session/tunnel behavior with strong tunnel evidence |
-| `susp-session` | Persistent control channel without tunnel proxy shape |
-| `susp-beacon` | Recurring callback pattern (cadence-driven) |
+| `Tunnel` | Session/tunnel behavior with strong tunnel evidence |
+| `Session` | Persistent control channel without tunnel proxy shape |
+| `Beacon` | Recurring callback pattern (cadence-driven) |
 | `listener-*` | Listener variants (`clients`, `outbound`, or `only`) |
 | `outbound-only` | Outbound traffic with no suspicious control shape |
 
