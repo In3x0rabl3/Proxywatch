@@ -1,6 +1,6 @@
 # ProxyWatch
 
-ProxyWatch is a process network monitor that classifies processes into roles based on a number of signals. It's nothing complicated, we just simply are mapping and learning how legitimate processes act, while doing the same for malicious processes. We then take this data, train, learn and apply a role to each process.
+ProxyWatch is a process network monitor that classifies processes into roles based on a number of signals. It's nothing complicated, we just are mapping and learning how legitimate processes act, while doing the same for malicious processes. We then take this data, train, learn and apply a role to each process.
 
 ## Features
 
