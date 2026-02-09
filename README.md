@@ -1,15 +1,17 @@
 # ProxyWatch
 
-ProxyWatch is a userland process-network monitor that classifies processes into operator-relevant roles (`tunnel`, `session`, `beacon`, `listener`, `outbound`) using socket behavior and process context.
+ProxyWatch is a process network monitor that classifies processes into relevant roles (`tunnel`, `session`, `beacon`, `listener`, `outbound`) using socket behavior and process context.
 
-It does not require kernel drivers or packet capture.
+## Features
+- Live Terminal User Interface (TUI) with per-process inspect view.
 
-## What Operators Get
-- Live TUI with per-process inspect view.
-- Role-based prioritization (`susp-tun`, `susp-session`, `susp-beacon` at top).
+- Role based prioritization (`susp-tun`, `susp-session`, `susp-beacon` at top).
+
 - Local and remote ingest modes.
-- One-key BloodHound collection and optional auto-upload.
-- Explain/tuning data in inspect mode for role debugging.
+
+- BloodHound collection via Json or API key.
+
+- Tuning data in inspect mode for role debugging and enhancements.
 
 ## Demo
 
