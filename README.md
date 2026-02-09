@@ -1,17 +1,18 @@
 # ProxyWatch
 
-ProxyWatch is a process network monitor that classifies processes into relevant roles (`tunnel`, `session`, `beacon`, `listener`, `outbound`) using socket behavior and process context.
+ProxyWatch is a process network monitor that classifies processes into roles based on a number of signals, nothing complicated, we just simply are mapping out the patterns of common and malicious processes. We then take this data and apply it to each process!
 
 ## Features
-- Live Terminal User Interface (TUI) with per-process inspect view.
 
-- Role based prioritization (`susp-tun`, `susp-session`, `susp-beacon` at top).
+- Terminal User Interface (TUI), giving operators a clean view
 
-- Local and remote ingest modes.
+- Processes are assigned via roles (`tunnel`, `session`, `beacon` pushed to the top of the TUI). Operator can also view roles such as (`outbound`, `listner`, `reverse proxy`)
 
-- BloodHound collection via Json or API key.
+- Run ProxyWatch locally or ingest multiple endpoints
 
-- Tuning data in inspect mode for role debugging and enhancements.
+- BloodHound collections via Json files or API
+
+- Tuning the classification of roles in inspect moode.
 
 ## Demo
 
@@ -21,7 +22,8 @@ ProxyWatch is a process network monitor that classifies processes into relevant 
 
 ### Build
 ```bash
-cd proxywatch
+git clone https://github.com/In3x0rabl3/Proxywatch.git
+cd Proxywatch/proxywatch
 go mod download
 make
 ```
@@ -31,12 +33,12 @@ make
 sudo ./proxywatch-linux-amd64 -listen 0.0.0.0:50051
 ```
 
-Agent example:
+### Run Agents:
 ```bash
 ./pwa-windows-amd64.exe server <proxywatch-ip>:50051
 ```
 
-## TUI Keys
+## TUI
 - `UP/DOWN`: move selection
 - `ENTER`: inspect selected process
 - `x`: toggle explain details in inspect mode
@@ -46,6 +48,17 @@ Agent example:
 - `c`: open collection workflow
 - `q`: quit
 
+
+## Inspect
+
+
+- Traffic summary: `Proto In/Out`, established, listeners.
+
+- Connection list: local/remote/state/scope.
+
+- ASN orgs: resolved external destination org context.
+
+- Explain block (`x`): reasons + signals used for current role
 ## Roles
 
 | Role | Meaning |
@@ -78,19 +91,6 @@ Current behavior notes:
 - Active long lived control channels stay as sessions.
 
 - Short lived suspicious processes are retained briefly in TUI so operators can inspect them before they disappear.
-
-## Inspect Mode
-
-Inspect mode displays:
-- Process identity: user, path, parent PID, integrity.
-
-- Traffic summary: `Proto In/Out`, established, listeners.
-
-- Connection list: local/remote/state/scope.
-
-- ASN orgs: resolved external destination org context.
-
-- Explain block (`x`): reasons + signals used for current role.
 
 ## BloodHound Collection
 
