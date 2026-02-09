@@ -6,13 +6,13 @@ ProxyWatch is a process network monitor that classifies processes into roles bas
 
 - Proxywatch has a Terminal User Interface (TUI), giving operators a clean view of each process.
 
-- Processes are assigned via roles (`Tunnel`, `session`, `beacon` pushed to the top of the TUI). Operator can also view roles such as (`outbound`, `listner`, `reverse proxy`)
+- Processes are assigned multiple roles, but these roles are the suspicious ones (`Tunnel`, `Session`, `Beacon` pushed to the top of the TUI).
 
-- Run ProxyWatch locally or ingest multiple endpoints
+- You can run ProxyWatch locally or ingest multiple endpoints
 
-- BloodHound collections via Json files or API
+- Utilize BloodHound collections via Json files or API for auto ingestion
 
-- Tuning the classification of roles in inspect moode.
+- Using inspect mode, discover how a process is labeled
 
 ## Demo
 
@@ -79,7 +79,7 @@ Core signals:
 
 - Destination verification: internal/external scope and prefix.
 
-- ASN assist: resolved ASN org alignment/mismatch as a bounded secondary score adjustment.
+- ASN: resolved ASNs to orgs for alignment/mismatch as a bounded secondary score adjustment.
 
 - Stability guards: session/beacon precedence and display smoothing to reduce role thrash.
 
@@ -127,7 +127,7 @@ Collector logic: `proxywatch/internal/bloodhound/collect.go`
 
 ## Tuning Guide
 
-Edit these files for tuning:
+Edit for tuning:
 - `proxywatch/internal/shared/classify.go`
   - time windows, scoring caps, beacon thresholds, role family ordering.
 
@@ -135,7 +135,7 @@ Edit these files for tuning:
   - role promotion/demotion logic and evidence handling.
 
 - `proxywatch/internal/shared/helper.go`
-  - benign-context helpers (path/company/service context checks).
+  - benign context helpers (path/company/service context checks).
 
 - `proxywatch/cmd/proxywatch/main.go`
   - startup defaults (`minScore`, refresh interval, role filter defaults).
