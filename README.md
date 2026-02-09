@@ -56,13 +56,15 @@ sudo ./proxywatch-linux-amd64 -listen 0.0.0.0:50051
 
 ## Roles
 
-| Role | Meaning |
-| --- | --- |
-| `Tunnel` | Session/tunnel behavior with strong tunnel evidence |
-| `Session` | Persistent control channel without tunnel proxy shape |
-| `Beacon` | Recurring callback pattern (cadence-driven) |
-| `listener-*` | Listener variants (`clients`, `outbound`, or `only`) |
-| `outbound-only` | Outbound traffic with no suspicious control shape |
+ProxyWatch shows a role family plus the specific role in Inspect. Families are what you filter; specific roles show the exact shape.
+
+| Role (family) | Includes | Meaning |
+| --- | --- | --- |
+| `tunnel` | `reverse-tunnel`, `reverse-proxy`, `reverse-transport`, `susp-tun` | Process looks like a proxy/relay (inbound + outbound forwarding shape). |
+| `session` | `reverse-control`, `susp-session` | Persistent control channel without proxying evidence. |
+| `beacon` | `susp-beacon` | Recurring callback/check-in pattern (cadence and jitter). |
+| `listener` | `proxy-listener`, `listener-with-clients`, `listener-with-outbound`, `listener-only` | Process is listening for inbound connections (with or without clients/outbound). |
+| `outbound` | `outbound-only` | Outbound traffic with no strong control/tunnel shape. |
 
 ## How Classification Works
 
