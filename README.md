@@ -104,9 +104,9 @@ Cypher query pack:
 ### Upload Config
 Set env vars in the same shell that launches ProxyWatch:
 ```bash
-export BLOODHOUND_API_URL='http://<bh-host>:8282/api/v2'
-export BLOODHOUND_API_TOKEN='<token-or-key>'
-export BLOODHOUND_API_ID='<id-for-hmac-keys>'
+export BLOODHOUND_API_URL='http://<bloodhound>:8282/api/v2'
+export BLOODHOUND_API_TOKEN='<token>'
+export BLOODHOUND_API_ID='<id>'
 ```
 
 ### Collector Graph Behavior
