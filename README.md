@@ -41,8 +41,6 @@ sudo ./proxywatch-linux-amd64 -listen 0.0.0.0:50051
 ## TUI
 - `UP/DOWN`: move selection
 - `ENTER`: inspect selected process
-- `x`: toggle explain details in inspect mode
-- `k`: kill process (with confirmation)
 - `w`: whitelist selected process
 - `W`: manage whitelist entries
 - `c`: open collection workflow
@@ -50,15 +48,12 @@ sudo ./proxywatch-linux-amd64 -listen 0.0.0.0:50051
 
 
 ## Inspect
+- `k`: Kill local and remote processes 
+- `x`: Traffic reasons + signals
+- Connections: local/remote/state/scope
+- Autonomous System Number (ASN): Resolving ASNs to Organizations
 
 
-- Traffic summary: `Proto In/Out`, established, listeners.
-
-- Connection list: local/remote/state/scope.
-
-- ASN orgs: resolved external destination org context.
-
-- Explain block (`x`): reasons + signals used for current role
 ## Roles
 
 | Role | Meaning |
@@ -72,6 +67,7 @@ sudo ./proxywatch-linux-amd64 -listen 0.0.0.0:50051
 ## How Classification Works
 
 Classification logic is in `proxywatch/internal/classifier/rank.go`.
+
 State/threshold values are in `proxywatch/internal/shared/classify.go`.
 
 Core signals:
