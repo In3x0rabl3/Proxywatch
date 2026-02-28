@@ -152,3 +152,4 @@ Edit for tuning:
 ## Notes
 - Whitelist is stored on disk and applied after classification.
 - Kill actions may require elevation.
+- By default Proxywatch is set only show sessions and tunnels, the best way to examine is to set '-roles all'
