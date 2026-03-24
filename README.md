@@ -172,20 +172,6 @@ Cypher query pack:
 
 - `docs/queries.md`
 
-### Upload Config
-
-Configure upload values in the **Keystore** menu (`k`), then `Save` + `Apply`:
-
-- `BLOODHOUND_API_URL`
-- `BLOODHOUND_API_TOKEN`
-- `BLOODHOUND_API_TOKEN_ID` (required for HMAC key mode)
-
-Notes:
-
-- `BLOODHOUND_API_URL` can be tenant root (`https://tenant`) or full API base (`https://tenant/api/v2`); ProxyWatch normalizes to `/api/v2`.
-- Remote `http://` URLs are rejected for token safety (localhost HTTP is allowed).
-- Environment variables are only fallback compatibility input; keystore/runtime values are primary.
-
 Collector logic:
 
 - `proxywatch/internal/bloodhound/collect.go`
@@ -195,15 +181,15 @@ Collector logic:
 **Suspicious processes by user**
 
 <img width="1517" height="487" alt="Suspicious processes by user" src="https://github.com/user-attachments/assets/cb593db7-214e-453a-9a15-a771599f2e37" />
-
+<br>
 **Suspicious internal connection with object details**
 
 <img width="1485" height="769" alt="Suspicious internal connection details" src="https://github.com/user-attachments/assets/abe33759-1884-48a7-b575-4f16e61e6612" />
-
+<br>
 **Full internal connection chain**
 
 <img width="1577" height="602" alt="Full internal connection chain" src="https://github.com/user-attachments/assets/fda21094-b2bc-46f3-990a-eefd767f1bea" />
-
+<br>
 ## Tuning Guide
 
 Key edit points:
@@ -213,19 +199,6 @@ Key edit points:
 - `proxywatch/internal/shared/classify_memory.go`
 - `proxywatch/cmd/proxywatch/main.go`
 - `proxywatch/docs/architecture/CODEMAP.md`
-
-## CLI Flags
-
-- `-listen`: enable ingest server mode
-- `-connect`: integrated agent mode and stream to remote ingest
-- `-id`: override host identifier for agent mode
-- `-agent-token`: set shared token for agent/server auth
-- `-service`, `-install`, `-start`, `-stop`, `-uninstall`: Windows service controls (not supported on Linux)
-
-Detection export runtime keys (via keystore):
-
-- `PROXYWATCH_DETECT_DEBUG_LOG`: NDJSON debug log output path
-- `PROXYWATCH_DETECT_RULES_JSON`: defender JSON output path
 
 ## Notes
 
