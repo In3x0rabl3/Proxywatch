@@ -24,13 +24,12 @@ func IsProxywatchProcess(p *ProcessInfo) bool {
 		return false
 	}
 	path := strings.ToLower(strings.TrimSpace(p.ExePath))
-	if path == "" {
-		return false
-	}
 	path = strings.ReplaceAll(path, "\\", "/")
 	base := path
-	if idx := strings.LastIndexByte(base, '/'); idx >= 0 && idx+1 < len(base) {
-		base = base[idx+1:]
+	if base != "" {
+		if idx := strings.LastIndexByte(base, '/'); idx >= 0 && idx+1 < len(base) {
+			base = base[idx+1:]
+		}
 	}
 	name := strings.ToLower(strings.TrimSpace(p.Name))
 	if !hasProxywatchBinaryName(base) && !hasProxywatchBinaryName(name) {

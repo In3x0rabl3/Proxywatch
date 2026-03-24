@@ -246,6 +246,18 @@ func buildProbeMethodBaseRequestBody(method string, port int) []byte {
 		base = buildProbeNTPRequestBody(nil)
 	case "quic":
 		base = buildProbeQUICInitialPacket([]byte{0x06, 0x00, 0x00}, 1)
+	case "webrtc":
+		base = buildProbeSTUNBindingRequestBody()
+	case "sip":
+		base = []byte("OPTIONS sip:contour.local SIP/2.0\r\nVia: SIP/2.0/UDP contour.local;branch=z9hG4bK-contour\r\nFrom: <sip:probe@contour.local>;tag=contour\r\nTo: <sip:contour.local>\r\nCall-ID: contour-probe@contour.local\r\nCSeq: 1 OPTIONS\r\nContact: <sip:probe@contour.local>\r\nContent-Length: 0\r\n\r\n")
+	case "rtsp":
+		base = []byte("OPTIONS rtsp://contour.local/probe RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: contour/rtsp\r\n\r\n")
+	case "snmp":
+		base = buildProbeSNMPGetRequestBody()
+	case "coap":
+		base = buildProbeCoAPGetRequestBody()
+	case "redis":
+		base = []byte("*1\r\n$4\r\nPING\r\n")
 	default:
 		base = []byte("CONTOUR-PROBE-" + method)
 	}
@@ -318,6 +330,74 @@ func buildProbeQUICInitialPacket(payload []byte, pn uint16) []byte {
 	// Supported version list: QUIC v1.
 	out = append(out, 0x00, 0x00, 0x00, 0x01)
 	return out
+}
+
+func buildProbeSTUNBindingRequestBody() []byte {
+	out := make([]byte, 20)
+	// STUN Binding Request.
+	binary.BigEndian.PutUint16(out[0:2], 0x0001)
+	binary.BigEndian.PutUint16(out[2:4], 0x0000)
+	binary.BigEndian.PutUint32(out[4:8], 0x2112a442)
+	copy(out[8:20], []byte("contourprobe"))
+	return out
+}
+
+func buildProbeSTUNBindingSuccessResponseBody(request []byte) []byte {
+	out := make([]byte, 20)
+	// STUN Binding Success Response.
+	binary.BigEndian.PutUint16(out[0:2], 0x0101)
+	binary.BigEndian.PutUint16(out[2:4], 0x0000)
+	binary.BigEndian.PutUint32(out[4:8], 0x2112a442)
+	if len(request) >= 20 {
+		copy(out[8:20], request[8:20])
+	} else {
+		copy(out[8:20], []byte("contourprobe"))
+	}
+	return out
+}
+
+func buildProbeSNMPGetRequestBody() []byte {
+	return []byte{
+		0x30, 0x26,
+		0x02, 0x01, 0x00,
+		0x04, 0x06, 'p', 'u', 'b', 'l', 'i', 'c',
+		0xa0, 0x19,
+		0x02, 0x04, 0x70, 0x71, 0x72, 0x73,
+		0x02, 0x01, 0x00,
+		0x02, 0x01, 0x00,
+		0x30, 0x0b,
+		0x30, 0x09,
+		0x06, 0x05, 0x2b, 0x06, 0x01, 0x02, 0x01,
+		0x05, 0x00,
+	}
+}
+
+func buildProbeSNMPGetResponseBody(request []byte) []byte {
+	if len(request) == 0 {
+		request = buildProbeSNMPGetRequestBody()
+	}
+	resp := append([]byte(nil), request...)
+	for i := 2; i < len(resp); i++ {
+		if resp[i] == 0xa0 {
+			resp[i] = 0xa2
+			break
+		}
+	}
+	return resp
+}
+
+func buildProbeCoAPGetRequestBody() []byte {
+	return []byte{0x40, 0x01, 0x12, 0x34, 0xb5, 'p', 'r', 'o', 'b', 'e'}
+}
+
+func buildProbeCoAPContentResponseBody(request []byte) []byte {
+	midHi := byte(0x12)
+	midLo := byte(0x34)
+	if len(request) >= 4 {
+		midHi = request[2]
+		midLo = request[3]
+	}
+	return []byte{0x60, 0x45, midHi, midLo, 0xff, 'o', 'k'}
 }
 
 func buildProbeSMB2NegotiateRequestBody() []byte {
@@ -579,6 +659,27 @@ func validateProbeMethodRequest(method string, body []byte, exfil bool) bool {
 		return len(base) >= 48 && base[0]&0x7 == 3
 	case "quic":
 		return len(base) >= 8 && base[0]&0x80 != 0
+	case "webrtc":
+		return len(base) >= 20 &&
+			binary.BigEndian.Uint16(base[0:2]) == 0x0001 &&
+			binary.BigEndian.Uint32(base[4:8]) == 0x2112a442
+	case "sip":
+		return bytes.HasPrefix(base, []byte("OPTIONS sip:")) &&
+			bytes.Contains(base, []byte("SIP/2.0"))
+	case "rtsp":
+		return bytes.HasPrefix(base, []byte("OPTIONS rtsp://")) &&
+			bytes.Contains(base, []byte("RTSP/1.0"))
+	case "snmp":
+		return len(base) >= 16 &&
+			base[0] == 0x30 &&
+			bytes.Contains(base, []byte("public")) &&
+			bytes.Contains(base, []byte{0xa0})
+	case "coap":
+		return len(base) >= 4 &&
+			(base[0]&0xc0) == 0x40 &&
+			base[1] == 0x01
+	case "redis":
+		return bytes.HasPrefix(base, []byte("*1\r\n$4\r\nPING\r\n"))
 	default:
 		return len(base) > 0
 	}
@@ -644,6 +745,18 @@ func buildProbeMethodResponseBody(method string, requestBody []byte) []byte {
 			return resp
 		}
 		return []byte{0xc1, 0x00}
+	case "webrtc":
+		return buildProbeSTUNBindingSuccessResponseBody(requestBody)
+	case "sip":
+		return []byte("SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n")
+	case "rtsp":
+		return []byte("RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n")
+	case "snmp":
+		return buildProbeSNMPGetResponseBody(requestBody)
+	case "coap":
+		return buildProbeCoAPContentResponseBody(requestBody)
+	case "redis":
+		return []byte("+PONG\r\n")
 	default:
 		return append([]byte("ACK"), acks...)
 	}

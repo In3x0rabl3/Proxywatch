@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -77,9 +78,15 @@ var (
 		{Name: "dns", Transport: "udp"},
 		{Name: "ntp", Transport: "udp"},
 		{Name: "quic", Transport: "udp"},
+		{Name: "webrtc", Transport: "udp"},
+		{Name: "sip", Transport: "udp"},
+		{Name: "rtsp", Transport: "tcp"},
+		{Name: "snmp", Transport: "udp"},
+		{Name: "coap", Transport: "udp"},
+		{Name: "redis", Transport: "tcp"},
 	}
 
-	endpointURLRE        = regexp.MustCompile(`(?i)(?:https?|wss?|ssh|socks5?|socks4|ftp|ftps|smtp|smtps|imap|imaps|pop3s?|ldap|ldaps|amqp|mqtt|postgres)://[^\s"'<>]+`)
+	endpointURLRE        = regexp.MustCompile(`(?i)(?:https?|wss?|ssh|socks5?|socks4|ftp|ftps|smtp|smtps|imap|imaps|pop3s?|ldap|ldaps|amqp|mqtt|postgres|rtsp|sip|snmp|coap|redis|stun|turns?)://[^\s"'<>]+`)
 	endpointIPRE         = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}\b`)
 	endpointDomainPortRE = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+):\d{2,5}\b`)
 	endpointHostPortRE   = regexp.MustCompile(`(?i)\b(?:localhost|[a-z0-9][a-z0-9-]{0,62}):\d{2,5}\b`)
@@ -104,12 +111,14 @@ var (
 		"imap": 8, "imaps": 9, "pop3": 10, "pop3s": 11, "ftp": 12, "ftps": 13,
 		"smb": 14, "rdp": 15, "ldap": 16, "ldaps": 17, "socks4": 18, "socks5": 19,
 		"mqtt": 20, "amqp": 21, "postgres": 22, "dns": 23, "ntp": 24, "quic": 25,
+		"webrtc": 26, "sip": 27, "rtsp": 28, "snmp": 29, "coap": 30, "redis": 31,
 	}
 	probeMethodNames = map[byte]string{
 		1: "http", 2: "https", 3: "ws", 4: "wss", 5: "ssh", 6: "smtp", 7: "smtps",
 		8: "imap", 9: "imaps", 10: "pop3", 11: "pop3s", 12: "ftp", 13: "ftps",
 		14: "smb", 15: "rdp", 16: "ldap", 17: "ldaps", 18: "socks4", 19: "socks5",
 		20: "mqtt", 21: "amqp", 22: "postgres", 23: "dns", 24: "ntp", 25: "quic",
+		26: "webrtc", 27: "sip", 28: "rtsp", 29: "snmp", 30: "coap", 31: "redis",
 	}
 	probeTunnelMarker = []byte("\n--CONTOUR-TUNNEL--\n")
 	probeExfilMarker  = []byte("\n--CONTOUR-EXFIL--\n")
@@ -1129,6 +1138,25 @@ func validateEndpointScanResponse(method string, response []byte) bool {
 		return len(response) >= 48
 	case "quic":
 		return len(response) > 0
+	case "webrtc":
+		return len(response) >= 20 &&
+			binary.BigEndian.Uint16(response[0:2]) == 0x0101 &&
+			binary.BigEndian.Uint32(response[4:8]) == 0x2112a442
+	case "sip":
+		return strings.HasPrefix(lower, "sip/2.0")
+	case "rtsp":
+		return strings.HasPrefix(lower, "rtsp/1.0")
+	case "snmp":
+		return len(response) >= 16 &&
+			response[0] == 0x30 &&
+			bytes.Contains(response, []byte("public")) &&
+			bytes.Contains(response, []byte{0xa2})
+	case "coap":
+		return len(response) >= 4 &&
+			(response[0]&0xc0) == 0x40 &&
+			response[1] == 0x45
+	case "redis":
+		return strings.HasPrefix(lower, "+pong")
 	default:
 		return true
 	}
