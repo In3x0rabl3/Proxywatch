@@ -36,7 +36,9 @@ func IsProxywatchProcess(p *ProcessInfo) bool {
 	if !hasProxywatchBinaryName(base) && !hasProxywatchBinaryName(name) {
 		return false
 	}
-	return isTrustedProxywatchPath(path)
+	// Hide proxywatch runtime binaries regardless of where they are launched
+	// from (for example release binaries run from Downloads).
+	return true
 }
 
 // FilterProxywatchCandidates removes Proxywatch runtime processes from candidate lists.
