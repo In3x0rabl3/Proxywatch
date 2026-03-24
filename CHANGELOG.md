@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.4] - 2026-03-24
-
-### Fixed
-- ProxyWatch runtime binaries are now hidden from inspector/process candidate views even when launched from non-standard paths (for example `~/Downloads` release binaries).
-
 ## [1.0.3] - 2026-03-24
 
 ### Added
@@ -41,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dashboard process-list jitter by stabilizing candidate ordering/dedup behavior.
 - Calibration analysis now supports runtime cancellation during provider requests.
 - BloodHound upload/runtime config path now aligns with keystore-first runtime configuration.
+- ProxyWatch runtime binaries are hidden from inspector/process candidate views even when launched from non-standard paths (for example `~/Downloads` release binaries).
 
 ### Removed
 - Go test files in repository (`internal/agent/server_test.go`, `internal/contour/probe_tunnel_test.go`).
