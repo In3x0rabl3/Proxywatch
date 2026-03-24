@@ -1,7 +1,7 @@
 package shared
 
 import (
-	"os"
+	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -14,7 +14,23 @@ const (
 	ModeInspect
 	ModeWhitelist
 	ModeCollect
+	ModeCalibration
+	ModeContour
+	ModeKeystore
+	ModeSIEM
 )
+
+type HostSummary struct {
+	Host      string
+	Status    string
+	FirstSeen time.Time
+	LastSeen  time.Time
+	Processes int
+	Watch     int
+	Strong    int
+	Roles     int
+	Active    int
+}
 
 type AppState struct {
 	Screen tcell.Screen
@@ -30,25 +46,183 @@ type AppState struct {
 	Whitelist           *Whitelist
 	WhitelistItems      []string
 	WhitelistSelected   int
+	WhitelistField      int
+	WhitelistListOffset int
 	RemoteKill          func(host string, pid int) error
+	RemoveRemoteHost    func(host string) error
 	RoleFilterOverride  map[string]bool
+	RolePreset          string
+	AgentToken          string
+	SortPreset          string
+	ShowHelp            bool
+	ShowRoleMenu        bool
+	ShowSortMenu        bool
+	ShowRefreshMenu     bool
+	ShowInspectMenu     bool
+	HelpMenuIndex       int
+	InspectMenuIndex    int
+	RoleMenuIndex       int
+	SortMenuIndex       int
+	RefreshMenuIndex    int
+	RefreshRequested    bool
+	ShowQuitConfirm     bool
+	QuitConfirmDeadline time.Time
 
 	CollectActive      bool
+	CollectStartedAt   time.Time
 	CollectUntil       time.Time
 	CollectDurationStr string
-	CollectRoles       string
 	CollectOutput      string
-	CollectRoleFilter  map[string]bool
 	CollectData        []Candidate
 	CollectField       int
 	CollectEditing     bool
+	CollectSource      string
+	CollectSourceIndex int
+	CollectSourceOpts  []string
+	CollectShowMenu    bool
+	CollectMenuKind    string
+	CollectMenuTitle   string
+	CollectMenuOptions []string
+	CollectMenuIndex   int
+	CollectStatusText  string
+	CollectStatusUntil time.Time
+	CollectStatusError bool
+	CollectShowHelp    bool
+	CollectHelpIndex   int
 
-	Candidates     []Candidate
-	Mode           AppMode
-	SelectedKey    string
-	SelectedIdx    int
-	InspectKey     string
-	InspectExplain bool
+	CalibrateDuration  string
+	CalibrateProvider  string
+	CalibrateModel     string
+	CalibrateProfile   string
+	CalibrateOutput    string
+	CalibrateField     int
+	CalibrateEditing   bool
+	CalibrateActive    bool
+	CalibrateAnalyzing bool
+	CalibrateCancel    func()
+	CalibrateStartedAt time.Time
+	CalibrateUntil     time.Time
+	CalibrateSamples   []Candidate
+
+	CalibrateStatusText  string
+	CalibrateStatusUntil time.Time
+	CalibrateStatusError bool
+
+	CalibrateProfiles        []string
+	CalibrateProfileIndex    int
+	CalibrateAppliedProfile  string
+	CalibrateReportSummary   string
+	CalibrateReportPath      string
+	CalibrateReportTime      time.Time
+	CalibrateRecommendations []string
+	CalibrateReportLines     []string
+	CalibrateReportScroll    int
+	CalibrateReportMaxScroll int
+	CalibrateSampleEvery     time.Duration
+	CalibrateLastSample      time.Time
+
+	ShowCalibrateHelp    bool
+	CalibrateHelpIndex   int
+	ShowCalibrateMenu    bool
+	CalibrateMenuKind    string
+	CalibrateMenuTitle   string
+	CalibrateMenuOptions []string
+	CalibrateMenuIndex   int
+
+	ContourDuration        string
+	ContourOutput          string
+	ContourProbeEndpoint   string
+	ContourProbeMode       string
+	ContourProbeRole       string
+	ContourField           int
+	ContourEditing         bool
+	ContourActive          bool
+	ContourAnalyzing       bool
+	ContourCancel          func()
+	ContourStartedAt       time.Time
+	ContourUntil           time.Time
+	ContourSource          string
+	ContourSourceIndex     int
+	ContourSourceOpts      []string
+	ContourSampleEvery     time.Duration
+	ContourLastSample      time.Time
+	ContourSamples         []Candidate
+	ContourShowMenu        bool
+	ContourShowHelp        bool
+	ContourHelpIndex       int
+	ContourMenuKind        string
+	ContourMenuTitle       string
+	ContourMenuOptions     []string
+	ContourMenuIndex       int
+	ContourStatusText      string
+	ContourStatusUntil     time.Time
+	ContourStatusError     bool
+	ContourReportLines     []string
+	ContourReportPath      string
+	ContourReportTime      time.Time
+	ContourReportScroll    int
+	ContourReportMaxScroll int
+	ContourHints           []ContourHint
+
+	KeystorePath        string
+	KeystoreValues      map[string]string
+	KeystoreField       int
+	KeystoreEditing     bool
+	KeystoreUnlocked    bool
+	KeystoreStatusText  string
+	KeystoreStatusUntil time.Time
+	KeystoreStatusError bool
+	KeystoreShowHelp    bool
+	KeystoreHelpIndex   int
+
+	SIEMDebugLogPath    string
+	SIEMRulesJSONPath   string
+	SIEMSourceReport    string
+	SIEMSourceReports   []string
+	SIEMSourceIndex     int
+	SIEMProvider        string
+	SIEMModel           string
+	SIEMReportPath      string
+	SIEMExportPath      string
+	SIEMReportLines     []string
+	SIEMReportScroll    int
+	SIEMReportMaxScroll int
+	SIEMField           int
+	SIEMEditing         bool
+	SIEMShowMenu        bool
+	SIEMShowHelp        bool
+	SIEMHelpIndex       int
+	SIEMMenuKind        string
+	SIEMMenuTitle       string
+	SIEMMenuOptions     []string
+	SIEMMenuIndex       int
+	SIEMGenerating      bool
+	SIEMStartedAt       time.Time
+	SIEMStatusText      string
+	SIEMStatusUntil     time.Time
+	SIEMStatusError     bool
+	StartSIEMGeneration func(sourceReport, provider, model, outputReport, outputJSON string)
+
+	CalibrationCollect func() (*Snapshot, error)
+
+	Candidates               []Candidate
+	SnapshotCandidates       []Candidate
+	HostSummaries            []HostSummary
+	Mode                     AppMode
+	SelectedKey              string
+	SelectedIdx              int
+	DashboardHostSelected    int
+	DashboardHostKey         string
+	DashboardHostProcessView bool
+	WhitelistProcessSelected int
+	WhitelistProcessOffset   int
+	WhitelistShowHelp        bool
+	WhitelistHelpIndex       int
+	InspectKey               string
+	InspectExplain           bool
+	InspectScroll            int
+	InspectMaxScroll         int
+	InspectSectionStarts     []int
 }
 
 type Scanner interface {
@@ -90,16 +264,10 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 	if app != nil && len(app.RoleFilterOverride) > 0 {
 		opts.RoleFilter = app.RoleFilterOverride
 	}
-	cands := s.Classify(snap, opts, &s.Cache)
-	selfPID := os.Getpid()
-	filtered := make([]Candidate, 0, len(cands))
-	for _, c := range cands {
-		if c.Proc != nil && c.Proc.Pid == selfPID {
-			continue
-		}
-		filtered = append(filtered, c)
+	if strings.TrimSpace(opts.HostScope) == "" {
+		opts.HostScope = s.HostID
 	}
-	cands = filtered
+	cands := s.Classify(snap, opts, &s.Cache)
 	now := time.Now().UTC()
 	if s.HostID == "" {
 		s.HostID = "local"
@@ -107,10 +275,17 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 	for i := range cands {
 		cands[i].Host = s.HostID
 	}
+	cands = FilterProxywatchCandidates(cands)
 	ApplyIORates(cands, now, &s.LastIO)
 	cands = ApplyCandidateLinger(cands, now, s.LingerFor, &s.LingerCache)
-	cands = ApplyWhitelist(cands, s.Whitelist)
-	ApplySelection(app, cands, now)
+	// Keep role/score filtering authoritative after linger rehydrates stale rows.
+	cands = ApplyScoreAndRoleFilters(cands, opts.MinScore, opts.RoleFilter)
+	if app != nil {
+		app.SnapshotCandidates = cands
+		app.HostSummaries = nil
+	}
+	filtered := ApplyWhitelist(cands, s.Whitelist)
+	ApplySelection(app, filtered, now)
 }
 
 func ApplyIORates(cands []Candidate, now time.Time, prev *map[int]IOSample) {
@@ -160,6 +335,8 @@ func ResetAppState(app *AppState, msg string) {
 	}
 	app.LastError = msg
 	app.Candidates = nil
+	app.SnapshotCandidates = nil
+	app.HostSummaries = nil
 	app.SelectedIdx = -1
 	app.SelectedKey = ""
 	app.LastUpdate = time.Now().UTC()

@@ -9,6 +9,7 @@ import (
 // ProxyWatchAgentClient is the client API for ProxyWatchAgent service.
 type ProxyWatchAgentClient interface {
 	StreamCandidates(ctx context.Context, opts ...grpc.CallOption) (ProxyWatchAgent_StreamCandidatesClient, error)
+	Enroll(ctx context.Context, in *EnrollRequest, opts ...grpc.CallOption) (*EnrollResponse, error)
 }
 
 type proxyWatchAgentClient struct {
@@ -27,9 +28,19 @@ func (c *proxyWatchAgentClient) StreamCandidates(ctx context.Context, opts ...gr
 	return &proxyWatchAgentStreamCandidatesClient{stream}, nil
 }
 
+func (c *proxyWatchAgentClient) Enroll(ctx context.Context, in *EnrollRequest, opts ...grpc.CallOption) (*EnrollResponse, error) {
+	out := new(EnrollResponse)
+	err := c.cc.Invoke(ctx, "/proxywatch.agent.v1.ProxyWatchAgent/Enroll", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ProxyWatchAgentServer is the server API for ProxyWatchAgent service.
 type ProxyWatchAgentServer interface {
 	StreamCandidates(ProxyWatchAgent_StreamCandidatesServer) error
+	Enroll(context.Context, *EnrollRequest) (*EnrollResponse, error)
 }
 
 type ProxyWatchAgent_StreamCandidatesClient interface {
@@ -85,6 +96,12 @@ func RegisterProxyWatchAgentServer(s grpc.ServiceRegistrar, srv ProxyWatchAgentS
 var ProxyWatchAgent_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "proxywatch.agent.v1.ProxyWatchAgent",
 	HandlerType: (*ProxyWatchAgentServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Enroll",
+			Handler:    _ProxyWatchAgent_Enroll_Handler,
+		},
+	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "StreamCandidates",
@@ -98,4 +115,22 @@ var ProxyWatchAgent_ServiceDesc = grpc.ServiceDesc{
 
 func _ProxyWatchAgent_StreamCandidates_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(ProxyWatchAgentServer).StreamCandidates(&proxyWatchAgentStreamCandidatesServer{stream})
+}
+
+func _ProxyWatchAgent_Enroll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnrollRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProxyWatchAgentServer).Enroll(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/proxywatch.agent.v1.ProxyWatchAgent/Enroll",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProxyWatchAgentServer).Enroll(ctx, req.(*EnrollRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }

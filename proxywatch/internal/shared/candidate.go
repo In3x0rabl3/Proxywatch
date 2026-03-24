@@ -30,6 +30,7 @@ type Candidate struct {
 
 	ControlChannel         *ConnectionInfo
 	ControlDurationSeconds int
+	SeenSeconds            int
 
 	OutTotal      int
 	OutExternal   int
@@ -107,14 +108,18 @@ type ListenerKey struct {
 const (
 	BurstSamplesMax = 10
 	BurstSamplesMid = 4
-	BurstSamplesMin = 1
+	BurstSamplesMin = 3
 	BurstSleep      = 10 * time.Millisecond
 
 	BurstIdleConnThreshold     = 5
 	BurstModerateConnThreshold = 25
 
 	ProcessMetaCacheTTL = 60 * time.Second
-	CandidateLingerTTL  = 20 * time.Second
+	CandidateLingerTTL  = 2 * time.Minute
+	// Keep suspicious labels visible long enough to survive intermittent callbacks.
+	CandidateSuspiciousLingerTTL = 15 * time.Minute
+	// Keep strong findings visible longer than normal watch rows.
+	CandidateStrongLingerTTL = 6 * time.Minute
 )
 
 func CandidateKey(c Candidate) string {
@@ -123,6 +128,16 @@ func CandidateKey(c Candidate) string {
 		return host + ":0"
 	}
 	return host + ":" + strconv.Itoa(c.Proc.Pid)
+}
+
+func CandidateState(c Candidate) string {
+	if c.ActiveProxying {
+		return "active"
+	}
+	if c.StrongEvidence {
+		return "strong"
+	}
+	return "watch"
 }
 
 // TargetPrefix returns a coarse prefix for an IP to group related targets.

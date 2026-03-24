@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"proxywatch/internal/safeio"
 	"proxywatch/internal/shared"
 )
 
@@ -39,7 +40,7 @@ type Ref struct {
 	MatchBy string `json:"match_by"`
 }
 
-func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
+func BuildGraph(cands []shared.Candidate) Payload {
 	hostIPs := make(map[string]map[string]struct{})
 	addHostIP := func(host, ip string) {
 		if ip == "" || shared.IsWildcardIP(ip) || shared.IsLoopbackIP(ip) {
@@ -56,9 +57,6 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 
 	for _, c := range cands {
 		if c.Proc == nil {
-			continue
-		}
-		if !shared.RoleMatchesFilter(c.Role, roleFilter) {
 			continue
 		}
 		host := shared.DisplayHost(c.Host)
@@ -159,10 +157,6 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 		if c.Proc == nil {
 			continue
 		}
-		if !shared.RoleMatchesFilter(c.Role, roleFilter) {
-			continue
-		}
-
 		host := shared.DisplayHost(c.Host)
 
 		hostID := "host:" + host
@@ -195,7 +189,7 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 		}
 
 		procID := fmt.Sprintf("proc:%s:%d", host, c.Proc.Pid)
-		roleFamily := shared.RoleFamily(c.Role)
+		rolePrefix := roleKindPrefix(c.Role)
 		addNode(Node{
 			ID:    procID,
 			Kinds: []string{"Process"},
@@ -204,8 +198,6 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 				"name":         c.Proc.Name,
 				"path":         c.Proc.ExePath,
 				"user":         c.Proc.UserName,
-				"role":         c.Role,
-				"role_family":  roleFamily,
 				"host":         host,
 				"integrity":    c.Proc.Integrity,
 				"score":        c.Score,
@@ -216,8 +208,9 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 			},
 		})
 
+		hostProcessKind := rolePrefix + "ProcessOnHost"
 		addEdge(Edge{
-			Kind: "HasSuspProcess",
+			Kind: hostProcessKind,
 			Start: Ref{
 				Value:   hostID,
 				MatchBy: "id",
@@ -227,15 +220,13 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 				MatchBy: "id",
 			},
 			Properties: map[string]any{
-				"host":        host,
-				"process":     c.Proc.Name,
-				"pid":         c.Proc.Pid,
-				"role":        c.Role,
-				"role_family": roleFamily,
-				"score":       c.Score,
-				"confidence":  c.Confidence,
+				"host":       host,
+				"process":    c.Proc.Name,
+				"pid":        c.Proc.Pid,
+				"score":      c.Score,
+				"confidence": c.Confidence,
 			},
-		}, "HasSuspProcess|"+hostID+"|"+procID)
+		}, hostProcessKind+"|"+hostID+"|"+procID)
 
 		userName := strings.TrimSpace(c.Proc.UserName)
 		if userID, ok := userNodeID(userName); ok {
@@ -247,8 +238,9 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 				},
 			})
 
+			userProcessKind := "User" + rolePrefix + "Process"
 			addEdge(Edge{
-				Kind: "UserHasSuspProcess",
+				Kind: userProcessKind,
 				Start: Ref{
 					Value:   userID,
 					MatchBy: "id",
@@ -258,15 +250,13 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 					MatchBy: "id",
 				},
 				Properties: map[string]any{
-					"user":        userName,
-					"process":     c.Proc.Name,
-					"pid":         c.Proc.Pid,
-					"role":        c.Role,
-					"role_family": roleFamily,
-					"score":       c.Score,
-					"confidence":  c.Confidence,
+					"user":       userName,
+					"process":    c.Proc.Name,
+					"pid":        c.Proc.Pid,
+					"score":      c.Score,
+					"confidence": c.Confidence,
 				},
-			}, "UserHasSuspProcess|"+userID+"|"+procID)
+			}, userProcessKind+"|"+userID+"|"+procID)
 		}
 
 		for _, cn := range c.Conns {
@@ -305,8 +295,9 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 				},
 			}, "HostHasLocalEndpoint|"+hostID+"|"+localEndpointID)
 
+			usesLocalKind := rolePrefix + "UsesLocalEndpoint"
 			addEdge(Edge{
-				Kind: "SuspUsesLocalEndpoint",
+				Kind: usesLocalKind,
 				Start: Ref{
 					Value:   procID,
 					MatchBy: "id",
@@ -315,11 +306,12 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 					Value:   localEndpointID,
 					MatchBy: "id",
 				},
-				Properties: localEndpointProcessProps(c, roleFamily, cn),
-			}, "SuspUsesLocalEndpoint|"+procID+"|"+localEndpointID+"|"+cn.State)
+				Properties: localEndpointProcessProps(c, cn),
+			}, usesLocalKind+"|"+procID+"|"+localEndpointID+"|"+cn.State)
 
+			localUsedByKind := "LocalEndpointUsedBy" + rolePrefix
 			addEdge(Edge{
-				Kind: "LocalEndpointUsedBySuspProcess",
+				Kind: localUsedByKind,
 				Start: Ref{
 					Value:   localEndpointID,
 					MatchBy: "id",
@@ -328,8 +320,8 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 					Value:   procID,
 					MatchBy: "id",
 				},
-				Properties: localEndpointProcessProps(c, roleFamily, cn),
-			}, "LocalEndpointUsedBySuspProcess|"+localEndpointID+"|"+procID+"|"+cn.State)
+				Properties: localEndpointProcessProps(c, cn),
+			}, localUsedByKind+"|"+localEndpointID+"|"+procID+"|"+cn.State)
 
 			scope := "external"
 			switch {
@@ -341,9 +333,9 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 
 			hostEdgeKind := kindForScope(
 				scope,
-				"SuspConnectsToHostExternal",
-				"SuspConnectsToHostInternal",
-				"SuspConnectsToHostLoopback",
+				rolePrefix+"ConnectsToHostExternal",
+				rolePrefix+"ConnectsToHostInternal",
+				rolePrefix+"ConnectsToHostLoopback",
 			)
 			hostIPID, knownHost := resolveKnownHostID(cn.RemoteAddress)
 			remoteHostName := ""
@@ -378,12 +370,12 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 
 			edgeKind := kindForScope(
 				scope,
-				"SuspConnectsToExternal",
-				"SuspConnectsToInternal",
-				"SuspConnectsToLoopback",
+				rolePrefix+"ConnectsToExternal",
+				rolePrefix+"ConnectsToInternal",
+				rolePrefix+"ConnectsToLoopback",
 			)
 			edgeKey := fmt.Sprintf("%s|%s|%s|%d|%d", edgeKind, procID, endpointID, cn.LocalPort, cn.RemotePort)
-			edgeProps := processConnProps(c, roleFamily, cn, scope)
+			edgeProps := processConnProps(c, cn, scope)
 			if remoteHostName != "" {
 				edgeProps["remote_host"] = remoteHostName
 			}
@@ -407,7 +399,7 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 				"LocalEndpointConnectsToLoopback",
 			)
 			linkKey := fmt.Sprintf("%s|%s|%s|%d|%d", linkKind, localEndpointID, endpointID, cn.LocalPort, cn.RemotePort)
-			linkProps := endpointLinkProps(c, roleFamily, cn, scope)
+			linkProps := endpointLinkProps(c, cn, scope)
 			if remoteHostName != "" {
 				linkProps["remote_host"] = remoteHostName
 			}
@@ -427,12 +419,12 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 			if userID, ok := userNodeID(userName); ok {
 				userEdgeKind := kindForScope(
 					scope,
-					"UserSuspTrafficExternal",
-					"UserSuspTrafficInternal",
-					"UserSuspTrafficLoopback",
+					"User"+rolePrefix+"TrafficExternal",
+					"User"+rolePrefix+"TrafficInternal",
+					"User"+rolePrefix+"TrafficLoopback",
 				)
 				userKey := fmt.Sprintf("%s|%s|%s|%d|%d", userEdgeKind, userID, endpointID, cn.LocalPort, cn.RemotePort)
-				userProps := userConnProps(userName, c, roleFamily, cn, scope)
+				userProps := userConnProps(userName, c, cn, scope)
 				if remoteHostName != "" {
 					userProps["remote_host"] = remoteHostName
 				}
@@ -470,8 +462,6 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 						"local_port":     cn.LocalPort,
 						"remote_address": cn.RemoteAddress,
 						"remote_port":    cn.RemotePort,
-						"role":           c.Role,
-						"role_family":    roleFamily,
 						"active_proxy":   c.ActiveProxying,
 						"scope":          scope,
 					},
@@ -499,8 +489,6 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 						"local_port":     cn.LocalPort,
 						"remote_address": cn.RemoteAddress,
 						"remote_port":    cn.RemotePort,
-						"role":           c.Role,
-						"role_family":    roleFamily,
 						"process":        c.Proc.Name,
 						"pid":            c.Proc.Pid,
 						"scope":          scope,
@@ -510,9 +498,9 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 				if userID, ok := userNodeID(userName); ok {
 					userHostKind := kindForScope(
 						scope,
-						"UserSuspTrafficHostExternal",
-						"UserSuspTrafficHostInternal",
-						"UserSuspTrafficHostLoopback",
+						"User"+rolePrefix+"TrafficHostExternal",
+						"User"+rolePrefix+"TrafficHostInternal",
+						"User"+rolePrefix+"TrafficHostLoopback",
 					)
 					userHostKey := fmt.Sprintf("%s|%s|%s|%d|%d", userHostKind, userID, hostIPID, cn.LocalPort, cn.RemotePort)
 					addEdge(Edge{
@@ -525,7 +513,7 @@ func BuildGraph(cands []shared.Candidate, roleFilter map[string]bool) Payload {
 							Value:   hostIPID,
 							MatchBy: "id",
 						},
-						Properties: userConnProps(userName, c, roleFamily, cn, scope),
+						Properties: userConnProps(userName, c, cn, scope),
 					}, userHostKey)
 				}
 			}
@@ -570,31 +558,40 @@ func edgeDescription(kind string, props map[string]any) string {
 	local := joinHostPort(localAddr, localPort)
 	remote := joinHostPort(remoteAddr, remotePort)
 
+	if role, ok := roleFromKindSuffix(kind, "ProcessOnHost"); ok {
+		return fmt.Sprintf("Host %s owns %s process %s (pid %s).", hostOr(process, host), role, process, pid)
+	}
+	if role, ok := roleFromUserKindSuffix(kind, "Process"); ok {
+		return fmt.Sprintf("User %s owns %s process %s (pid %s).", user, role, process, pid)
+	}
+	if role, ok := roleFromKindSuffix(kind, "UsesLocalEndpoint"); ok {
+		return fmt.Sprintf("%s process %s (pid %s) uses local endpoint %s (%s).", role, process, pid, local, state)
+	}
+	if role, ok := roleFromKindPrefix(kind, "LocalEndpointUsedBy"); ok {
+		return fmt.Sprintf("Local endpoint %s is used by %s process %s (pid %s).", local, role, process, pid)
+	}
+	if role, ok := roleFromKindAnySuffix(kind, "ConnectsToExternal", "ConnectsToInternal", "ConnectsToLoopback"); ok {
+		return fmt.Sprintf("%s process %s (pid %s) connects to %s endpoint %s from %s (%s).", role, process, pid, scope, remote, local, state)
+	}
+	if role, ok := roleFromKindAnySuffix(kind, "ConnectsToHostExternal", "ConnectsToHostInternal", "ConnectsToHostLoopback"); ok {
+		return fmt.Sprintf("%s process %s (pid %s) connects to %s host %s from %s (%s).", role, process, pid, scope, remoteAddr, local, state)
+	}
+	if role, ok := roleFromUserKindAnySuffix(kind, "TrafficHostExternal", "TrafficHostInternal", "TrafficHostLoopback"); ok {
+		return fmt.Sprintf("User %s has %s %s traffic to host %s via %s (pid %s).", user, role, scope, remoteAddr, process, pid)
+	}
+	if role, ok := roleFromUserKindAnySuffix(kind, "TrafficExternal", "TrafficInternal", "TrafficLoopback"); ok {
+		return fmt.Sprintf("User %s has %s %s traffic to %s via %s (pid %s).", user, role, scope, remote, process, pid)
+	}
+
 	switch kind {
-	case "HasSuspProcess":
-		return fmt.Sprintf("Host %s owns suspicious process %s (pid %s).", hostOr(process, host), process, pid)
-	case "UserHasSuspProcess":
-		return fmt.Sprintf("User %s owns suspicious process %s (pid %s).", user, process, pid)
 	case "HostHasIP":
 		return fmt.Sprintf("Host %s has IP %s.", host, ip)
 	case "HostHasLocalEndpoint":
 		return fmt.Sprintf("Host %s exposes local endpoint %s.", host, local)
-	case "SuspUsesLocalEndpoint":
-		return fmt.Sprintf("Suspicious process %s (pid %s) uses local endpoint %s (%s).", process, pid, local, state)
-	case "LocalEndpointUsedBySuspProcess":
-		return fmt.Sprintf("Local endpoint %s is used by suspicious process %s (pid %s).", local, process, pid)
-	case "SuspConnectsToExternal", "SuspConnectsToInternal", "SuspConnectsToLoopback":
-		return fmt.Sprintf("Suspicious process %s (pid %s) connects to %s endpoint %s from %s (%s).", process, pid, scope, remote, local, state)
-	case "SuspConnectsToHostExternal", "SuspConnectsToHostInternal", "SuspConnectsToHostLoopback":
-		return fmt.Sprintf("Suspicious process %s (pid %s) connects to %s host %s from %s (%s).", process, pid, scope, remoteAddr, local, state)
 	case "LocalEndpointConnectsToHostExternal", "LocalEndpointConnectsToHostInternal", "LocalEndpointConnectsToHostLoopback":
 		return fmt.Sprintf("Local endpoint %s connects to %s host %s.", local, scope, remoteAddr)
 	case "LocalEndpointConnectsToExternal", "LocalEndpointConnectsToInternal", "LocalEndpointConnectsToLoopback":
 		return fmt.Sprintf("Local endpoint %s connects to %s endpoint %s.", local, scope, remote)
-	case "UserSuspTrafficHostExternal", "UserSuspTrafficHostInternal", "UserSuspTrafficHostLoopback":
-		return fmt.Sprintf("User %s has suspicious %s traffic to host %s via %s (pid %s).", user, scope, remoteAddr, process, pid)
-	case "UserSuspTrafficExternal", "UserSuspTrafficInternal", "UserSuspTrafficLoopback":
-		return fmt.Sprintf("User %s has suspicious %s traffic to %s via %s (pid %s).", user, scope, remote, process, pid)
 	default:
 		return fmt.Sprintf("Relationship %s recorded by ProxyWatch.", kind)
 	}
@@ -635,6 +632,97 @@ func hostOr(process, host string) string {
 	return process
 }
 
+func roleKindPrefix(role string) string {
+	switch shared.RoleFamily(role) {
+	case "tunnel":
+		return "Tunnel"
+	case "session":
+		return "Session"
+	case "beacon":
+		return "Beacon"
+	case "listener":
+		return "Listener"
+	case "outbound":
+		return "Outbound"
+	default:
+		return "Process"
+	}
+}
+
+func roleLabelFromPrefix(prefix string) string {
+	switch strings.TrimSpace(prefix) {
+	case "Tunnel":
+		return "tunnel"
+	case "Session":
+		return "session"
+	case "Beacon":
+		return "beacon"
+	case "Listener":
+		return "listener"
+	case "Outbound":
+		return "outbound"
+	case "Process":
+		return "process"
+	default:
+		if prefix == "" {
+			return "process"
+		}
+		return strings.ToLower(prefix)
+	}
+}
+
+func roleFromKindSuffix(kind, suffix string) (string, bool) {
+	if !strings.HasSuffix(kind, suffix) {
+		return "", false
+	}
+	prefix := strings.TrimSuffix(kind, suffix)
+	if prefix == "" {
+		return "", false
+	}
+	return roleLabelFromPrefix(prefix), true
+}
+
+func roleFromKindPrefix(kind, prefix string) (string, bool) {
+	if !strings.HasPrefix(kind, prefix) {
+		return "", false
+	}
+	rolePrefix := strings.TrimPrefix(kind, prefix)
+	if rolePrefix == "" {
+		return "", false
+	}
+	return roleLabelFromPrefix(rolePrefix), true
+}
+
+func roleFromUserKindSuffix(kind, suffix string) (string, bool) {
+	if !strings.HasPrefix(kind, "User") || !strings.HasSuffix(kind, suffix) {
+		return "", false
+	}
+	rolePrefix := strings.TrimPrefix(kind, "User")
+	rolePrefix = strings.TrimSuffix(rolePrefix, suffix)
+	if rolePrefix == "" {
+		return "", false
+	}
+	return roleLabelFromPrefix(rolePrefix), true
+}
+
+func roleFromKindAnySuffix(kind string, suffixes ...string) (string, bool) {
+	for _, suffix := range suffixes {
+		if role, ok := roleFromKindSuffix(kind, suffix); ok {
+			return role, true
+		}
+	}
+	return "", false
+}
+
+func roleFromUserKindAnySuffix(kind string, suffixes ...string) (string, bool) {
+	for _, suffix := range suffixes {
+		if role, ok := roleFromUserKindSuffix(kind, suffix); ok {
+			return role, true
+		}
+	}
+	return "", false
+}
+
 func kindForScope(scope, externalKind, internalKind, loopbackKind string) string {
 	switch scope {
 	case "internal":
@@ -654,19 +742,17 @@ func userNodeID(userName string) (string, bool) {
 	return "user:" + strings.ToLower(userName), true
 }
 
-func localEndpointProcessProps(c shared.Candidate, roleFamily string, cn shared.ConnectionInfo) map[string]any {
+func localEndpointProcessProps(c shared.Candidate, cn shared.ConnectionInfo) map[string]any {
 	return map[string]any{
 		"process":       c.Proc.Name,
 		"pid":           c.Proc.Pid,
 		"local_address": cn.LocalAddress,
 		"local_port":    cn.LocalPort,
 		"state":         cn.State,
-		"role":          c.Role,
-		"role_family":   roleFamily,
 	}
 }
 
-func processConnProps(c shared.Candidate, roleFamily string, cn shared.ConnectionInfo, scope string) map[string]any {
+func processConnProps(c shared.Candidate, cn shared.ConnectionInfo, scope string) map[string]any {
 	return map[string]any{
 		"process":        c.Proc.Name,
 		"pid":            c.Proc.Pid,
@@ -675,36 +761,30 @@ func processConnProps(c shared.Candidate, roleFamily string, cn shared.Connectio
 		"local_port":     cn.LocalPort,
 		"remote_address": cn.RemoteAddress,
 		"remote_port":    cn.RemotePort,
-		"role":           c.Role,
-		"role_family":    roleFamily,
 		"active_proxy":   c.ActiveProxying,
 		"scope":          scope,
 	}
 }
 
-func endpointLinkProps(c shared.Candidate, roleFamily string, cn shared.ConnectionInfo, scope string) map[string]any {
+func endpointLinkProps(c shared.Candidate, cn shared.ConnectionInfo, scope string) map[string]any {
 	return map[string]any{
 		"local_address":  cn.LocalAddress,
 		"local_port":     cn.LocalPort,
 		"remote_address": cn.RemoteAddress,
 		"remote_port":    cn.RemotePort,
-		"role":           c.Role,
-		"role_family":    roleFamily,
 		"process":        c.Proc.Name,
 		"pid":            c.Proc.Pid,
 		"scope":          scope,
 	}
 }
 
-func userConnProps(userName string, c shared.Candidate, roleFamily string, cn shared.ConnectionInfo, scope string) map[string]any {
+func userConnProps(userName string, c shared.Candidate, cn shared.ConnectionInfo, scope string) map[string]any {
 	return map[string]any{
 		"user":           userName,
 		"local_address":  cn.LocalAddress,
 		"local_port":     cn.LocalPort,
 		"remote_address": cn.RemoteAddress,
 		"remote_port":    cn.RemotePort,
-		"role":           c.Role,
-		"role_family":    roleFamily,
 		"process":        c.Proc.Name,
 		"pid":            c.Proc.Pid,
 		"scope":          scope,
@@ -712,27 +792,123 @@ func userConnProps(userName string, c shared.Candidate, roleFamily string, cn sh
 }
 
 func WriteJSON(path string, payload Payload) error {
-	if path == "" {
+	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("output path is required")
 	}
+	path = normalizeCollectionOutputPath(path)
 	if !strings.HasSuffix(strings.ToLower(path), ".json") {
 		path += ".json"
 	}
 	dir := filepath.Dir(path)
 	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
 	}
-	f, err := os.Create(path)
+	f, closeFile, err := safeio.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = closeFile() }()
 
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	return enc.Encode(payload)
+}
+
+func normalizeCollectionOutputPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return path
+	}
+	path = expandHomePath(path)
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	rel := sanitizeRelativeCollectionPath(path, "proxywatch-collection.json")
+	return filepath.Join(collectionsRootDir(), rel)
+}
+
+func collectionsRootDir() string {
+	return filepath.Join(proxywatchDataRoot(), "collections")
+}
+
+func proxywatchTempDir() string {
+	return filepath.Join(proxywatchDataRoot(), "tmp")
+}
+
+func proxywatchDataRoot() string {
+	home := userHomeDir()
+	if home == "" {
+		return ".proxywatch"
+	}
+	return filepath.Join(home, ".proxywatch")
+}
+
+func userHomeDir() string {
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return strings.TrimSpace(home)
+	}
+	for _, key := range []string{"HOME", "USERPROFILE"} {
+		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+			return val
+		}
+	}
+	drive := strings.TrimSpace(os.Getenv("HOMEDRIVE"))
+	path := strings.TrimSpace(os.Getenv("HOMEPATH"))
+	if drive != "" && path != "" {
+		return drive + path
+	}
+	return ""
+}
+
+func sanitizeRelativeCollectionPath(path, fallback string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fallback
+	}
+	path = filepath.Clean(path)
+	if path == "." || path == "" {
+		return fallback
+	}
+	if strings.HasPrefix(path, "collections"+string(filepath.Separator)) {
+		path = strings.TrimPrefix(path, "collections"+string(filepath.Separator))
+	}
+	if strings.HasPrefix(path, ".proxywatch"+string(filepath.Separator)) {
+		path = strings.TrimPrefix(path, ".proxywatch"+string(filepath.Separator))
+	}
+	for strings.HasPrefix(path, "."+string(filepath.Separator)) {
+		path = strings.TrimPrefix(path, "."+string(filepath.Separator))
+	}
+	path = strings.TrimLeft(path, string(filepath.Separator))
+	parentPrefix := ".." + string(filepath.Separator)
+	for path == ".." || strings.HasPrefix(path, parentPrefix) {
+		if path == ".." {
+			return fallback
+		}
+		path = strings.TrimPrefix(path, parentPrefix)
+	}
+	if path == "" || path == "." {
+		return fallback
+	}
+	return path
+}
+
+func expandHomePath(path string) string {
+	if path == "" || path[0] != '~' {
+		return path
+	}
+	home := userHomeDir()
+	if home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }
 
 func mapToSlice(m map[string]Node) []Node {

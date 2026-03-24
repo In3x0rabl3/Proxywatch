@@ -4,6 +4,7 @@ package telemetry
 
 import (
 	"bufio"
+	"math"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"proxywatch/internal/safeio"
 	"proxywatch/internal/shared"
 )
 
@@ -38,7 +40,7 @@ func GetProcessInfoMap() (map[int]*shared.ProcessInfo, error) {
 
 func readProcess(pid int) *shared.ProcessInfo {
 	statPath := filepath.Join("/proc", strconv.Itoa(pid), "stat")
-	statData, err := os.ReadFile(statPath)
+	statData, err := safeio.ReadFile(statPath)
 	if err != nil {
 		return nil
 	}
@@ -89,12 +91,11 @@ func parseStat(stat string) []string {
 
 func readUID(pid int) string {
 	statusPath := filepath.Join("/proc", strconv.Itoa(pid), "status")
-	f, err := os.Open(statusPath)
+	raw, err := safeio.ReadFile(statusPath)
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(strings.NewReader(string(raw)))
 	for sc.Scan() {
 		line := sc.Text()
 		if strings.HasPrefix(line, "Uid:") {
@@ -109,13 +110,12 @@ func readUID(pid int) string {
 
 func readIO(pid int) (uint64, uint64, uint64) {
 	path := filepath.Join("/proc", strconv.Itoa(pid), "io")
-	f, err := os.Open(path)
+	raw, err := safeio.ReadFile(path)
 	if err != nil {
 		return 0, 0, 0
 	}
-	defer f.Close()
 	var r, w, o uint64
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(strings.NewReader(string(raw)))
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
 		if len(fields) != 2 {
@@ -139,9 +139,25 @@ func readCPUTime(statFields []string) time.Duration {
 	if len(statFields) < 17 {
 		return 0
 	}
-	utime, _ := strconv.ParseUint(statFields[13], 10, 64)
-	stime, _ := strconv.ParseUint(statFields[14], 10, 64)
-	clk := uint64(100) // default USER_HZ
-	nanos := (utime + stime) * (1e9 / clk)
-	return time.Duration(nanos)
+	utime, err := strconv.ParseInt(statFields[13], 10, 64)
+	if err != nil || utime < 0 {
+		utime = 0
+	}
+	stime, err := strconv.ParseInt(statFields[14], 10, 64)
+	if err != nil || stime < 0 {
+		stime = 0
+	}
+	const clk int64 = 100 // default USER_HZ
+	nsPerTick := int64(time.Second) / clk
+	if nsPerTick <= 0 {
+		return 0
+	}
+	if utime > math.MaxInt64-stime {
+		return time.Duration(math.MaxInt64)
+	}
+	totalTicks := utime + stime
+	if totalTicks > math.MaxInt64/nsPerTick {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(totalTicks * nsPerTick)
 }

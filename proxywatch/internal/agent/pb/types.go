@@ -91,3 +91,16 @@ type CommandResponse struct {
 	Success   bool   `json:"success"`
 	Error     string `json:"error,omitempty"`
 }
+
+type EnrollRequest struct {
+	ClientNonce string `json:"client_nonce"`
+	ClientUnix  int64  `json:"client_unix"`
+	ClientProof string `json:"client_proof"`
+}
+
+type EnrollResponse struct {
+	ServerNonce       string `json:"server_nonce"`
+	ServerUnix        int64  `json:"server_unix"`
+	ServerFingerprint string `json:"server_fingerprint"`
+	ServerProof       string `json:"server_proof"`
+}

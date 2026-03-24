@@ -1,18 +1,17 @@
 # ProxyWatch
 
-ProxyWatch is a process network monitor that classifies processes into roles based on a number of signals. It's nothing complicated, we just are mapping and learning how legitimate processes act, while doing the same for malicious processes. We then take this data, train, learn and apply a role to each process.
+ProxyWatch is a process/network behavior monitor that classifies process activity into role families (`tunnel`, `session`, `beacon`, `listener`, `outbound`, `other`) using host telemetry plus persisted learning data.
 
 ## Features
 
-- Proxywatch has a Terminal User Interface (TUI), giving operators a clean view of each process.
-
-- Processes are assigned multiple roles, but these roles are the suspicious ones (`Tunnel`, `Session`, `Beacon` pushed to the top of the TUI).
-
-- You can run ProxyWatch locally or ingest multiple endpoints
-
-- Utilize BloodHound collections via Json files or API for auto ingestion
-
-- Using inspect mode, discover how a process is labeled
+- Terminal UI for host/process monitoring and triage.
+- Local mode or multi-host ingest mode (`-listen` + remote `-connect`).
+- Contour workflow for probe checks and endpoint/proxy discovery.
+- Calibration workflow for profile generation and apply.
+- SIEM workflow for report/JSON detection packs.
+- BloodHound collection/export with optional API upload.
+- Keystore workflow for runtime secrets/settings.
+- Per-menu help overlays (`?`) across dashboard and workflows.
 
 ## Demo
 
@@ -21,97 +20,175 @@ ProxyWatch is a process network monitor that classifies processes into roles bas
 ## Quick Start
 
 ### Build
+
 ```bash
 git clone https://github.com/In3x0rabl3/Proxywatch.git
 cd Proxywatch/proxywatch
-go mod download
 make
+# binaries are written to ./build/
 ```
 
-### Run Ingest Mode (multi-host)
+### Run Local UI
+
 ```bash
-sudo ./proxywatch-linux-amd64 -listen 0.0.0.0:50051
+sudo ./build/proxywatch-linux-amd64
 ```
 
-### Run Agents:
+### Run Ingest Server (multi-host)
+
 ```bash
-./pwa-windows-amd64.exe server <proxywatch-ip>:50051
+sudo ./build/proxywatch-linux-amd64 -listen 0.0.0.0:50051
 ```
 
-## TUI
-- `UP/DOWN`: move selection
-- `ENTER`: inspect selected process
-- `w`: whitelist selected process
-- `W`: manage whitelist entries
-- `c`: open collection workflow
+### Run Agent (example)
+
+```bash
+./build/proxywatch-windows-amd64.exe -connect <proxywatch-ip>:50051
+```
+
+## Dashboard Shortcuts
+
+- `?`: open dashboard help
+- `Enter`: inspect selected process
+- `f`: role/sort menu
+- `r`: refresh interval menu
+- `b`: BloodHound collection workflow
+- `c`: calibration workflow
+- `o`: contour workflow
+- `m`: SIEM workflow
+- `k`: keystore workflow
+- `w`: whitelist manager
+- `W`: whitelist selected process
+- `x`: remove disconnected host row
 - `q`: quit
 
+## Menu Help
+
+Press `?` in each mode for context help:
+
+- Dashboard
+- Inspect
+- BloodHound
+- Calibration
+- Contour
+- SIEM
+- Keystore
+- Whitelist
 
 ## Inspect
-- `k`: Kill local and remote processes 
-- `x`: Traffic reasons + signals
-- Connections: local/remote/state/scope
-- Autonomous System Number (ASN): Resolving ASNs to Organizations
 
+- `k` then confirm (`y`) to kill selected process (local/remote as applicable)
+- `x`: toggle reason/signal explanation view
+- Connection details include local/remote/state/scope
+- ASN context is shown for external destinations
 
 ## Roles
 
-ProxyWatch shows a role family plus the specific role in Inspect. Families are what you filter; specific roles show the exact shape.
+Primary threat-focused role families:
 
-| Role (family) | Includes | Meaning |
-| --- | --- | --- |
-| `tunnel` | `reverse-tunnel`, `reverse-proxy`, `reverse-transport`, `susp-tun` | Process looks like a proxy/relay (inbound + outbound forwarding shape). |
-| `session` | `reverse-control`, `susp-session` | Persistent control channel without proxying evidence. |
-| `beacon` | `susp-beacon` | Recurring callback/check-in pattern (cadence and jitter). |
-| `listener` | `proxy-listener`, `listener-with-clients`, `listener-with-outbound`, `listener-only` | Process is listening for inbound connections (with or without clients/outbound). |
-| `outbound` | `outbound-only` | Outbound traffic with no strong control/tunnel shape. |
+- `tunnel`: process looks like a proxy/relay (inbound + outbound forwarding shape)
+- `session`: persistent control channel without proxying evidence
+- `beacon`: recurring callback/check-in pattern (cadence and jitter)
 
 ## How Classification Works
 
-Classification logic is in `proxywatch/internal/classifier/rank.go`.
+Classification logic is in `proxywatch/internal/detection/rank.go`.
 
-State/threshold values are in `proxywatch/internal/shared/classify.go`.
+Primary thresholds and windows are in `proxywatch/internal/shared/classify.go`.
 
-Core signals:
-- Control channel: long lived `ESTABLISHED` outbound connection (age-based).
+Core signals include:
 
-- Tunnel: listener + control + local/internal patterns.
+- Long-lived control-channel behavior.
+- Tunnel/forwarding patterns from listener + flow relationships.
+- Beacon cadence/jitter behavior.
+- Internal/external scope and destination-prefix context.
+- ASN organization context as a bounded signal.
+- Stability guards to reduce role thrash.
 
-- Beacon: recurring short lived callbacks with cadence/jitter checks.
+Runtime classifier memory is persisted across runs at:
 
-- Destination verification: internal/external scope and prefix.
+- `~/.proxywatch/runtime/classifier-memory.json`
 
-- ASN: resolved ASNs to orgs for alignment/mismatch as a bounded secondary score adjustment.
+## Calibration and Learning Persistence
 
-- Stability guards: session/beacon precedence and display smoothing to reduce role thrash.
+Calibration stores reusable state under `~/.proxywatch/calibration`:
 
-Current behavior notes:
-- Active long lived control channels stay as sessions.
+- Active applied profile: `tuning.json`
+- Historical profiles: `profiles/*.json`
+- Learning model: `training/environment-model.json`
+- Calibration memory index: `training/validated-calibrations.jsonl`
 
-- Short lived suspicious processes are retained briefly in TUI so operators can inspect them before they disappear.
+This means learning is cumulative over time, not only per-report.
+
+## Contour Workflow
+
+Contour (`o`) supports role/mode-driven checks and report generation.
+
+- Connectivity/protocol/port probe checks.
+- Listener/client/scan behavior depending on selected role/mode.
+- Endpoint/proxy/config discovery and summary.
+- Contour hints exported for calibration context.
+
+## SIEM Workflow
+
+SIEM generation (`m`) builds SIEM-facing artifacts from calibration output:
+
+- Markdown report output
+- JSON detection bundle
+- Query templates for Splunk/KQL/Elastic/Sigma-like mappings
+
+Backend implementation lives in:
+
+- `proxywatch/internal/siem/siem.go`
+
+## Keystore
+
+Keystore (`k`) is the primary way to manage runtime secrets/settings.
+
+- Default encrypted store: `~/.proxywatch/keystore.enc`
+- Local key file: `~/.proxywatch/keystore.key`
+- Actions:
+  - `Load`: read encrypted values from disk into UI/runtime
+  - `Save`: encrypt current values to disk
+  - `Apply`: apply current values to runtime without writing disk
+
+Common values managed here:
+
+- Provider/API config (`OPENAI_*`, `ANTHROPIC_*`, `LOCAL_LLM_*`)
+- BloodHound upload config (`BLOODHOUND_API_*`)
+- SIEM generation config (`PROXYWATCH_SIEM_*`)
+- Detection export outputs (`PROXYWATCH_DETECT_*`)
 
 ## BloodHound Collection
 
-Collection:
-1. Press `c`
-2. Set output/duration/roles
+Collection flow:
+
+1. Press `b`
+2. Set output and duration
 3. Start collection
 4. JSON is written or uploaded via API
 
 Cypher query pack:
+
 - `docs/queries.md`
 
 ### Upload Config
-Set env vars in the same shell that launches ProxyWatch:
-```bash
-export BLOODHOUND_API_URL='http://<bloodhound>:8282/api/v2'
-export BLOODHOUND_API_TOKEN='<token>'
-export BLOODHOUND_API_ID='<id>'
-```
 
-### Collector Graph Behavior
-Collector logic: `proxywatch/internal/bloodhound/collect.go`
+Configure upload values in the **Keystore** menu (`k`), then `Save` + `Apply`:
 
+- `BLOODHOUND_API_URL`
+- `BLOODHOUND_API_TOKEN`
+- `BLOODHOUND_API_TOKEN_ID` (required for HMAC key mode)
+
+Notes:
+
+- `BLOODHOUND_API_URL` can be tenant root (`https://tenant`) or full API base (`https://tenant/api/v2`); ProxyWatch normalizes to `/api/v2`.
+- Remote `http://` URLs are rejected for token safety (localhost HTTP is allowed).
+- Environment variables are only fallback compatibility input; keystore/runtime values are primary.
+
+Collector logic:
+
+- `proxywatch/internal/bloodhound/collect.go`
 
 ### BloodHound Examples
 
@@ -129,27 +206,29 @@ Collector logic: `proxywatch/internal/bloodhound/collect.go`
 
 ## Tuning Guide
 
-Edit for tuning:
+Key edit points:
+
 - `proxywatch/internal/shared/classify.go`
-  - time windows, scoring caps, beacon thresholds, role family ordering.
-
-- `proxywatch/internal/classifier/rank.go`
-  - role promotion/demotion logic and evidence handling.
-
-- `proxywatch/internal/shared/helper.go`
-  - benign context helpers (path/company/service context checks).
-
+- `proxywatch/internal/detection/rank.go`
+- `proxywatch/internal/shared/classify_memory.go`
 - `proxywatch/cmd/proxywatch/main.go`
-  - startup defaults (`minScore`, refresh interval, role filter defaults).
+- `proxywatch/docs/architecture/CODEMAP.md`
 
 ## CLI Flags
-- `-roles`: roles or role families to display
-- `-interval`: refresh interval (default `250ms`)
-- `-incremental`: reuse unchanged PID classification (faster)
+
 - `-listen`: enable ingest server mode
-- `-stale`: drop stale remote hosts after duration
+- `-connect`: integrated agent mode and stream to remote ingest
+- `-id`: override host identifier for agent mode
+- `-agent-token`: set shared token for agent/server auth
+- `-service`, `-install`, `-start`, `-stop`, `-uninstall`: Windows service controls (not supported on Linux)
+
+Detection export runtime keys (via keystore):
+
+- `PROXYWATCH_DETECT_DEBUG_LOG`: NDJSON debug log output path
+- `PROXYWATCH_DETECT_RULES_JSON`: defender JSON output path
 
 ## Notes
+
 - Whitelist is stored on disk and applied after classification.
 - Kill actions may require elevation.
-- By default Proxywatch is set only show sessions and tunnels, the best way to examine is to set '-roles all'
+- Use dashboard role filters and sort controls to tune operator views.

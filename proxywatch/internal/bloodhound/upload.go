@@ -8,14 +8,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"proxywatch/internal/keystore"
+	"proxywatch/internal/safeio"
 )
 
-// Runtime BloodHound upload configuration is env-only.
+// Runtime BloodHound upload configuration is keystore/runtime-config driven.
+// Environment variables remain as a fallback for compatibility.
 // Required:
 //   - BLOODHOUND_API_URL
 //   - BLOODHOUND_API_TOKEN
@@ -37,7 +45,7 @@ var (
 )
 
 func init() {
-	refreshConfigFromEnv()
+	refreshConfigFromRuntime()
 }
 
 // fileUploadJobResponse matches /api/v2/file-upload/start response.
@@ -51,18 +59,31 @@ type fileUploadJobResponse struct {
 // UploadIfConfigured uploads the given JSON payload to BloodHound via the file upload API.
 // Returns nil if upload is skipped (no token) or on success; otherwise returns an error.
 func UploadIfConfigured(filename string, payload Payload) error {
-	refreshConfigFromEnv()
+	refreshConfigFromRuntime()
 
 	if BloodhoundAPIURL == "" || BloodhoundAPIToken == "" {
 		return nil // not configured; skip
 	}
+	normalizedURL, err := validateBloodhoundAPIURL(BloodhoundAPIURL)
+	if err != nil {
+		return err
+	}
+	BloodhoundAPIURL = normalizedURL
 
-	tmpFile, err := os.CreateTemp("", "pw-bh-*.json")
+	tmpDir := proxywatchTempDir()
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		return fmt.Errorf("tmpdir: %w", err)
+	}
+	tmpFile, err := os.CreateTemp(tmpDir, "pw-bh-*.json")
 	if err != nil {
 		return fmt.Errorf("tmpfile: %w", err)
 	}
-	defer os.Remove(tmpFile.Name())
-	if err := WriteJSON(tmpFile.Name(), payload); err != nil {
+	tmpPath := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("tmpfile close: %w", err)
+	}
+	defer os.Remove(tmpPath)
+	if err := WriteJSON(tmpPath, payload); err != nil {
 		return fmt.Errorf("write payload: %w", err)
 	}
 
@@ -71,7 +92,7 @@ func UploadIfConfigured(filename string, payload Payload) error {
 		return fmt.Errorf("start upload job: %w", err)
 	}
 
-	if err := uploadFile(jobID, tmpFile.Name(), filename); err != nil {
+	if err := uploadFile(jobID, tmpPath, filename); err != nil {
 		return fmt.Errorf("upload file: %w", err)
 	}
 
@@ -166,30 +187,32 @@ func doAuthRequest(method, url string, body []byte, headers map[string]string) (
 	if _, decodeErr := base64.StdEncoding.DecodeString(BloodhoundAPIToken); decodeErr != nil {
 		return resp, nil
 	}
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		return nil, err
+	}
 	return makeRequest(true)
 }
 
-func refreshConfigFromEnv() {
-	// Enforce env-only configuration (ignore any compile-time embedded values).
+func refreshConfigFromRuntime() {
+	// Enforce runtime keystore configuration (ignore compile-time values).
 	BloodhoundAPIURL = ""
 	BloodhoundAPIToken = ""
 	BloodhoundAPITokenID = ""
 
-	if v := readFirstEnv("BLOODHOUND_API_URL", "BLOODHOUND_URL"); v != "" {
+	if v := readFirstRuntime("BLOODHOUND_API_URL", "BLOODHOUND_URL"); v != "" {
 		BloodhoundAPIURL = strings.TrimRight(v, "/")
 	}
-	if v := readFirstEnv("BLOODHOUND_API_TOKEN", "BLOODHOUND_API_KEY", "BLOODHOUND_TOKEN"); v != "" {
+	if v := readFirstRuntime("BLOODHOUND_API_TOKEN", "BLOODHOUND_API_KEY", "BLOODHOUND_TOKEN"); v != "" {
 		BloodhoundAPIToken = v
 	}
-	if v := readFirstEnv("BLOODHOUND_API_TOKEN_ID", "BLOODHOUND_API_ID", "BLOODHOUND_TOKEN_ID"); v != "" {
+	if v := readFirstRuntime("BLOODHOUND_API_TOKEN_ID", "BLOODHOUND_API_ID", "BLOODHOUND_TOKEN_ID"); v != "" {
 		BloodhoundAPITokenID = v
 	}
 }
 
 // UploadConfigStatus reports if upload is configured and, if not, why.
 func UploadConfigStatus() (configured bool, reason string) {
-	refreshConfigFromEnv()
+	refreshConfigFromRuntime()
 
 	missing := make([]string, 0, 3)
 	if BloodhoundAPIURL == "" {
@@ -200,6 +223,9 @@ func UploadConfigStatus() (configured bool, reason string) {
 	}
 	if len(missing) > 0 {
 		return false, "missing " + strings.Join(missing, ", ")
+	}
+	if _, err := validateBloodhoundAPIURL(BloodhoundAPIURL); err != nil {
+		return false, err.Error()
 	}
 
 	if looksLikeTokenKey(BloodhoundAPIToken) &&
@@ -231,8 +257,11 @@ func responseDetail(resp *http.Response) string {
 	}
 }
 
-func readFirstEnv(keys ...string) string {
+func readFirstRuntime(keys ...string) string {
 	for _, key := range keys {
+		if v := strings.TrimSpace(keystore.RuntimeValue(key)); v != "" {
+			return v
+		}
 		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 			return v
 		}
@@ -247,6 +276,48 @@ func looksLikeJWT(token string) bool {
 func looksLikeTokenKey(token string) bool {
 	// BloodHound HMAC keys are commonly base64-like strings.
 	return strings.ContainsAny(token, "+/=")
+}
+
+func validateBloodhoundAPIURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fmt.Errorf("missing BLOODHOUND_API_URL")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid BLOODHOUND_API_URL: %w", err)
+	}
+	if strings.TrimSpace(parsed.Host) == "" || strings.TrimSpace(parsed.Scheme) == "" {
+		return "", fmt.Errorf("invalid BLOODHOUND_API_URL: missing scheme or host")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+		// continue
+	case "http":
+		if isLocalhost(parsed.Hostname()) {
+			// continue
+			break
+		}
+		return "", fmt.Errorf("insecure BLOODHOUND_API_URL %q: use https (http allowed only for localhost)", raw)
+	default:
+		return "", fmt.Errorf("unsupported BLOODHOUND_API_URL scheme %q", parsed.Scheme)
+	}
+	parsed.Path = normalizeBloodhoundAPIPath(parsed.Path)
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+func isLocalhost(host string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func startUploadJob() (string, error) {
@@ -278,16 +349,24 @@ func startUploadJob() (string, error) {
 }
 
 func uploadFile(jobID, path, filename string) error {
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		return err
 	}
+	uploadName := strings.TrimSpace(filename)
+	if uploadName == "" {
+		uploadName = filepath.Base(path)
+	}
 
 	url := fmt.Sprintf("%s/file-upload/%s", BloodhoundAPIURL, jobID)
-	resp, err := doAuthRequest("POST", url, data, map[string]string{
+	headers := map[string]string{
 		"Content-Type": "application/json",
 		"Accept":       "application/json",
-	})
+	}
+	if uploadName != "" {
+		headers["X-File-Upload-Name"] = uploadName
+	}
+	resp, err := doAuthRequest("POST", url, data, headers)
 	if err != nil {
 		return err
 	}
@@ -300,6 +379,23 @@ func uploadFile(jobID, path, filename string) error {
 		return fmt.Errorf("upload %s (api_url=%s auth=%s): %s", responseDetail(resp), BloodhoundAPIURL, authMode(), string(body))
 	}
 	return nil
+}
+
+func normalizeBloodhoundAPIPath(rawPath string) string {
+	clean := path.Clean("/" + strings.TrimSpace(rawPath))
+	if clean == "." || clean == "/" {
+		return "/api/v2"
+	}
+	parts := strings.Split(strings.TrimPrefix(clean, "/"), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if strings.EqualFold(parts[i], "api") && strings.EqualFold(parts[i+1], "v2") {
+			return "/" + strings.Join(parts[:i+2], "/")
+		}
+	}
+	if len(parts) > 0 && strings.EqualFold(parts[len(parts)-1], "api") {
+		return "/" + strings.Join(append(parts, "v2"), "/")
+	}
+	return "/" + strings.Join(append(parts, "api", "v2"), "/")
 }
 
 func endUploadJob(jobID string) error {

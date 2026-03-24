@@ -6,6 +6,7 @@ type ClassifyOptions struct {
 	MinScore    int
 	RoleFilter  map[string]bool
 	Incremental bool
+	HostScope   string
 }
 
 type CandidateSignature struct {
@@ -33,6 +34,7 @@ type ProcHistory struct {
 	LastSeen        time.Time
 	LastActive      time.Time
 	LastSuspicious  time.Time
+	LastScoreEval   time.Time
 	SuspicionKind   int
 	StickyScore     int
 	DisplayStreak   int
@@ -43,25 +45,58 @@ type ProcHistory struct {
 	ShapeSamples    int
 }
 
+type ProcessBehavior struct {
+	LastSeen               time.Time      `json:"last_seen"`
+	Observations           int            `json:"observations"`
+	SuspiciousObservations int            `json:"suspicious_observations"`
+	StrongObservations     int            `json:"strong_observations"`
+	ActiveObservations     int            `json:"active_observations"`
+	AvgOutExternal         float64        `json:"avg_out_external"`
+	AvgOutInternal         float64        `json:"avg_out_internal"`
+	AvgDistinctTargets     float64        `json:"avg_distinct_targets"`
+	AvgControlSeconds      float64        `json:"avg_control_seconds"`
+	KnownPrefixes          map[string]int `json:"known_prefixes,omitempty"`
+	LastRoles              map[string]int `json:"last_roles,omitempty"`
+	LastUpdated            time.Time      `json:"last_updated"`
+}
+
+type PendingControlHistory struct {
+	Target       string    `json:"target"`
+	FirstSeen    time.Time `json:"first_seen"`
+	LastSeen     time.Time `json:"last_seen"`
+	Observations int       `json:"observations"`
+}
+
 const (
 	SuspicionControl = 1
 	SuspicionProxy   = 2
+	SuspicionBeacon  = 3
 )
 
 var (
 	ConnFirstSeen             = make(map[ConnKey]time.Time)
-	ReverseControlMinDuration = 10 * time.Second
+	ConnLastSeen              = make(map[ConnKey]time.Time)
+	ConnMissingGrace          = 45 * time.Second
+	ReverseControlMinDuration = 5 * time.Second
+	SessionMinLabelDuration   = 1 * time.Minute
+	TunnelMinLabelDuration    = 1 * time.Minute
+	SMBPipeMinLabelDuration   = 1 * time.Minute
+	BeaconMinLabelDuration    = 2 * time.Minute
 	LongLivedOutboundMinAge   = 60 * time.Second
 	ShortLivedOutboundMaxAge  = 10 * time.Second
 	ShortLivedBurstWindow     = 30 * time.Second
 	SlowScanWindow            = 3 * time.Minute
-	BeaconSleepThreshold      = 60 * time.Second
+	BeaconSleepThreshold      = 30 * time.Second
 	BeaconMinIntervals        = 2
 	LocalTransportWindow      = 30 * time.Second
+	PendingControlMinDuration = 15 * time.Second
+	PendingControlGapReset    = 45 * time.Second
+	PendingControlMinObs      = 3
 	RecentClientSeen          = make(map[int]time.Time)
 	RecentOutboundSeen        = make(map[int]time.Time)
 	RecentInternalScanSeen    = make(map[int]time.Time)
 	ShortLivedBurstLast       = make(map[int]time.Time)
+	ShortLivedBurstFirst      = make(map[int]time.Time)
 	ShortLivedBurstCount      = make(map[int]int)
 	ShortLivedBurstInterval   = make(map[int]time.Duration)
 	ShortLivedBurstHits       = make(map[int]int)
@@ -72,36 +107,29 @@ var (
 	LocalTransportLast        = make(map[int]time.Time)
 	ParentChildFreq           = make(map[string]int)
 	RareTupleCount            = make(map[string]int)
+	PendingControlByPID       = make(map[int]*PendingControlHistory)
 	ActiveWindow              = 10 * time.Second
 	SuspicionWindow           = 5 * time.Minute
 	HistoryTTL                = 5 * time.Minute
 	CleanupInterval           = 30 * time.Second
 	ReverseStickyScore        = 90
 	ForwardStickyScore        = 70
-	ReverseControlBaseScore   = 40
+	ReverseControlBaseScore   = 45
 	MinInternalTargetsForRev  = 2
 	MinInternalPortsForRev    = 2
 	OutboundOnlyExternalCap   = 30
 	ShapeDeltaThreshold       = 0.35 // 35% shift triggers shape anomaly
 	BeaconJitterCoVMax        = 1.5  // tolerate broad jitter for callback cadence
-	// How far to demote traffic that matches verified destinations without strong evidence in the TUI ranking.
-	TrafficVerifiedPenalty = 100
+	// How far to demote traffic that matches verified destinations without strong evidence in the UI ranking.
+	TrafficVerifiedPenalty = 80
 	// Minimum external target prefix diversity to treat traffic as verified on benign ports.
-	VerifiedExternalMinPrefixes = 5
-	ProcHistoryByPID            = make(map[int]*ProcHistory)
-	LastHistoryCleanup          time.Time
-	BenignControlPorts          = map[int]bool{
-		53:   true,
-		22:   true,
-		80:   true,
-		443:  true,
-		8080: true,
-		8443: true,
-		8000: true,
-		8001: true,
-		8008: true,
-		8888: true,
-	}
+	VerifiedExternalMinPrefixes      = 5
+	ObservedExternalPortProcessCount = make(map[int]int)
+	ObservedExternalPortPrefixCount  = make(map[int]int)
+	ObservedExternalPortConnCount    = make(map[int]int)
+	ProcHistoryByPID                 = make(map[int]*ProcHistory)
+	ProcessBehaviorByKey             = make(map[string]*ProcessBehavior)
+	LastHistoryCleanup               time.Time
 )
 
 func RolePriority(role string) int {
@@ -110,6 +138,8 @@ func RolePriority(role string) int {
 		return 100
 	case "reverse-proxy":
 		return 96
+	case "smb-pipe":
+		return 95
 	case "susp-tun":
 		return 94
 	case "reverse-tunnel":
@@ -137,7 +167,7 @@ func RolePriority(role string) int {
 
 func RoleFamily(role string) string {
 	switch role {
-	case "reverse-transport", "reverse-proxy", "reverse-tunnel", "susp-tun":
+	case "smb-pipe", "reverse-transport", "reverse-proxy", "reverse-tunnel", "susp-tun":
 		return "tunnel"
 	case "reverse-control", "susp-session":
 		return "session"
@@ -154,7 +184,7 @@ func RoleFamily(role string) string {
 
 func IsControlChannelRole(role string) bool {
 	switch role {
-	case "reverse-control", "reverse-transport", "susp-tun", "susp-session", "susp-beacon":
+	case "reverse-control", "reverse-transport", "smb-pipe", "susp-tun", "susp-session", "susp-beacon":
 		return true
 	default:
 		return false

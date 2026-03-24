@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"proxywatch/internal/safeio"
 )
 
 type Whitelist struct {
@@ -17,14 +19,33 @@ type Whitelist struct {
 }
 
 func DefaultWhitelistPath() string {
+	return filepath.Join(proxywatchDataRoot(), "whitelist.json")
+}
+
+func legacyWhitelistPath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil || dir == "" {
-		return "proxywatch_whitelist.json"
+		return ""
 	}
 	return filepath.Join(dir, "proxywatch", "whitelist.json")
 }
 
+func normalizeWhitelistPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = DefaultWhitelistPath()
+	}
+	path = expandHomePathForWhitelist(path)
+	if filepath.IsAbs(path) {
+		return path
+	}
+	rel := sanitizeRelativePath(path, "whitelist.json")
+	return filepath.Join(proxywatchDataRoot(), rel)
+}
+
 func LoadWhitelist(path string) (*Whitelist, error) {
+	inputPath := strings.TrimSpace(path)
+	path = normalizeWhitelistPath(path)
 	if path == "" {
 		path = DefaultWhitelistPath()
 	}
@@ -33,21 +54,38 @@ func LoadWhitelist(path string) (*Whitelist, error) {
 		Path:    path,
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := safeio.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return w, nil
+			// Backward compatibility: migrate old config location on first write.
+			if inputPath == "" {
+				legacy := legacyWhitelistPath()
+				if legacy != "" && legacy != path {
+					if legacyData, legacyErr := safeio.ReadFile(legacy); legacyErr == nil {
+						data = legacyData
+						err = nil
+					} else if !errors.Is(legacyErr, os.ErrNotExist) {
+						return nil, legacyErr
+					} else {
+						return w, nil
+					}
+				} else {
+					return w, nil
+				}
+			} else {
+				return w, nil
+			}
+		} else {
+			return nil, err
 		}
-		return nil, err
 	}
 
-	var items []string
-	if err := json.Unmarshal(data, &items); err != nil {
+	items, err := decodeWhitelistEntries(data)
+	if err != nil {
 		return nil, err
 	}
 	for _, item := range items {
-		item = strings.TrimSpace(item)
-		if item == "" {
+		if !isValidWhitelistEntry(item) {
 			continue
 		}
 		w.Entries[item] = true
@@ -65,7 +103,7 @@ func (w *Whitelist) Save() error {
 	}
 	dir := filepath.Dir(path)
 	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
 	}
@@ -82,7 +120,7 @@ func (w *Whitelist) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, 0o600)
 }
 
 func (w *Whitelist) IsWhitelisted(c Candidate) bool {
@@ -152,7 +190,7 @@ func (w *Whitelist) Remove(key string) error {
 		return errors.New("whitelist not configured")
 	}
 	key = strings.TrimSpace(key)
-	if key == "" {
+	if !isValidWhitelistEntry(key) {
 		return errors.New("invalid whitelist entry")
 	}
 	w.mu.Lock()
@@ -182,4 +220,146 @@ func whitelistKey(c Candidate) string {
 func normalizePath(p string) string {
 	p = filepath.Clean(p)
 	return strings.ToLower(p)
+}
+
+func proxywatchDataRoot() string {
+	home := userHomeDir()
+	if home == "" {
+		return ".proxywatch"
+	}
+	return filepath.Join(home, ".proxywatch")
+}
+
+func userHomeDir() string {
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return strings.TrimSpace(home)
+	}
+	for _, key := range []string{"HOME", "USERPROFILE"} {
+		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+			return val
+		}
+	}
+	drive := strings.TrimSpace(os.Getenv("HOMEDRIVE"))
+	path := strings.TrimSpace(os.Getenv("HOMEPATH"))
+	if drive != "" && path != "" {
+		return drive + path
+	}
+	return ""
+}
+
+func expandHomePathForWhitelist(path string) string {
+	if path == "" || path[0] != '~' {
+		return path
+	}
+	home := userHomeDir()
+	if home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
+func sanitizeRelativePath(path, fallback string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fallback
+	}
+	path = filepath.Clean(path)
+	if path == "." || path == "" {
+		return fallback
+	}
+	if strings.HasPrefix(path, ".proxywatch"+string(filepath.Separator)) {
+		path = strings.TrimPrefix(path, ".proxywatch"+string(filepath.Separator))
+	}
+	for strings.HasPrefix(path, "."+string(filepath.Separator)) {
+		path = strings.TrimPrefix(path, "."+string(filepath.Separator))
+	}
+	path = strings.TrimLeft(path, string(filepath.Separator))
+	parentPrefix := ".." + string(filepath.Separator)
+	for path == ".." || strings.HasPrefix(path, parentPrefix) {
+		if path == ".." {
+			return fallback
+		}
+		path = strings.TrimPrefix(path, parentPrefix)
+	}
+	if path == "" || path == "." {
+		return fallback
+	}
+	return path
+}
+
+func decodeWhitelistEntries(data []byte) ([]string, error) {
+	data = []byte(strings.TrimSpace(string(data)))
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	var list []string
+	if err := json.Unmarshal(data, &list); err == nil {
+		return normalizeEntryList(list), nil
+	}
+
+	var mapEntries map[string]bool
+	if err := json.Unmarshal(data, &mapEntries); err == nil {
+		out := make([]string, 0, len(mapEntries))
+		for key, enabled := range mapEntries {
+			if !enabled {
+				continue
+			}
+			out = append(out, key)
+		}
+		return normalizeEntryList(out), nil
+	}
+
+	var obj struct {
+		Entries []string `json:"entries"`
+		Items   []string `json:"items"`
+	}
+	if err := json.Unmarshal(data, &obj); err == nil {
+		combined := append([]string{}, obj.Entries...)
+		combined = append(combined, obj.Items...)
+		return normalizeEntryList(combined), nil
+	}
+
+	return nil, errors.New("invalid whitelist file format")
+}
+
+func normalizeEntryList(items []string) []string {
+	out := make([]string, 0, len(items))
+	seen := make(map[string]bool, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if seen[item] {
+			continue
+		}
+		seen[item] = true
+		out = append(out, item)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func isValidWhitelistEntry(entry string) bool {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return false
+	}
+	parts := strings.SplitN(entry, "|", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	host := strings.TrimSpace(parts[0])
+	spec := strings.TrimSpace(parts[1])
+	if host == "" || spec == "" {
+		return false
+	}
+	return strings.HasPrefix(spec, "path:") || strings.HasPrefix(spec, "name:")
 }

@@ -94,6 +94,20 @@ message CommandResponse {
   string error = 3;
 }
 
+message EnrollRequest {
+  string client_nonce = 1;
+  int64 client_unix = 2;
+  string client_proof = 3;
+}
+
+message EnrollResponse {
+  string server_nonce = 1;
+  int64 server_unix = 2;
+  string server_fingerprint = 3;
+  string server_proof = 4;
+}
+
 service ProxyWatchAgent {
   rpc StreamCandidates(stream ClientMessage) returns (stream ServerCommand);
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
 }

@@ -7,6 +7,7 @@ import (
 
 type LingerEntry struct {
 	Candidate Candidate
+	FirstSeen time.Time
 	LastSeen  time.Time
 }
 
@@ -27,9 +28,19 @@ func ApplyCandidateLinger(current []Candidate, now time.Time, keepFor time.Durat
 
 	for _, c := range current {
 		key := CandidateKey(c)
+		if IsProxywatchProcess(c.Proc) {
+			delete(*cache, key)
+			continue
+		}
 		seen[key] = struct{}{}
+		firstSeen := now
+		if entry, ok := (*cache)[key]; ok && !entry.FirstSeen.IsZero() {
+			firstSeen = entry.FirstSeen
+		}
+		c.SeenSeconds = max(0, int(now.Sub(firstSeen).Seconds()))
 		(*cache)[key] = LingerEntry{
 			Candidate: c,
+			FirstSeen: firstSeen,
 			LastSeen:  now,
 		}
 		out = append(out, c)
@@ -39,12 +50,17 @@ func ApplyCandidateLinger(current []Candidate, now time.Time, keepFor time.Durat
 		if _, ok := seen[key]; ok {
 			continue
 		}
-		if now.Sub(entry.LastSeen) > keepFor {
+		if IsProxywatchProcess(entry.Candidate.Proc) {
+			delete(*cache, key)
+			continue
+		}
+		if now.Sub(entry.LastSeen) > lingerKeepFor(entry.Candidate, keepFor) {
 			delete(*cache, key)
 			continue
 		}
 
 		stale := entry.Candidate
+		stale.SeenSeconds = max(0, int(now.Sub(entry.FirstSeen).Seconds()))
 		if stale.Proc != nil {
 			stale.Proc.IOReadBps = 0
 			stale.Proc.IOWriteBps = 0
@@ -56,4 +72,25 @@ func ApplyCandidateLinger(current []Candidate, now time.Time, keepFor time.Durat
 
 	sort.Slice(out, func(i, j int) bool { return CandidateLess(out[i], out[j]) })
 	return out
+}
+
+func lingerKeepFor(c Candidate, base time.Duration) time.Duration {
+	keep := base
+	if keep <= 0 {
+		keep = CandidateLingerTTL
+	}
+	if c.StrongEvidence && CandidateStrongLingerTTL > keep {
+		keep = CandidateStrongLingerTTL
+	}
+	if IsControlChannelRole(c.Role) && CandidateSuspiciousLingerTTL > keep {
+		keep = CandidateSuspiciousLingerTTL
+	}
+	return keep
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

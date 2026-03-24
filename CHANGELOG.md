@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-03-24
+
+### Added
+- Per-menu help overlays (`?`) across Dashboard, Inspect, BloodHound, Calibration, Contour, SIEM, Keystore, and Whitelist views.
+- Calibration cancel path during model analysis (`Stop calibration`) with cancel-aware provider requests.
+- Dedicated SIEM package map entry and architecture docs refresh.
+
+### Changed
+- SIEM generation implementation moved from `internal/calibration/siem.go` to `internal/siem/siem.go`.
+- Calibration now uses `internal/calibration/siem_bridge.go` to expose the shared AI request pipeline to SIEM generation.
+- README updated to reflect current key bindings, workflows, persistence paths, and subsystem locations.
+- Code map (`docs/architecture/CODEMAP.md`) rewritten to match current file/module layout.
+
+### Fixed
+- Keystore setup panel clipping that hid `Save`/`Apply` on smaller layouts.
+- Reconnect host naming behavior that could leave stale disconnected host rows and create unnecessary host suffixes.
+- Dashboard process-list jitter by stabilizing candidate ordering/dedup behavior.
+
+### Removed
+- Go test files in repository (`internal/agent/server_test.go`, `internal/contour/probe_tunnel_test.go`).
+
 ## [1.0.2] - 2026-02-08
 
 ### Added

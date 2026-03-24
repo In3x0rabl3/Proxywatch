@@ -1,14 +1,14 @@
 package agent
 
 import (
-	"crypto/tls"
-	"crypto/x509"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,11 +17,16 @@ import (
 	"proxywatch/internal/shared"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/encoding"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 )
 
 const jsonCodecName = "json"
+const connectedHostFreshness = 3 * time.Second
+const reconnectHostTakeoverAfter = 10 * time.Second
 
 type jsonCodec struct{}
 
@@ -51,8 +56,9 @@ type Store struct {
 }
 
 type hostState struct {
-	updated time.Time
-	cands   []shared.Candidate
+	firstSeen time.Time
+	updated   time.Time
+	cands     []shared.Candidate
 }
 
 func NewStore() *Store {
@@ -65,15 +71,23 @@ func (s *Store) Update(host string, ts time.Time, cands []shared.Candidate) {
 	if host == "" {
 		host = "unknown"
 	}
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
 	for i := range cands {
 		if cands[i].Host == "" {
 			cands[i].Host = host
 		}
 	}
 	s.mu.Lock()
+	firstSeen := ts
+	if prev, ok := s.hosts[host]; ok && !prev.firstSeen.IsZero() {
+		firstSeen = prev.firstSeen
+	}
 	s.hosts[host] = hostState{
-		updated: ts,
-		cands:   cands,
+		firstSeen: firstSeen,
+		updated:   ts,
+		cands:     cands,
 	}
 	s.mu.Unlock()
 }
@@ -107,11 +121,133 @@ func (s *Store) Snapshot(staleAfter time.Duration) []shared.Candidate {
 	return out
 }
 
+func (s *Store) RemoveHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Fast path for exact key.
+	if _, ok := s.hosts[host]; ok {
+		delete(s.hosts, host)
+		return true
+	}
+
+	needle := strings.ToLower(shared.DisplayHost(host))
+	for key := range s.hosts {
+		if strings.EqualFold(key, host) || strings.ToLower(shared.DisplayHost(key)) == needle {
+			delete(s.hosts, key)
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) HostSummaries(staleAfter time.Duration, minScore int, roleFilter map[string]bool, connectedHosts map[string]bool) []shared.HostSummary {
+	now := time.Now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	connectedByHost := map[string]bool{}
+	connectedByDisplay := map[string]bool{}
+	for host := range connectedHosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		connectedByHost[strings.ToLower(host)] = true
+		connectedByDisplay[strings.ToLower(shared.DisplayHost(host))] = true
+	}
+
+	out := make([]shared.HostSummary, 0, len(s.hosts))
+	for host, state := range s.hosts {
+		displayHost := shared.DisplayHost(host)
+		status := "connected"
+		if connectedHosts == nil {
+			if staleAfter > 0 && now.Sub(state.updated) > staleAfter {
+				status = "disconnected"
+			}
+		} else {
+			mapConnected := connectedByHost[strings.ToLower(host)] || connectedByDisplay[strings.ToLower(displayHost)]
+			recentUpdate := !state.updated.IsZero() && now.Sub(state.updated) <= connectedHostFreshness
+			if staleAfter > 0 && !state.updated.IsZero() && now.Sub(state.updated) > staleAfter {
+				recentUpdate = false
+			}
+			if !mapConnected || !recentUpdate {
+				status = "disconnected"
+			}
+		}
+
+		summary := shared.HostSummary{
+			Host:      displayHost,
+			Status:    status,
+			FirstSeen: state.firstSeen,
+			LastSeen:  state.updated,
+		}
+
+		filtered := shared.ApplyScoreAndRoleFilters(state.cands, minScore, roleFilter)
+		roleFamilies := map[string]struct{}{}
+		for _, cand := range filtered {
+			if cand.Proc == nil {
+				continue
+			}
+			if shared.IsProxywatchProcess(cand.Proc) {
+				continue
+			}
+			summary.Processes++
+			switch shared.CandidateState(cand) {
+			case "active":
+				summary.Active++
+			case "strong":
+				summary.Strong++
+			default:
+				summary.Watch++
+			}
+			roleFamilies[shared.RoleFamily(cand.Role)] = struct{}{}
+		}
+		summary.Roles = len(roleFamilies)
+		out = append(out, summary)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		iConnected := strings.EqualFold(out[i].Status, "connected")
+		jConnected := strings.EqualFold(out[j].Status, "connected")
+		if iConnected != jConnected {
+			return iConnected
+		}
+		hostI := out[i].Host
+		hostJ := out[j].Host
+		if hostI == hostJ {
+			return out[i].LastSeen.After(out[j].LastSeen)
+		}
+		return hostI < hostJ
+	})
+	return out
+}
+
+func (s *Store) LastUpdate(host string) (time.Time, bool) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return time.Time{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state, ok := s.hosts[host]
+	if !ok || state.updated.IsZero() {
+		return time.Time{}, false
+	}
+	return state.updated, true
+}
+
 type RemoteScanner struct {
 	Store       *Store
 	StaleAfter  time.Duration
 	MinScore    int
 	RoleFilter  map[string]bool
+	Connected   func() map[string]bool
 	Whitelist   *shared.Whitelist
 	LingerFor   time.Duration
 	LingerCache map[string]shared.LingerEntry
@@ -128,26 +264,45 @@ func (r *RemoteScanner) Refresh(app *shared.AppState) {
 		roleFilter = app.RoleFilterOverride
 	}
 	now := time.Now().UTC()
+	connected := map[string]bool(nil)
+	if r.Connected != nil {
+		connected = r.Connected()
+	}
+	hostSummaries := r.Store.HostSummaries(r.StaleAfter, r.MinScore, roleFilter, connected)
 	cands := r.Store.Snapshot(r.StaleAfter)
-	cands = shared.ApplyCandidateLinger(cands, now, r.LingerFor, &r.LingerCache)
+	cands = shared.FilterProxywatchCandidates(cands)
 	cands = shared.ApplyScoreAndRoleFilters(cands, r.MinScore, roleFilter)
-	cands = shared.ApplyWhitelist(cands, r.Whitelist)
-	shared.ApplySelection(app, cands, now)
+	cands = shared.ApplyCandidateLinger(cands, now, r.LingerFor, &r.LingerCache)
+	// Keep role/score filtering authoritative after linger rehydrates stale rows.
+	cands = shared.ApplyScoreAndRoleFilters(cands, r.MinScore, roleFilter)
+	if app != nil {
+		app.SnapshotCandidates = cands
+		app.HostSummaries = hostSummaries
+	}
+	filtered := shared.ApplyWhitelist(cands, r.Whitelist)
+	shared.ApplySelection(app, filtered, now)
 }
 
 type Server struct {
 	Store         *Store
 	mu            sync.RWMutex
 	agents        map[string]*agentConn
-	pending       map[string]chan error
+	pending       map[string]pendingCommand
 	seq           uint64
 	maxMessagesPS int
+	serverPin     string
 }
 
 type agentConn struct {
-	stream pb.ProxyWatchAgent_StreamCandidatesServer
-	mu     sync.Mutex
-	closed bool
+	stream   pb.ProxyWatchAgent_StreamCandidatesServer
+	peerHost string
+	mu       sync.Mutex
+	closed   bool
+}
+
+type pendingCommand struct {
+	agent *agentConn
+	ch    chan error
 }
 
 func (a *agentConn) Send(cmd *pb.ServerCommand) error {
@@ -165,13 +320,32 @@ func (a *agentConn) Close() {
 	a.mu.Unlock()
 }
 
+func (a *agentConn) Closed() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.closed
+}
+
+func (a *agentConn) SamePeerHost(other *agentConn) bool {
+	if a == nil || other == nil {
+		return false
+	}
+	if a.peerHost == "" || other.peerHost == "" {
+		return false
+	}
+	return strings.EqualFold(a.peerHost, other.peerHost)
+}
+
 func (s *Server) StreamCandidates(stream pb.ProxyWatchAgent_StreamCandidatesServer) error {
 	if s.Store == nil {
 		return fmt.Errorf("store not configured")
 	}
 	s.ensureRuntimeMaps()
 
-	agent := &agentConn{stream: stream}
+	agent := &agentConn{
+		stream:   stream,
+		peerHost: streamPeerHost(stream),
+	}
 	defer agent.Close()
 
 	var host string
@@ -197,9 +371,48 @@ func (s *Server) StreamCandidates(stream pb.ProxyWatchAgent_StreamCandidatesServ
 		host = s.processEnvelope(msg.Envelope, host, agent)
 
 		if resp := msg.CommandResponse; resp != nil {
-			s.handleCommandResponse(resp)
+			s.handleCommandResponse(agent, resp)
 		}
 	}
+}
+
+func (s *Server) Enroll(ctx context.Context, req *pb.EnrollRequest) (*pb.EnrollResponse, error) {
+	_ = ctx
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "missing enrollment request")
+	}
+	token := strings.TrimSpace(expectedAgentToken())
+	if token == "" {
+		return nil, status.Error(codes.FailedPrecondition, "agent token not configured on server")
+	}
+	clientNonce := strings.TrimSpace(req.ClientNonce)
+	clientProof := strings.TrimSpace(req.ClientProof)
+	if clientNonce == "" || clientProof == "" {
+		return nil, status.Error(codes.InvalidArgument, "missing enrollment proof")
+	}
+	if !withinEnrollmentSkew(req.ClientUnix, time.Now().UTC()) {
+		return nil, status.Error(codes.Unauthenticated, "enrollment request expired")
+	}
+	expectedClientProof := buildEnrollClientProof(token, clientNonce, req.ClientUnix)
+	if !constantTimeHexEqual(clientProof, expectedClientProof) {
+		return nil, status.Error(codes.Unauthenticated, "invalid enrollment proof")
+	}
+
+	serverNonce, err := randomNonceBase64(24)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to generate enrollment nonce")
+	}
+	serverPin := strings.ToLower(strings.TrimSpace(s.serverPin))
+	if !validFingerprintHex(serverPin) {
+		return nil, status.Error(codes.Internal, "server fingerprint unavailable")
+	}
+	serverProof := buildEnrollServerProof(token, clientNonce, req.ClientUnix, serverNonce, serverPin)
+	return &pb.EnrollResponse{
+		ServerNonce:       serverNonce,
+		ServerUnix:        time.Now().UTC().Unix(),
+		ServerFingerprint: serverPin,
+		ServerProof:       serverProof,
+	}, nil
 }
 
 func (s *Server) ensureRuntimeMaps() {
@@ -209,7 +422,7 @@ func (s *Server) ensureRuntimeMaps() {
 		s.agents = make(map[string]*agentConn)
 	}
 	if s.pending == nil {
-		s.pending = make(map[string]chan error)
+		s.pending = make(map[string]pendingCommand)
 	}
 }
 
@@ -234,17 +447,19 @@ func (s *Server) processEnvelope(env *pb.CandidateEnvelope, currentHost string, 
 		return currentHost
 	}
 
-	host := currentHost
-	if env.HostId != "" && host != env.HostId {
-		host = sanitizeHostID(env.HostId)
-		if host == "" {
-			host = "unknown"
+	host := strings.TrimSpace(currentHost)
+	if host == "" {
+		nextHost := sanitizeHostID(env.HostId)
+		if nextHost == "" {
+			nextHost = "unknown"
 		}
-		s.registerAgent(host, agent)
+		host = s.registerAgent(nextHost, agent)
 	}
 
-	ts := time.Unix(env.TimestampUnix, 0).UTC()
-	s.Store.Update(host, ts, envelopeCandidatesToShared(env.Candidates, host))
+	ts := time.Now().UTC()
+	cands := envelopeCandidatesToShared(env.Candidates, host)
+	cands = shared.FilterProxywatchCandidates(cands)
+	s.Store.Update(host, ts, cands)
 	return host
 }
 
@@ -259,10 +474,42 @@ func envelopeCandidatesToShared(in []*pb.Candidate, host string) []shared.Candid
 	return out
 }
 
-func (s *Server) registerAgent(host string, agent *agentConn) {
+func (s *Server) registerAgent(host string, agent *agentConn) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = "unknown"
+	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for key, cur := range s.agents {
+		// A single stream should map to exactly one host key.
+		if cur == agent && !strings.EqualFold(key, host) {
+			delete(s.agents, key)
+		}
+	}
+
+	// Prevent a new stream from silently taking over an existing host key.
+	if cur, ok := s.agents[host]; ok && cur != nil && cur != agent {
+		// Reclaim the base host key when a stream is stale/closed, or when the
+		// reconnect is from the same peer host (same source IP, new source port).
+		// Keep suffix behavior for truly concurrent peers that share host ids.
+		if cur.Closed() || cur.SamePeerHost(agent) || s.hostStreamLikelyStale(host) {
+			cur.Close()
+			s.agents[host] = agent
+			return host
+		}
+		base := host
+		for suffix := 2; ; suffix++ {
+			candidate := fmt.Sprintf("%s-%d", base, suffix)
+			if existing, used := s.agents[candidate]; !used || existing == agent {
+				host = candidate
+				break
+			}
+		}
+	}
 	s.agents[host] = agent
-	s.mu.Unlock()
+	return host
 }
 
 func (s *Server) unregisterAgentIfCurrent(host string, agent *agentConn) {
@@ -274,6 +521,82 @@ func (s *Server) unregisterAgentIfCurrent(host string, agent *agentConn) {
 		delete(s.agents, host)
 	}
 	s.mu.Unlock()
+}
+
+func (s *Server) hostStreamLikelyStale(host string) bool {
+	if s == nil || s.Store == nil {
+		return false
+	}
+	last, ok := s.Store.LastUpdate(host)
+	if !ok {
+		return false
+	}
+	return time.Since(last) > reconnectHostTakeoverAfter
+}
+
+func streamPeerHost(stream pb.ProxyWatchAgent_StreamCandidatesServer) string {
+	if stream == nil {
+		return ""
+	}
+	info, ok := peer.FromContext(stream.Context())
+	if !ok || info == nil || info.Addr == nil {
+		return ""
+	}
+	return normalizePeerHost(info.Addr.String())
+}
+
+func normalizePeerHost(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Keep best-effort host matching when the peer address has no port.
+		host = addr
+	}
+	host = strings.TrimSpace(host)
+	return strings.Trim(host, "[]")
+}
+
+func (s *Server) ConnectedHosts() map[string]bool {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make(map[string]bool, len(s.agents))
+	for host, conn := range s.agents {
+		if conn == nil {
+			continue
+		}
+		out[host] = true
+	}
+	return out
+}
+
+func (s *Server) HostConnected(host string) bool {
+	if s == nil {
+		return false
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	targetDisplay := strings.ToLower(shared.DisplayHost(host))
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for key, conn := range s.agents {
+		if conn == nil {
+			continue
+		}
+		if strings.EqualFold(key, host) || strings.ToLower(shared.DisplayHost(key)) == targetDisplay {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) Kill(host string, pid int) error {
@@ -296,9 +619,12 @@ func (s *Server) Kill(host string, pid int) error {
 
 	s.mu.Lock()
 	if s.pending == nil {
-		s.pending = make(map[string]chan error)
+		s.pending = make(map[string]pendingCommand)
 	}
-	s.pending[reqID] = respCh
+	s.pending[reqID] = pendingCommand{
+		agent: agent,
+		ch:    respCh,
+	}
 	s.mu.Unlock()
 
 	defer func() {
@@ -310,7 +636,7 @@ func (s *Server) Kill(host string, pid int) error {
 	cmd := &pb.ServerCommand{
 		RequestId: reqID,
 		Type:      "kill",
-		Pid:       int32(pid),
+		Pid:       clampInt32(pid),
 	}
 	if err := agent.Send(cmd); err != nil {
 		return err
@@ -324,32 +650,36 @@ func (s *Server) Kill(host string, pid int) error {
 	}
 }
 
-func (s *Server) handleCommandResponse(resp *pb.CommandResponse) {
+func (s *Server) handleCommandResponse(source *agentConn, resp *pb.CommandResponse) {
 	if resp == nil {
 		return
 	}
 	s.mu.RLock()
-	ch := s.pending[resp.RequestId]
+	pending := s.pending[resp.RequestId]
 	s.mu.RUnlock()
-	if ch == nil {
+	if pending.ch == nil {
+		return
+	}
+	// Bind responses to the originating authenticated stream.
+	if pending.agent != nil && source != nil && pending.agent != source {
 		return
 	}
 	if resp.Success {
 		select {
-		case ch <- nil:
+		case pending.ch <- nil:
 		default:
 		}
 		return
 	}
 	if resp.Error == "" {
 		select {
-		case ch <- errors.New("remote kill failed"):
+		case pending.ch <- errors.New("remote kill failed"):
 		default:
 		}
 		return
 	}
 	select {
-	case ch <- errors.New(resp.Error):
+	case pending.ch <- errors.New(resp.Error):
 	default:
 	}
 }
@@ -367,10 +697,15 @@ func ListenAndServe(addr string, store *Store) (*Server, *grpc.Server, net.Liste
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	srv := &Server{Store: store, maxMessagesPS: 200}
+	serverPin, err := tlsConfigLeafFingerprint(tlsCfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	srv := &Server{Store: store, maxMessagesPS: 200, serverPin: serverPin}
 	grpcServer := grpc.NewServer(
 		grpc.ForceServerCodec(jsonCodec{}),
 		grpc.Creds(credentials.NewTLS(tlsCfg)),
+		grpc.StreamInterceptor(agentStreamAuthInterceptor()),
 		grpc.MaxRecvMsgSize(4<<20),
 		grpc.MaxSendMsgSize(4<<20),
 	)
@@ -401,50 +736,4 @@ func sanitizeHostID(in string) string {
 		}
 	}
 	return string(out)
-}
-
-func ServerTLSConfig() (*tls.Config, error) {
-	serverCert, err := tls.X509KeyPair([]byte(generatedServerCertPEM), []byte(generatedServerKeyPEM))
-	if err != nil {
-		return nil, err
-	}
-
-	pool, err := embeddedCAPool()
-	if err != nil {
-		return nil, err
-	}
-
-	return &tls.Config{
-		Certificates: []tls.Certificate{serverCert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    pool,
-		MinVersion:   tls.VersionTLS12,
-	}, nil
-}
-
-func AgentTLSConfig() (*tls.Config, error) {
-	clientCert, err := tls.X509KeyPair([]byte(generatedClientCertPEM), []byte(generatedClientKeyPEM))
-	if err != nil {
-		return nil, err
-	}
-
-	pool, err := embeddedCAPool()
-	if err != nil {
-		return nil, err
-	}
-
-	return &tls.Config{
-		Certificates: []tls.Certificate{clientCert},
-		RootCAs:      pool,
-		ServerName:   "proxywatch",
-		MinVersion:   tls.VersionTLS12,
-	}, nil
-}
-
-func embeddedCAPool() (*x509.CertPool, error) {
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM([]byte(generatedCACertPEM)) {
-		return nil, errors.New("failed to parse embedded CA")
-	}
-	return pool, nil
 }
