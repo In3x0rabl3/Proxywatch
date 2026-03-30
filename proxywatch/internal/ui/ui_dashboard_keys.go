@@ -32,6 +32,10 @@ func handleDashboardKey(app *shared.AppState, tev *tcell.EventKey) bool {
 		moveDashboardSelectionHome(app)
 	case tcell.KeyEnd:
 		moveDashboardSelectionEnd(app)
+	case tcell.KeyLeft:
+		stepDashboardWorkflow(app, -1)
+	case tcell.KeyRight:
+		stepDashboardWorkflow(app, 1)
 	case tcell.KeyEscape:
 		leaveDashboardHostProcessView(app)
 	case tcell.KeyEnter:
@@ -46,27 +50,45 @@ func handleDashboardKey(app *shared.AppState, tev *tcell.EventKey) bool {
 	case '?':
 		app.ShowHelp = true
 		app.HelpMenuIndex = 0
-	case 'r', 'R':
-		app.ShowRefreshMenu = true
-		app.RefreshMenuIndex = indexOfDuration(refreshMenuChoices, app.RefreshInt)
-	case 'f', 'F':
-		openRoleSortMenu(app)
+	case 'r':
+		if tryRemoveSelectedDisconnectedHost(app) {
+			return false
+		}
+		openDashboardRefreshMenu(app)
+	case 'R':
+		openDashboardRefreshMenu(app)
 	case 'c', 'C':
+		openRoleSortMenu(app)
+	case '1':
 		enterCalibrationMode(app)
+	case '2':
+		enterSIEMMode(app)
+	case '3':
+		enterContourMode(app)
+	case '4':
+		enterCollectMode(app)
+	case '5':
+		enterWhitelistManager(app)
+	case '<':
+		stepDashboardWorkflow(app, -1)
+	case '>':
+		stepDashboardWorkflow(app, 1)
 	case 'k', 'K':
 		enterKeystoreMode(app)
-	case 'm', 'M':
-		enterSIEMMode(app)
-	case 'b', 'B':
-		enterCollectMode(app)
-	case 'o', 'O':
-		enterContourMode(app)
-	case 'w':
-		enterWhitelistManager(app)
 	case 'W':
 		whitelistSelectedCandidate(app)
 	case 'x', 'X':
 		removeSelectedDisconnectedHost(app)
+	case 'f', 'F':
+		openRoleSortMenu(app)
+	case 'b', 'B':
+		enterCollectMode(app)
+	case 'o', 'O':
+		enterContourMode(app)
+	case 'm', 'M':
+		enterSIEMMode(app)
+	case 'w':
+		enterWhitelistManager(app)
 	case 'q':
 		return requestQuit(app)
 	}
@@ -77,6 +99,16 @@ func handleDashboardKey(app *shared.AppState, tev *tcell.EventKey) bool {
 func handleDashboardOverlayKey(app *shared.AppState, tev *tcell.EventKey) bool {
 	if tev.Rune() == 'q' {
 		return requestQuit(app)
+	}
+	switch tev.Key() {
+	case tcell.KeyLeft:
+		closeDashboardOverlays(app)
+		stepDashboardWorkflow(app, -1)
+		return false
+	case tcell.KeyRight:
+		closeDashboardOverlays(app)
+		stepDashboardWorkflow(app, 1)
+		return false
 	}
 	if tev.Key() == tcell.KeyEscape {
 		closeDashboardOverlays(app)
@@ -94,15 +126,46 @@ func handleDashboardOverlayKey(app *shared.AppState, tev *tcell.EventKey) bool {
 			app.HelpMenuIndex = 0
 		}
 		return false
-	case 'r', 'R':
-		app.ShowHelp = false
-		app.ShowRoleMenu = false
-		app.ShowSortMenu = false
-		app.ShowRefreshMenu = true
-		app.RefreshMenuIndex = indexOfDuration(refreshMenuChoices, app.RefreshInt)
+	case 'r':
+		if tryRemoveSelectedDisconnectedHost(app) {
+			closeDashboardOverlays(app)
+			return false
+		}
+		openDashboardRefreshMenu(app)
 		return false
-	case 'f', 'F':
+	case 'R':
+		openDashboardRefreshMenu(app)
+		return false
+	case 'c', 'C', 'f', 'F':
 		openRoleSortMenu(app)
+		return false
+	case '1':
+		closeDashboardOverlays(app)
+		enterCalibrationMode(app)
+		return false
+	case '2':
+		closeDashboardOverlays(app)
+		enterSIEMMode(app)
+		return false
+	case '3':
+		closeDashboardOverlays(app)
+		enterContourMode(app)
+		return false
+	case '4':
+		closeDashboardOverlays(app)
+		enterCollectMode(app)
+		return false
+	case '5':
+		closeDashboardOverlays(app)
+		enterWhitelistManager(app)
+		return false
+	case '<':
+		closeDashboardOverlays(app)
+		stepDashboardWorkflow(app, -1)
+		return false
+	case '>':
+		closeDashboardOverlays(app)
+		stepDashboardWorkflow(app, 1)
 		return false
 	case 'm', 'M':
 		closeDashboardOverlays(app)
@@ -112,6 +175,26 @@ func handleDashboardOverlayKey(app *shared.AppState, tev *tcell.EventKey) bool {
 		closeDashboardOverlays(app)
 		enterContourMode(app)
 		return false
+	case 'b', 'B':
+		closeDashboardOverlays(app)
+		enterCollectMode(app)
+		return false
+	case 'w':
+		closeDashboardOverlays(app)
+		enterWhitelistManager(app)
+		return false
+	case 'k', 'K':
+		closeDashboardOverlays(app)
+		enterKeystoreMode(app)
+		return false
+	case 'W':
+		whitelistSelectedCandidate(app)
+		return false
+	case 'x', 'X':
+		removeSelectedDisconnectedHost(app)
+		return false
+	case 'q':
+		return requestQuit(app)
 	}
 
 	if app.ShowHelp {
@@ -191,6 +274,33 @@ func handleDashboardOverlayKey(app *shared.AppState, tev *tcell.EventKey) bool {
 		return false
 	}
 	return false
+}
+
+func openDashboardRefreshMenu(app *shared.AppState) {
+	app.ShowHelp = false
+	app.ShowRoleMenu = false
+	app.ShowSortMenu = false
+	app.ShowRefreshMenu = true
+	app.RefreshMenuIndex = indexOfDuration(refreshMenuChoices, app.RefreshInt)
+}
+
+func tryRemoveSelectedDisconnectedHost(app *shared.AppState) bool {
+	if app == nil || !dashboardHostListMode(app) {
+		return false
+	}
+	summary, ok := selectedDashboardHostSummary(app)
+	if !ok {
+		return false
+	}
+	if strings.EqualFold(summary.Status, "connected") {
+		return false
+	}
+	removeSelectedDisconnectedHost(app)
+	return true
+}
+
+func stepDashboardWorkflow(app *shared.AppState, dir int) {
+	_ = stepWorkflowMenu(app, dir)
 }
 
 func dashboardOverlayOpen(app *shared.AppState) bool {
@@ -656,7 +766,6 @@ func enterInspector(app *shared.AppState) {
 		return
 	}
 	app.InspectKey = shared.CandidateKey(view[idx])
-	app.InspectExplain = false
 	app.InspectScroll = 0
 	app.InspectMaxScroll = 0
 	app.ShowInspectMenu = false
@@ -755,14 +864,16 @@ func enterKeystoreMode(app *shared.AppState) {
 	}
 	app.KeystoreEditing = false
 	app.KeystoreShowHelp = false
-	if app.KeystoreField < 0 || app.KeystoreField > keystoreFieldMax {
+	if !app.KeystoreUnlocked || app.KeystoreActiveEntry == "" {
+		app.KeystoreField = keystoreFieldLoad
+		app.KeystorePanel = 0
+	} else if app.KeystoreField < 0 || app.KeystoreField > keystoreFieldMax {
 		app.KeystoreField = keystoreFieldOpenAIKey
 	}
 	app.Mode = shared.ModeKeystore
 }
 
 func enterSIEMMode(app *shared.AppState) {
-	ensureKeystoreValues(app)
 	app.SIEMDebugLogPath = strings.TrimSpace(app.KeystoreValues["PROXYWATCH_DETECT_DEBUG_LOG"])
 	app.SIEMRulesJSONPath = strings.TrimSpace(app.KeystoreValues["PROXYWATCH_DETECT_RULES_JSON"])
 	app.SIEMSourceReport = strings.TrimSpace(app.KeystoreValues["PROXYWATCH_SIEM_SOURCE_REPORT"])
@@ -789,10 +900,15 @@ func enterSIEMMode(app *shared.AppState) {
 	app.SIEMShowMenu = false
 	app.SIEMShowHelp = false
 	if app.SIEMField < 0 || app.SIEMField > siemFieldMax {
-		app.SIEMField = siemFieldSourceReport
+		app.SIEMField = siemFieldProvider
 	}
 	refreshSIEMSourceReports(app)
-	refreshSIEMReportPreview(app)
+	// Only reload from disk if no report lines are already in memory.
+	// The in-memory lines have clean formatting; reloading from the
+	// markdown file would scramble them.
+	if len(app.SIEMReportLines) == 0 {
+		refreshSIEMReportPreview(app)
+	}
 	app.Mode = shared.ModeSIEM
 }
 

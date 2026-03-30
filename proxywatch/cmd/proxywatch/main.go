@@ -279,6 +279,18 @@ func bootstrapKeystore(app *shared.AppState) {
 	if strings.TrimSpace(app.KeystorePath) == "" {
 		app.KeystorePath = keystore.DefaultPath()
 	}
+
+	// Skip secure keystores at startup — they require YubiKey touch
+	// which the user must initiate explicitly from the Keystore view.
+	entries := keystore.ListKeystores()
+	for _, entry := range entries {
+		if entry.Path == keystore.NormalizePath(app.KeystorePath) && entry.Secure {
+			app.KeystoreValues = keystore.EmptyValues()
+			keystore.ApplyToRuntime(app.KeystoreValues)
+			return
+		}
+	}
+
 	values, err := keystore.Load(app.KeystorePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -289,7 +301,6 @@ func bootstrapKeystore(app *shared.AppState) {
 		// Keep startup non-fatal; users can recover from Keystore menu.
 		app.KeystoreValues = keystore.EmptyValues()
 		keystore.ApplyToRuntime(app.KeystoreValues)
-		app.LastError = "keystore auto-load failed: " + err.Error()
 		return
 	}
 	app.KeystoreValues = values

@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-03-30
+
+### Added
+- **Raw socket detection**: processes using raw/packet sockets (nmap SYN scans, ping, tcpdump) are now detected and displayed in the dashboard with "Raw socket open (bypasses TCP stack)" reason and a score of 20.
+- Raw socket connections shown in inspector CONNECTIONS box as `RAW` protocol entries.
+- `/proc/net/raw`, `/proc/net/raw6`, and `/proc/net/packet` parsed for raw socket PID resolution.
+- Environment variable fallback for `keystore.RuntimeValue()` — API keys can be set via env vars without a keystore.
+- `RuntimeSetValue()` and `ClearSensitiveRuntime()` functions in keystore package for fine-grained runtime key management.
+- Keystore **activate** action (`a` key) to mark a keystore as active without opening fields.
+- Keystore **auto-lock on dashboard exit** — leaving the Keystore view automatically locks the keystore.
+- Keystore **auto-relock for secure keystores** — after YubiKey decrypt for calibration/SIEM, values are applied to runtime then immediately relocked; sensitive keys cleared after operation completes.
+- Keystore creation wizard accessible from fields panel via "Create" row and `n` key in display list.
+- `isActiveKeystoreSecure()` helper that checks the registry instead of stale `app.KeystoreSecure`.
+- Calibration and SIEM **YubiKey decrypt-and-retry** — when API key is missing and a secure keystore is active, automatically prompts for YubiKey touch, decrypts, and retries the action (once per attempt).
+- `calibrationError()` and `siemError()` helpers that truncate error messages to screen width to prevent word wrap.
+- Error notifications across all dashboards when actions fail to start, with clear reasons.
+- Status messages for locked fields during active collection ("cannot change source while collection is running").
+- BloodHound collection results display with three orange boxes: GRAPH (nodes, edges, candidates, hosts), NETWORK (external/internal connections, listeners, duration), OUTPUT (file path, upload status).
+- Inspector **process cycling** with Left/Right arrow keys.
+- Inspector **orange-bordered section boxes** for IDENTITY, PROCESS, NETWORK, ANALYSIS, REASONS, CONNECTIONS.
+- Calibration report **orange-bordered section boxes** for CONFIDENCE, TUNING, RECOMMENDATIONS, LEARNING, HISTORY, REASONING with spaced-out recommendations.
+- SIEM report **orange-bordered section boxes** for SUMMARY, DETECTIONS (high-level only), NOTES. Query/rule details kept in JSON output only.
+- Contour **MATRIX** and **SERVICES** titled boxes with purple borders; **ROUTES**, **ENDPOINTS**, **MISC** titled info panels.
+- `renderAccentPanel()` for orange-bordered titled panels matching contour's style.
+
+### Changed
+- Keystore view redesigned: SETUP panel always visible below FIELDS; Tab toggles between fields and display list; DISPLAY panel replaces KEYSTORES panel name.
+- Keystore security panel simplified: shows "YubiKey (N slots active)" instead of verbose per-slot details.
+- Keystore fields panel: labels padded to 13 chars for aligned values; Lock and Apply labels cleaned up (removed emoji).
+- All emoji removed from keystore UI (lock icons, etc.) to fix lipgloss width miscalculation causing misaligned panel borders.
+- `renderPanel()` top and bottom border width calculation uses `lipgloss.Width()` instead of `len()` for correct multi-byte character handling.
+- `renderSetupPanel()` label width increased from 10 to 15 for consistent alignment.
+- All dashboard DISPLAY panels reserve 1 line for status bar to prevent bottom border clipping.
+- Startup keystore auto-load no longer sets `KeystoreUnlocked=true` — values are in runtime but keystore view shows locked state.
+- Startup skips secure keystores silently instead of showing decrypt error on dashboard.
+- Mode switching clears sensitive runtime values when using a secure keystore, requiring fresh YubiKey touch per dashboard.
+- SIEM `applySIEMGenerationSettings()` uses `RuntimeSetValue()` for individual keys instead of `ApplyToRuntime()` which was overwriting API keys.
+
+### Fixed
+- **Contour crash**: `ui_loop.go` copied entire `AppState` (including `sync.Mutex`) into a goroutine, causing undefined behavior. Now creates a fresh struct with only needed fields.
+- `go vet` warning for mutex copy eliminated.
+- Keystore panel border misalignment from emoji double-width characters.
+- Keystore delete not resetting UI state (panel, field, editing flags).
+- Keystore creation wizard not resetting `KeystorePanel` to 0 after creation, leaving key handlers stuck on list panel.
+- Keystore `selectKeystoreEntry` now falls back to `Load()` when `LoadSecure()` returns "not a secure keystore" (old-format encrypted keystores).
+- Calibration could start without API key when runtime had stale values from a previous plain keystore.
+- SIEM generation showed "started" even when provider keys were missing; now validates upfront.
+- SIEM display was empty after generation due to overly aggressive line filtering.
+- Inspector IO display changed from "N/A (needs root)" to "N/A" when running as root.
+
+### Security
+- API error response bodies truncated to 500 chars to prevent leaking sensitive data.
+- `CALIBRATION_HTTP_TIMEOUT` capped at 5 minutes maximum.
+- Sensitive runtime values (API keys) cleared after calibration/SIEM operations complete when using secure keystores.
+- Keystore auto-locks on dashboard exit to minimize plaintext exposure.
+
+### Removed
+- Dead functions: `indexOf`, `startEventPump`, `handleUIEvent`, `stepContourField`, `stepSIEMField`, `stepCalibrationField`, `stepDuration`, `detectFIDO2Slots`.
+- Dead contour functions: `formatEndpointList`, `mergeProbeStatuses`, `ternaryBound`, `formatListenerCheckLine`, `renderProbeCheckSummary`, `summarizeProbeChecksByPort`, `summarizeProbeCheckSamples`, `probePercent`, `summarizeProbeChecksByMethod`, `summarizeProbeCheckCounts`, `buildProbeRequestPacket`, `validateProbeResponse`, `buildProbeAMQPFrame`, `readTCPOnce`.
+- Dead code: `_ = contentW` assignment in `tea_shared.go`.
+
+### Code Organization
+- Consolidated `tea_keymapping.go` + `tea_legacy.go` + `vscreen.go` into single `legacy.go`.
+- Merged `tea_styles.go` into `tea_shared.go`.
+- Renamed `ui_loop.go` to `tea_loop.go`.
+- UI directory reduced from 22 to 19 Go files.
+
 ## [1.0.3] - 2026-03-24
 
 ### Added

@@ -114,7 +114,7 @@ func processContextTokens(p *ProcessInfo) map[string]struct{} {
 		out[tok] = struct{}{}
 	}
 
-	path := normalizeContextPath(p.ExePath)
+	path := NormalizeExePath(p.ExePath)
 	if path != "" {
 		for _, part := range strings.Split(path, "/") {
 			for _, tok := range tokenizeContextField(part) {
@@ -176,14 +176,6 @@ func tokenizeContextField(s string) []string {
 		return nil
 	}
 	return parts
-}
-
-func normalizeContextPath(path string) string {
-	path = strings.ToLower(strings.TrimSpace(path))
-	if path == "" {
-		return ""
-	}
-	return strings.ReplaceAll(path, "\\", "/")
 }
 
 var contextTokenStopwords = map[string]struct{}{

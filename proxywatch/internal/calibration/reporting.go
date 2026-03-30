@@ -38,18 +38,21 @@ type CalibrationValidation struct {
 	BaselineFalseNegatives int      `json:"baseline_false_negatives"`
 	TunedFalseNegatives    int      `json:"tuned_false_negatives"`
 	Improved               bool     `json:"improved"`
+	ChangedProcesses       []string `json:"changed_processes,omitempty"`
 	Notes                  []string `json:"notes,omitempty"`
 }
 
 type SimilarCalibration struct {
-	Similarity int    `json:"similarity"`
-	Report     string `json:"report"`
-	Roles      string `json:"roles"`
-	Provider   string `json:"provider"`
-	Confidence int    `json:"confidence"`
-	Outcome    string `json:"outcome"`
-	Applied    bool   `json:"applied"`
-	Summary    string `json:"summary,omitempty"`
+	Similarity     int       `json:"similarity"`
+	Report         string    `json:"report"`
+	Roles          string    `json:"roles"`
+	Provider       string    `json:"provider"`
+	Confidence     int       `json:"confidence"`
+	Outcome        string    `json:"outcome"`
+	Applied        bool      `json:"applied"`
+	Summary        string    `json:"summary,omitempty"`
+	GeneratedAt    time.Time `json:"generated_at,omitempty"`
+	EnvFingerprint string    `json:"env_fingerprint,omitempty"`
 }
 
 type calibrationMemoryRecord struct {
@@ -66,6 +69,7 @@ type calibrationMemoryRecord struct {
 	Outcome        string         `json:"outcome"`
 	OutcomeScore   int            `json:"outcome_score"`
 	Summary        string         `json:"summary"`
+	EnvFingerprint string         `json:"env_fingerprint,omitempty"`
 }
 
 type calibrationDatasetRow struct {
@@ -170,6 +174,7 @@ func BuildReportArtifacts(report *Report, previous TuningSettings, samples []sha
 		Outcome:        "n/a",
 		OutcomeScore:   0,
 		Summary:        strings.TrimSpace(report.Summary),
+		EnvFingerprint: report.EnvFingerprint,
 	})
 	if err := saveCalibrationMemory(updated); err != nil {
 		return err
@@ -212,162 +217,149 @@ func MarkReportApplied(reportPath string) error {
 }
 
 func RenderReportLines(report Report) []string {
-	lines := make([]string, 0, 80)
+	lines := make([]string, 0, 60)
 	summary := strings.TrimSpace(report.Summary)
 	if summary == "" {
 		summary = "No summary returned from calibration analysis."
 	}
-	provider := normalizeProvider(report.Provider)
-	model := strings.TrimSpace(report.Model)
-	if model == "" {
-		model = "(default)"
-	}
 
-	lines = append(lines, "Overview")
-	lines = append(lines, "Summary: "+summary)
-	lines = append(lines, fmt.Sprintf("Confidence: %d", clampInt(report.Confidence, 0, 100)))
+	// ── Summary ─────────────────────────────────────────────
+	conf := clampInt(report.Confidence, 0, 100)
+	confLevel := "low"
+	if conf >= 70 {
+		confLevel = "high"
+	} else if conf >= 45 {
+		confLevel = "moderate"
+	}
+	lines = append(lines, fmt.Sprintf("Confidence: %d (%s)", conf, confLevel))
 	if e := strings.TrimSpace(report.AnalysisError); e != "" {
-		lines = append(lines, "Analysis error: "+e)
-	}
-	lines = append(lines, fmt.Sprintf("Duration: %s", nonEmpty(report.Duration, "0s")))
-	lines = append(lines, fmt.Sprintf("Sample every: %s", nonEmpty(report.SampleEvery, DefaultSampleEvery().String())))
-	lines = append(lines, fmt.Sprintf("Provider: %s", provider))
-	lines = append(lines, fmt.Sprintf("Model: %s", model))
-	lines = append(lines, fmt.Sprintf("Observed candidates: %d", report.CandidateCount))
-	if report.ContourHintsApplied > 0 {
-		lines = append(lines, fmt.Sprintf("Contour hints applied: %d", report.ContourHintsApplied))
-	}
-	lines = append(lines, "Roles: "+formatRoleMix(report.RoleCounts))
-	lines = append(lines, "States: "+formatStateMix(report.StateCounts))
-	if strings.TrimSpace(report.DatasetPath) != "" {
-		lines = append(lines, "Dataset: "+report.DatasetPath)
-	}
-	if strings.TrimSpace(report.OutputPath) != "" {
-		lines = append(lines, "Report: "+report.OutputPath)
-	}
-	topProcesses := make([]string, 0, 5)
-	for _, item := range report.TopProcesses {
-		name := strings.TrimSpace(item.Process)
-		if name == "" {
-			continue
-		}
-		topProcesses = append(topProcesses, name)
-		if len(topProcesses) >= 5 {
-			break
-		}
-	}
-	if len(topProcesses) > 0 {
-		lines = append(lines, "Top processes: "+strings.Join(topProcesses, ", "))
+		lines = append(lines, "  [FAIL] "+e)
 	}
 
+	// ── Tuning + Validation ─────────────────────────────────
 	lines = append(lines, "")
 	lines = append(lines, "Tuning")
 	if len(report.RecommendedSettings) == 0 {
-		lines = append(lines, "- No configuration changes recommended.")
+		lines = append(lines, "  No changes recommended.")
 	} else {
 		for _, item := range report.RecommendedSettings {
-			lines = append(lines, "- "+item)
+			lines = append(lines, "  "+item)
 		}
 	}
-
-	lines = append(lines, "")
-	lines = append(lines, "Validation")
-	if report.Validation.SampleCount == 0 {
-		lines = append(lines, "- Not enough collected samples to compare baseline and tuned behavior.")
-	} else {
+	if report.Validation.SampleCount > 0 {
+		v := report.Validation
 		verdict := "unchanged"
-		if report.Validation.ScoreDelta > 0 {
+		if v.ScoreDelta > 0 {
 			verdict = "improved"
-		} else if report.Validation.ScoreDelta < 0 {
+		} else if v.ScoreDelta < 0 {
 			verdict = "regressed"
 		}
-		lines = append(lines, fmt.Sprintf("Quality: %d -> %d (%+d, %s)", report.Validation.BaselineScore, report.Validation.TunedScore, report.Validation.ScoreDelta, verdict))
-		lines = append(lines, fmt.Sprintf("Precision/Recall: %d%%/%d%% -> %d%%/%d%%", report.Validation.BaselinePrecisionPct, report.Validation.BaselineRecallPct, report.Validation.TunedPrecisionPct, report.Validation.TunedRecallPct))
-		lines = append(lines, fmt.Sprintf("False positives/negatives: %d/%d -> %d/%d", report.Validation.BaselineFalsePositives, report.Validation.BaselineFalseNegatives, report.Validation.TunedFalsePositives, report.Validation.TunedFalseNegatives))
-		lines = append(lines, fmt.Sprintf("Samples: %d (positive %d, negative %d)", report.Validation.SampleCount, report.Validation.PositiveSamples, report.Validation.NegativeSamples))
-		for _, note := range report.Validation.Notes {
-			lines = append(lines, "- "+note)
+		lines = append(lines, fmt.Sprintf("  Quality: %d -> %d (%+d, %s)  |  Precision: %d%% -> %d%%  |  Recall: %d%% -> %d%%",
+			v.BaselineScore, v.TunedScore, v.ScoreDelta, verdict,
+			v.BaselinePrecisionPct, v.TunedPrecisionPct, v.BaselineRecallPct, v.TunedRecallPct))
+		fpD := v.TunedFalsePositives - v.BaselineFalsePositives
+		fnD := v.TunedFalseNegatives - v.BaselineFalseNegatives
+		lines = append(lines, fmt.Sprintf("  FP: %d -> %d (%+d)  |  FN: %d -> %d (%+d)  |  %d samples",
+			v.BaselineFalsePositives, v.TunedFalsePositives, fpD,
+			v.BaselineFalseNegatives, v.TunedFalseNegatives, fnD, v.SampleCount))
+		if len(v.ChangedProcesses) > 0 {
+			lines = append(lines, "  Changed: "+strings.Join(v.ChangedProcesses, ", "))
 		}
 	}
 
-	lines = append(lines, "")
-	lines = append(lines, "Risks")
-	if len(report.Risks) == 0 {
-		lines = append(lines, "- No major calibration risks identified.")
-	} else {
+	// ── Recommendations + Risks ─────────────────────────────
+	if len(report.Recommendations) > 0 || len(report.Risks) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Recommendations")
+		for _, rec := range report.Recommendations {
+			lines = append(lines, wrapText("  - "+rec, 78, "    ")...)
+		}
 		for _, risk := range report.Risks {
-			lines = append(lines, "- "+risk)
+			lines = append(lines, wrapText("  - [RISK] "+risk, 78, "    ")...)
 		}
 	}
 
-	lines = append(lines, "")
-	lines = append(lines, "Learning")
-	hasLearning := report.LearningRuns > 0 || strings.TrimSpace(report.LearningModelPath) != "" || len(report.LearningTopNormal) > 0 || len(report.LearningNotes) > 0
-	if !hasLearning {
-		lines = append(lines, "- Learning baseline not populated yet.")
-	} else {
-		if strings.TrimSpace(report.LearningModelPath) != "" {
-			lines = append(lines, "Model: "+report.LearningModelPath)
+	// ── Learning ────────────────────────────────────────────
+	if report.LearningRuns > 0 || len(report.LearningTopNormal) > 0 {
+		contamDesc := "clean"
+		if report.LearningContamination >= 35 {
+			contamDesc = "critical"
+		} else if report.LearningContamination >= 20 {
+			contamDesc = "elevated"
+		} else if report.LearningContamination >= 5 {
+			contamDesc = "low"
 		}
-		lines = append(lines, fmt.Sprintf("Runs: %d | Weighted samples: %.1f | Contamination: %d%%", report.LearningRuns, report.LearningSamples, report.LearningContamination))
+		lines = append(lines, "")
+		lines = append(lines, "Learning")
+		lines = append(lines, fmt.Sprintf("  Runs: %d  |  Samples: %.0f  |  Contamination: %d%% (%s)",
+			report.LearningRuns, report.LearningSamples, report.LearningContamination, contamDesc))
 		if len(report.LearningTopNormal) > 0 {
-			lines = append(lines, "Normal baseline: "+compactReportList(report.LearningTopNormal, 5))
+			lines = append(lines, "  Baseline: "+compactReportList(report.LearningTopNormal, 5))
 		}
-		for _, note := range report.LearningNotes {
-			lines = append(lines, "- "+note)
+		// Compare environment fingerprint with most recent similar past run.
+		if report.EnvFingerprint != "" && len(report.SimilarPast) > 0 {
+			envChanged := false
+			for _, sim := range report.SimilarPast {
+				if sim.EnvFingerprint != "" && sim.EnvFingerprint != report.EnvFingerprint {
+					envChanged = true
+					break
+				}
+			}
+			if envChanged {
+				lines = append(lines, "  Environment: changed since last calibration (new processes detected)")
+			}
+		}
+		// Contamination recovery guidance: show likely contaminating processes.
+		if report.LearningContamination >= 20 && len(report.TopProcesses) > 0 {
+			suspRoles := map[string]bool{"session": true, "beacon": true, "tunnel": true, "smb-pipe": true}
+			contam := make([]string, 0, 5)
+			for _, p := range report.TopProcesses {
+				if suspRoles[p.Role] {
+					contam = append(contam, fmt.Sprintf("%s (%s)", p.Process, p.Role))
+				}
+				if len(contam) >= 5 {
+					break
+				}
+			}
+			if len(contam) > 0 {
+				lines = append(lines, "  Contaminating: "+strings.Join(contam, ", "))
+				lines = append(lines, "  Suggestion: whitelist these or recalibrate in a clean environment")
+			}
 		}
 	}
 
-	lines = append(lines, "")
-	lines = append(lines, "Memory")
-	memPath := report.Memory.TrainingDataset
-	if strings.TrimSpace(memPath) == "" {
-		memPath = calibrationTrainingDatasetPath()
-	}
-	lines = append(lines, fmt.Sprintf("Validated calibrations: %d", report.Memory.ValidatedCalibrations))
-	lines = append(lines, "Training dataset: "+memPath)
+	// ── Similar Past ────────────────────────────────────────
 	if len(report.SimilarPast) > 0 {
-		lines = append(lines, "Similar runs:")
-		maxSimilar := minInt(3, len(report.SimilarPast))
+		lines = append(lines, "")
+		lines = append(lines, "History")
+		maxSimilar := min(3, len(report.SimilarPast))
 		for i := 0; i < maxSimilar; i++ {
 			sim := report.SimilarPast[i]
 			state := "not applied"
 			if sim.Applied {
 				state = "applied"
 			}
-			lines = append(lines, fmt.Sprintf("- %d%% %s | %s | confidence %d | %s", sim.Similarity, sim.Report, state, sim.Confidence, sim.Outcome))
+			ts := ""
+			if !sim.GeneratedAt.IsZero() {
+				ts = sim.GeneratedAt.UTC().Format("2006-01-02 15:04")
+			}
+			lines = append(lines, fmt.Sprintf("  %d%% match  |  %s  |  confidence %d  |  %s", sim.Similarity, state, sim.Confidence, ts))
 		}
 	}
 
+	// ── Reasoning (wrapped) ─────────────────────────────────
 	if len(report.Reasoning) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, "Reasoning")
 		for _, reason := range report.Reasoning {
-			lines = append(lines, "- "+reason)
+			wrapped := wrapText("  - "+reason, 78, "    ")
+			lines = append(lines, wrapped...)
 		}
 	}
 
 	return lines
 }
 
-func formatRoleMix(roleCounts map[string]int) string {
-	return fmt.Sprintf("session %d beacon %d tunnel %d listener %d outbound %d other %d",
-		roleCounts["session"],
-		roleCounts["beacon"],
-		roleCounts["tunnel"],
-		roleCounts["listener"],
-		roleCounts["outbound"],
-		roleCounts["other"],
-	)
-}
-
-func formatStateMix(stateCounts map[string]int) string {
-	return fmt.Sprintf("watch %d strong %d active %d",
-		stateCounts["watch"],
-		stateCounts["strong"],
-		stateCounts["active"],
-	)
-}
 
 func compactReportList(items []string, limit int) string {
 	if limit <= 0 {
@@ -393,6 +385,27 @@ func compactReportList(items []string, limit int) string {
 		return fmt.Sprintf("%s (+%d more)", joined, total-len(out))
 	}
 	return joined
+}
+
+func wrapText(text string, maxWidth int, indent string) []string {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return nil
+	}
+	var lines []string
+	line := words[0]
+	for _, w := range words[1:] {
+		if len(line)+1+len(w) > maxWidth {
+			lines = append(lines, line)
+			line = indent + w
+		} else {
+			line += " " + w
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 func deriveReportConfidence(report Report) int {
@@ -443,7 +456,7 @@ func summarizeSettingDiff(before, after TuningSettings) []string {
 
 func defaultRiskNotes(report Report) []string {
 	risks := make([]string, 0, 3)
-	if report.RoleCounts["outbound"] >= report.RoleCounts["session"]+report.RoleCounts["beacon"]+report.RoleCounts["tunnel"] {
+	if report.RoleCounts["listen"]+report.RoleCounts["outbound"] >= report.RoleCounts["session"]+report.RoleCounts["beacon"]+report.RoleCounts["tunnel"] {
 		risks = append(risks, "Potential sensitivity to legitimate periodic health checks with stable timing; mitigated by conservative magnitude of changes.")
 	}
 	if len(report.RecommendedSettings) > 0 {
@@ -458,7 +471,7 @@ func defaultRiskNotes(report Report) []string {
 func defaultReasoningNotes(report Report) []string {
 	out := make([]string, 0, 4)
 	out = append(out, fmt.Sprintf("Baseline captured %d unique process candidates over %s.", report.CandidateCount, report.Duration))
-	out = append(out, fmt.Sprintf("Role mix observed: session=%d, beacon=%d, tunnel=%d, outbound=%d.", report.RoleCounts["session"], report.RoleCounts["beacon"], report.RoleCounts["tunnel"], report.RoleCounts["outbound"]))
+	out = append(out, fmt.Sprintf("Role mix observed: session=%d, beacon=%d, tunnel=%d, listen=%d, outbound=%d.", report.RoleCounts["session"], report.RoleCounts["beacon"], report.RoleCounts["tunnel"], report.RoleCounts["listen"], report.RoleCounts["outbound"]))
 	if len(report.RecommendedSettings) > 0 {
 		out = append(out, "Recommended settings were constrained by guardrails to avoid overfitting.")
 	} else {
@@ -500,14 +513,16 @@ func buildSimilarPast(current Report, records []calibrationMemoryRecord, limit i
 			outcome = "n/a"
 		}
 		out = append(out, SimilarCalibration{
-			Similarity: clampInt(item.score, 0, 100),
-			Report:     filepath.Base(item.rec.ReportPath),
-			Roles:      nonEmpty(item.rec.Scope, "recommended"),
-			Provider:   normalizeProvider(item.rec.Provider),
-			Confidence: clampInt(item.rec.Confidence, 0, 100),
-			Outcome:    fmt.Sprintf("%s (%d)", outcome, item.rec.OutcomeScore),
-			Applied:    item.rec.Applied,
-			Summary:    strings.TrimSpace(item.rec.Summary),
+			Similarity:     clampInt(item.score, 0, 100),
+			Report:         filepath.Base(item.rec.ReportPath),
+			Roles:          nonEmpty(item.rec.Scope, "recommended"),
+			Provider:       normalizeProvider(item.rec.Provider),
+			Confidence:     clampInt(item.rec.Confidence, 0, 100),
+			Outcome:        fmt.Sprintf("%s (%d)", outcome, item.rec.OutcomeScore),
+			Applied:        item.rec.Applied,
+			Summary:        strings.TrimSpace(item.rec.Summary),
+			GeneratedAt:    item.rec.GeneratedAt,
+			EnvFingerprint: item.rec.EnvFingerprint,
 		})
 	}
 	return out
@@ -527,7 +542,7 @@ func similarityScore(current Report, rec calibrationMemoryRecord) int {
 	ratio := float64(minInt(curTotal, recTotal)) / float64(maxInt(curTotal, recTotal))
 	score += int(ratio * 15)
 
-	families := []string{"session", "beacon", "tunnel", "outbound", "listener", "other"}
+	families := []string{"session", "beacon", "tunnel", "listen", "outbound", "other"}
 	var dist float64
 	for _, fam := range families {
 		a := float64(current.RoleCounts[fam]) / float64(curTotal)
@@ -712,6 +727,7 @@ func evaluateCalibrationValidation(before, after TuningSettings, samples []share
 	tunedThresholds := buildValidationThresholds(after, before)
 	baseCounts := validationCounts{}
 	tunedCounts := validationCounts{}
+	changedProcesses := make([]string, 0, 8)
 
 	for _, sample := range samples {
 		if sample.Proc == nil {
@@ -729,7 +745,19 @@ func evaluateCalibrationValidation(before, after TuningSettings, samples []share
 		tunedPred := validationPredict(sample, tunedThresholds)
 		updateValidationCounts(&baseCounts, label, basePred)
 		updateValidationCounts(&tunedCounts, label, tunedPred)
+
+		// Track processes whose classification changed between baseline and tuned.
+		if basePred != tunedPred {
+			name := sample.Proc.Name
+			baseState := validationChangeLabel(label, basePred)
+			tunedState := validationChangeLabel(label, tunedPred)
+			changedProcesses = append(changedProcesses, fmt.Sprintf("%s (%s->%s)", name, baseState, tunedState))
+		}
 	}
+	if len(changedProcesses) > 5 {
+		changedProcesses = changedProcesses[:5]
+	}
+	validation.ChangedProcesses = changedProcesses
 	if validation.SampleCount == 0 {
 		validation.Notes = append(validation.Notes, "Only empty process rows were captured.")
 		return validation
@@ -790,8 +818,8 @@ func validationLabel(sample shared.Candidate) bool {
 	if sample.ActiveProxying || sample.StrongEvidence {
 		return true
 	}
-	switch shared.RoleFamily(sample.Role) {
-	case "session", "beacon", "tunnel":
+	switch sample.Role {
+	case "session", "beacon", "tunnel", "smb-pipe":
 		return true
 	default:
 		return false
@@ -859,6 +887,19 @@ func validationQuality(f1, specificity float64) int {
 
 func validationPercent(v float64) int {
 	return clampInt(int(math.Round(v*100.0)), 0, 100)
+}
+
+func validationChangeLabel(trueLabel, predicted bool) string {
+	switch {
+	case trueLabel && predicted:
+		return "correct"
+	case trueLabel && !predicted:
+		return "missed"
+	case !trueLabel && predicted:
+		return "FP"
+	default:
+		return "correct"
+	}
 }
 
 func ratioFloat(num, den int) float64 {

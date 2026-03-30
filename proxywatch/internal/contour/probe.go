@@ -23,7 +23,7 @@ import (
 
 const (
 	ProbeModeOff    = "off"
-	ProbeModeSweep  = "sweep"
+	ProbeModeSweep  = "sweep" // Deprecated: mapped to ProbeModeChecks.
 	ProbeModeChecks = "checks"
 
 	probeMatrixModeTunnel = "tunnel"
@@ -32,58 +32,44 @@ const (
 
 	ProbeRoleClient = "client"
 	ProbeRoleListen = "listen"
-	ProbeRoleScan   = "scan"
+	ProbeRoleScan   = "scan" // Deprecated: mapped to ProbeRoleClient.
 
 	defaultProbePivotTarget = "ifconfig.me:443"
 )
 
 var (
-	probeModeOptions  = []string{ProbeModeChecks, ProbeModeSweep, ProbeModeOff}
-	probeRoleOptions  = []string{ProbeRoleClient, ProbeRoleListen, ProbeRoleScan}
+	probeModeOptions  = []string{ProbeModeChecks}
+	probeRoleOptions  = []string{ProbeRoleClient, ProbeRoleListen}
 	defaultProbePorts = []int{
-		53, 80, 443, 22, 25, 110, 143, 445, 3389, 8080,
-		21, 23, 26, 81, 88, 111, 135, 139, 389, 587,
-		993, 995, 636, 1025, 1723, 3306, 1433, 1521, 5432, 5900,
-		6379, 11211, 27017, 5000, 5001, 5060, 5061, 5222, 5228, 5353,
-		123, 543, 548, 554, 631, 873, 902, 989, 990, 1194,
-		1434, 1812, 1883, 1900, 1935, 2049, 2375, 2376, 2483, 2484,
-		3000, 3128, 3268, 3269, 3478, 3690, 4443, 4500, 4567, 500,
-		514, 515, 520, 1099, 1701, 2082, 2083, 2086, 2087, 2095,
-		2096, 5671, 5672, 5985, 5986, 6443, 6514, 6667, 7001, 7070,
-		7443, 7777, 8000, 8008, 8081, 8088, 8090, 8443, 8888, 9000,
+		21, 22, 25, 53, 80, 443, 445, 993, 1433, 3306,
+		3389, 5432, 6379, 8080, 8443, 8888, 9000, 9090, 9443, 27017,
 	}
 	defaultProtocols = []probeProtocol{
+		// Tunnel / egress carriers
 		{Name: "http", Transport: "tcp"},
 		{Name: "https", Transport: "tcp"},
 		{Name: "ws", Transport: "tcp"},
 		{Name: "wss", Transport: "tcp"},
 		{Name: "ssh", Transport: "tcp"},
-		{Name: "smtp", Transport: "tcp"},
-		{Name: "smtps", Transport: "tcp"},
-		{Name: "imap", Transport: "tcp"},
-		{Name: "imaps", Transport: "tcp"},
-		{Name: "pop3", Transport: "tcp"},
-		{Name: "pop3s", Transport: "tcp"},
-		{Name: "ftp", Transport: "tcp"},
-		{Name: "ftps", Transport: "tcp"},
-		{Name: "smb", Transport: "tcp"},
-		{Name: "rdp", Transport: "tcp"},
-		{Name: "ldap", Transport: "tcp"},
-		{Name: "ldaps", Transport: "tcp"},
 		{Name: "socks4", Transport: "tcp"},
 		{Name: "socks5", Transport: "tcp"},
+		// Exfil channels
+		{Name: "dns", Transport: "udp"},
+		{Name: "smtp", Transport: "tcp"},
+		{Name: "ftp", Transport: "tcp"},
+		{Name: "smb", Transport: "tcp"},
+		{Name: "imap", Transport: "tcp"},
+		{Name: "pop3", Transport: "tcp"},
+		// Escape / lateral
+		{Name: "rdp", Transport: "tcp"},
+		{Name: "ldap", Transport: "tcp"},
 		{Name: "mqtt", Transport: "tcp"},
 		{Name: "amqp", Transport: "tcp"},
+		{Name: "redis", Transport: "tcp"},
 		{Name: "postgres", Transport: "tcp"},
-		{Name: "dns", Transport: "udp"},
-		{Name: "ntp", Transport: "udp"},
 		{Name: "quic", Transport: "udp"},
 		{Name: "webrtc", Transport: "udp"},
-		{Name: "sip", Transport: "udp"},
-		{Name: "rtsp", Transport: "tcp"},
-		{Name: "snmp", Transport: "udp"},
-		{Name: "coap", Transport: "udp"},
-		{Name: "redis", Transport: "tcp"},
+		{Name: "ntp", Transport: "udp"},
 	}
 
 	endpointURLRE        = regexp.MustCompile(`(?i)(?:https?|wss?|ssh|socks5?|socks4|ftp|ftps|smtp|smtps|imap|imaps|pop3s?|ldap|ldaps|amqp|mqtt|postgres|rtsp|sip|snmp|coap|redis|stun|turns?)://[^\s"'<>]+`)
@@ -202,6 +188,49 @@ type ProbeSummary struct {
 	PivotProxyCount      int                 `json:"pivot_proxy_count,omitempty"`
 	ProxyPivotTarget     string              `json:"proxy_pivot_target,omitempty"`
 	ReachableConfigCount int                 `json:"reachable_config_count,omitempty"`
+	ServiceReachable     []string             `json:"service_reachable,omitempty"`
+	ServiceBlocked       []string             `json:"service_blocked,omitempty"`
+	ServiceResults       []ServiceProbeResult `json:"service_results,omitempty"`
+	HTTPMethodsAllowed   []string            `json:"http_methods_allowed,omitempty"`
+	HTTPMethodsChecked   bool                `json:"http_methods_checked,omitempty"`
+	TLSChecked             bool                `json:"tls_checked,omitempty"`
+	TLSIntercepted         bool                `json:"tls_intercepted,omitempty"`
+	TLSInterceptOrg        string              `json:"tls_intercept_org,omitempty"`
+	DomainFrontingPossible bool                `json:"domain_fronting_possible,omitempty"`
+	DomainFrontingSNI      string              `json:"domain_fronting_sni,omitempty"`
+	DNSExfilChecked        bool                `json:"dns_exfil_checked,omitempty"`
+	DNSExfilViable         bool                `json:"dns_exfil_viable,omitempty"`
+	AvgLatencyMs           int                 `json:"avg_latency_ms,omitempty"`
+	MaxLatencyMs           int                 `json:"max_latency_ms,omitempty"`
+}
+
+// ServiceProbeResult records whether a well-known cloud/SaaS service is
+// reachable from the host under test.
+type ServiceProbeResult struct {
+	Name      string `json:"name"`
+	Category  string `json:"category"`  // "exfil", "escape", "c2"
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	Reachable bool   `json:"reachable"`
+	Tested    bool   `json:"tested"`
+}
+
+// ServiceTargetNames returns the ordered list of service names that the
+// probe suite tests for reachability. Used by the UI to render an empty
+// grid before results arrive.
+func ServiceTargetNames() []string {
+	return append([]string(nil), serviceTargetNames...)
+}
+
+var serviceTargetNames = []string{
+	"Dropbox", "GDrive", "OneDrive", "S3", "AzBlob", "GCS", "Box", "Mega",
+	"WeTrans", "iCloud", "pCloud", "Backblz", "Slack", "Discord", "Telegra",
+	"Teams", "Signal", "Keybase", "GitHub", "GitLab", "Bitbkt", "Pastbn",
+	"Gist", "Codbrg", "Docker", "GHCR", "Quay", "GHAct", "Circle", "Buildkt",
+	"ngrok", "CFTunl", "Tailsc", "ZeroTr", "Bore", "lclrun", "Serveo", "Pagekt",
+	"CFlare", "CFront", "Fastly", "Akamai", "AzCDN", "Heroku", "Vercel",
+	"Netlfy", "Railwy", "Render", "Fly.io", "Deno", "Supabs", "Replit",
+	"Glitch", "Workers",
 }
 
 func DefaultProbeMode() string { return ProbeModeChecks }
@@ -214,10 +243,9 @@ func ProbeModeOptions() []string {
 
 func NormalizeProbeMode(v string) string {
 	switch strings.ToLower(strings.TrimSpace(v)) {
-	case ProbeModeChecks, "chacks", "check", "verify", "validation", "tunnel", "exfil", "both":
+	case ProbeModeChecks, "chacks", "check", "verify", "validation", "tunnel", "exfil", "both",
+		ProbeModeSweep, "scan", "discovery":
 		return ProbeModeChecks
-	case ProbeModeSweep, "scan", "discovery":
-		return ProbeModeSweep
 	case "", "disabled", "disable", "none", "false", "0", ProbeModeOff:
 		return ProbeModeOff
 	default:
@@ -229,10 +257,8 @@ func ProbeModeLabel(v string) string {
 	switch NormalizeProbeMode(v) {
 	case ProbeModeOff:
 		return "Off"
-	case ProbeModeSweep:
-		return "Sweep"
 	default:
-		return "Checks"
+		return "Deep"
 	}
 }
 
@@ -251,7 +277,7 @@ func NormalizeProbeRole(v string) string {
 	case ProbeRoleListen, "listener", "server", "srv":
 		return ProbeRoleListen
 	case ProbeRoleScan, "scanner", "standalone":
-		return ProbeRoleScan
+		return ProbeRoleClient // Scan role removed; map to client.
 	case "", ProbeRoleClient, "connect":
 		return ProbeRoleClient
 	default:
@@ -263,10 +289,8 @@ func ProbeRoleLabel(v string) string {
 	switch NormalizeProbeRole(v) {
 	case ProbeRoleListen:
 		return "Listener"
-	case ProbeRoleScan:
-		return "Scan"
 	default:
-		return "Client"
+		return "Egress"
 	}
 }
 
@@ -285,18 +309,26 @@ func defaultProbePortsCopy() []int {
 }
 
 func runProbeSuite(ctx context.Context, mode, role, endpoint string, duration time.Duration, samples []shared.Candidate) (ProbeSummary, []Finding) {
+	return runProbeSuiteWithProgress(ctx, mode, role, endpoint, duration, samples, nil)
+}
+
+func runProbeSuiteWithProgress(ctx context.Context, mode, role, endpoint string, duration time.Duration, samples []shared.Candidate, emit func(string), onPartial ...func(ProbeSummary)) (ProbeSummary, []Finding) {
+	if emit == nil {
+		emit = func(string) {}
+	}
+	emitSummary := func(s ProbeSummary) {
+		if len(onPartial) > 0 && onPartial[0] != nil {
+			onPartial[0](s)
+		}
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	mode = NormalizeProbeMode(mode)
 	role = NormalizeProbeRole(role)
+	// Listener mode is still supported internally for backwards compatibility
+	// with saved reports, even though it is no longer exposed in the UI.
 	if role == ProbeRoleListen {
-		mode = ProbeModeChecks
-	} else if role == ProbeRoleScan {
-		if mode == ProbeModeChecks {
-			mode = ProbeModeSweep
-		}
-	} else if mode == ProbeModeSweep {
 		mode = ProbeModeChecks
 	}
 	endpoint = strings.TrimSpace(endpoint)
@@ -344,67 +376,364 @@ func runProbeSuite(ctx context.Context, mode, role, endpoint string, duration ti
 		}
 		findings = append(findings, buildProbeFindings(summary)...)
 		return summary, normalizeFindings(findings)
+	}
+
+	// Pre-populate service results so the UI renders empty grids immediately.
+	summary.ServiceResults = make([]ServiceProbeResult, len(serviceTargetNames))
+	for i, name := range serviceTargetNames {
+		summary.ServiceResults[i] = ServiceProbeResult{Name: name}
+	}
+	// Emit initial summary so matrices appear with all dots right away.
+	emitSummary(summary)
+
+	host, normalizedEndpoint, ok := parseProbeTarget(endpoint)
+	summary.Endpoint = normalizedEndpoint
+	if !ok {
+		findings = append(findings, makeProbeFinding(
+			"escape",
+			"invalid-endpoint",
+			"watch",
+			"contour-probe-endpoint-invalid",
+			"A target host is required (example: 10.0.0.12 or ifconfig.me).",
+			map[string]any{"endpoint": endpoint},
+		))
 	} else {
-		host, normalizedEndpoint, ok := parseProbeTarget(endpoint)
-		summary.Endpoint = normalizedEndpoint
-		if !ok {
-			findings = append(findings, makeProbeFinding(
-				"escape",
-				"invalid-endpoint",
-				"watch",
-				"contour-probe-endpoint-invalid",
-				"Client/Scan roles require an endpoint host (example: 10.0.0.12 or 10.0.0.12:443).",
-				map[string]any{"endpoint": endpoint},
-			))
-		} else {
-			probeFn := probeProtocolRoundTrip
-			if role == ProbeRoleScan {
-				probeFn = probeEndpointScanRoundTrip
-			}
-			matrixMode := probeMatrixModeTunnel
-			verificationRounds := 1
-			if role == ProbeRoleScan || mode == ProbeModeSweep {
-				// Sweep is a connectivity matrix only.
-				matrixMode = probeMatrixModeTunnel
-			} else {
-				// Checks verify both tunnel establishment and exfil payload transfer.
-				matrixMode = probeMatrixModeBoth
-				verificationRounds = 3
-			}
-			probeTimeout := 900 * time.Millisecond
-			if matrixMode == probeMatrixModeBoth {
-				// Tunnel checks include multi-step carrier + SOCKS5 handshakes.
-				probeTimeout = 4 * time.Second
-			}
-			matrix := runRemoteProbeMatrix(ctx, host, matrixMode, summary.Ports, defaultProtocols, probeTimeout, verificationRounds, probeFn)
-			summary.TunnelAttempts = matrix.tunnelAttempts
-			summary.TunnelSuccess = matrix.tunnelSuccess
-			summary.ExfilAttempts = matrix.exfilAttempts
-			summary.ExfilSuccess = matrix.exfilSuccess
-			summary.PortsUnavailable = matrix.portsUnavailable
-			summary.MethodResults = matrix.methodResults
-			summary.PortResults = matrix.portResults
-			summary.SuccessfulChecks = matrix.successChecks
-			summary.FailedChecks = matrix.failedChecks
+		// ── Tunnel + Exfil matrix ──
+		emit(fmt.Sprintf("[*] Verifying tunnels on %s (%d ports)...", host, len(summary.Ports)))
+		applyMatrix := func(m probeMatrixStats) {
+			summary.TunnelAttempts = m.tunnelAttempts
+			summary.TunnelSuccess = m.tunnelSuccess
+			summary.ExfilAttempts = m.exfilAttempts
+			summary.ExfilSuccess = m.exfilSuccess
+			summary.PortsUnavailable = m.portsUnavailable
+			summary.MethodResults = m.methodResults
+			summary.PortResults = m.portResults
+			summary.SuccessfulChecks = m.successChecks
+			summary.FailedChecks = m.failedChecks
 		}
+		matrix := runRemoteProbeMatrix(ctx, host, probeMatrixModeBoth, summary.Ports, defaultProtocols, 900*time.Millisecond, 1, probeEndpointScanRoundTrip, func(snap probeMatrixStats) {
+			applyMatrix(snap)
+			emitSummary(summary)
+		})
+		applyMatrix(matrix)
+		emit(fmt.Sprintf("[+] Tunnel matrix: %d/%d", matrix.tunnelSuccess, matrix.tunnelAttempts))
+		emit(fmt.Sprintf("[+] Exfil matrix: %d/%d", matrix.exfilSuccess, matrix.exfilAttempts))
+		emitSummary(summary)
 	}
 	if err := ctx.Err(); err != nil {
 		return summary, nil
 	}
 
+	emit("[*] Discovering network routes and interfaces...")
 	internalRoutes, internetSubnets := discoverRouteHints(ctx)
 	summary.InternalRoutes = internalRoutes
 	summary.InternetSubnets = internetSubnets
+	emit(fmt.Sprintf("[+] Routes: %d discovered", len(internalRoutes)+len(internetSubnets)))
+	emitSummary(summary)
 
+	emit("[*] Scanning environment for proxy endpoints...")
 	proxies := mergeProbeEndpoints(discoverEnvProxyEndpoints(), discoverSampleProxyEndpoints(samples))
+	emit("[*] Scanning config files for endpoints...")
 	configEndpoints := mergeProbeEndpoints(discoverConfigEndpoints(samples), discoverEnvConfigEndpoints())
+	emit(fmt.Sprintf("[+] Found %d proxy candidates  %d config endpoints", len(proxies), len(configEndpoints)))
+	emitSummary(summary)
 
-	summary.Proxies, summary.ReachableProxyCount, summary.PivotProxyCount = testProxyEndpointReachability(ctx, proxies, 1200*time.Millisecond)
-	if summary.PivotProxyCount > 0 {
-		summary.ProxyPivotTarget = defaultProbePivotTarget
+	emit("[*] Testing proxy reachability and pivot capability...")
+	pivotTarget := defaultProbePivotTarget
+	if strings.TrimSpace(endpoint) != "" {
+		pt := strings.TrimSpace(endpoint)
+		if !strings.Contains(pt, ":") {
+			pt += ":443"
+		}
+		pivotTarget = pt
 	}
+	summary.Proxies, summary.ReachableProxyCount, summary.PivotProxyCount = testProxyEndpointReachabilityWithTarget(ctx, proxies, 1200*time.Millisecond, pivotTarget)
+	if summary.PivotProxyCount > 0 {
+		summary.ProxyPivotTarget = pivotTarget
+	}
+	emit(fmt.Sprintf("[+] Proxies: %d reachable  %d can pivot to %s", summary.ReachableProxyCount, summary.PivotProxyCount, pivotTarget))
+	emit("[*] Testing config endpoint reachability...")
 	summary.ConfigEndpoints, summary.ReachableConfigCount, _ = testEndpointReachability(ctx, configEndpoints, 700*time.Millisecond)
+	emit(fmt.Sprintf("[+] Found endpoints: %d reachable of %d", summary.ReachableConfigCount, len(configEndpoints)))
+	emitSummary(summary)
 
+	// ── Deep Phase 3: Service reachability + config endpoint pivot ──
+	// Test if discovered config endpoints can also pivot to the target,
+	// and verify reachability of known cloud/SaaS services for exfil.
+	if mode == ProbeModeChecks {
+		if err := ctx.Err(); err == nil {
+			emit("[*] Testing config endpoints for pivot capability...")
+			lastNotify := time.Now()
+			for i, ep := range summary.ConfigEndpoints {
+				if !ep.Reachable || ep.PivotReachable {
+					continue
+				}
+				if err := ctx.Err(); err != nil {
+					break
+				}
+				schemes := proxySchemeCandidates(ep.Endpoint, ep.Port)
+				if len(schemes) == 0 {
+					continue
+				}
+				for _, scheme := range schemes {
+					candidate := scheme + "://" + net.JoinHostPort(ep.Host, strconv.Itoa(ep.Port))
+					if testProxyPivot(ctx, candidate, pivotTarget, 2*time.Second) {
+						summary.ConfigEndpoints[i].PivotReachable = true
+						summary.ConfigEndpoints[i].PivotScheme = scheme
+						summary.ConfigEndpoints[i].PivotTarget = pivotTarget
+						summary.PivotProxyCount++
+						break
+					}
+				}
+				if time.Since(lastNotify) >= 2*time.Second {
+					lastNotify = time.Now()
+					emitSummary(summary)
+				}
+			}
+		}
+
+		emitSummary(summary)
+
+		// Test reachability of well-known exfil/escape/C2 services.
+		if err := ctx.Err(); err == nil {
+			emit("[*] Testing reachability of exfil-capable services...")
+			serviceTargets := []struct {
+				name, category, host string
+				port                 int
+			}{
+				// Cloud storage
+				{"Dropbox", "exfil", "dropbox.com", 443},
+				{"GDrive", "exfil", "drive.google.com", 443},
+				{"OneDrive", "exfil", "onedrive.live.com", 443},
+				{"S3", "exfil", "s3.amazonaws.com", 443},
+				{"AzBlob", "exfil", "blob.core.windows.net", 443},
+				{"GCS", "exfil", "storage.googleapis.com", 443},
+				{"Box", "exfil", "box.com", 443},
+				{"Mega", "exfil", "mega.nz", 443},
+				{"WeTrans", "exfil", "wetransfer.com", 443},
+				{"iCloud", "exfil", "icloud.com", 443},
+				{"pCloud", "exfil", "pcloud.com", 443},
+				{"Backblz", "exfil", "backblazeb2.com", 443},
+				// Messaging / webhooks
+				{"Slack", "exfil", "slack.com", 443},
+				{"Discord", "exfil", "discord.com", 443},
+				{"Telegra", "exfil", "api.telegram.org", 443},
+				{"Teams", "exfil", "teams.microsoft.com", 443},
+				{"Signal", "exfil", "signal.org", 443},
+				{"Keybase", "exfil", "keybase.io", 443},
+				// Code hosting / paste
+				{"GitHub", "exfil", "github.com", 443},
+				{"GitLab", "exfil", "gitlab.com", 443},
+				{"Bitbkt", "exfil", "bitbucket.org", 443},
+				{"Pastbn", "exfil", "pastebin.com", 443},
+				{"Gist", "exfil", "gist.github.com", 443},
+				{"Codbrg", "exfil", "codeberg.org", 443},
+				// Container registries
+				{"Docker", "exfil", "hub.docker.com", 443},
+				{"GHCR", "exfil", "ghcr.io", 443},
+				{"Quay", "exfil", "quay.io", 443},
+				// CI/CD
+				{"GHAct", "exfil", "actions.githubusercontent.com", 443},
+				{"Circle", "exfil", "circleci.com", 443},
+				{"Buildkt", "exfil", "buildkite.com", 443},
+				// Tunnels / VPN
+				{"ngrok", "escape", "ngrok.com", 443},
+				{"CFTunl", "escape", "trycloudflare.com", 443},
+				{"Tailsc", "escape", "tailscale.com", 443},
+				{"ZeroTr", "escape", "zerotier.com", 443},
+				{"Bore", "escape", "bore.pub", 443},
+				{"lclrun", "escape", "localhost.run", 22},
+				{"Serveo", "escape", "serveo.net", 22},
+				{"Pagekt", "escape", "pagekite.me", 443},
+				// CDN (domain fronting)
+				{"CFlare", "escape", "cloudflare.com", 443},
+				{"CFront", "escape", "cloudfront.net", 443},
+				{"Fastly", "escape", "fastly.com", 443},
+				{"Akamai", "escape", "akamai.com", 443},
+				{"AzCDN", "escape", "azureedge.net", 443},
+				// Serverless / hosting
+				{"Heroku", "c2", "herokuapp.com", 443},
+				{"Vercel", "c2", "vercel.app", 443},
+				{"Netlfy", "c2", "netlify.app", 443},
+				{"Railwy", "c2", "railway.app", 443},
+				{"Render", "c2", "onrender.com", 443},
+				{"Fly.io", "c2", "fly.dev", 443},
+				{"Deno", "c2", "deno.dev", 443},
+				{"Supabs", "c2", "supabase.co", 443},
+				{"Replit", "c2", "replit.com", 443},
+				{"Glitch", "c2", "glitch.com", 443},
+				{"Workers", "c2", "workers.dev", 443},
+			}
+			// Pre-populate all services as untested so the UI grid renders immediately.
+			results := make([]ServiceProbeResult, len(serviceTargets))
+			for i, svc := range serviceTargets {
+				results[i] = ServiceProbeResult{
+					Name:     svc.name,
+					Category: svc.category,
+					Host:     svc.host,
+					Port:     svc.port,
+				}
+			}
+			summary.ServiceResults = results
+			emitSummary(summary)
+
+			var reachable, blocked []string
+			for i, svc := range serviceTargets {
+				if err := ctx.Err(); err != nil {
+					break
+				}
+				dialer := net.Dialer{Timeout: 900 * time.Millisecond}
+				conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(svc.host, strconv.Itoa(svc.port)))
+				ok := err == nil
+				if ok {
+					_ = conn.Close()
+					reachable = append(reachable, svc.name)
+				} else {
+					blocked = append(blocked, svc.name)
+				}
+				results[i].Reachable = ok
+				results[i].Tested = true
+				summary.ServiceReachable = reachable
+				summary.ServiceBlocked = blocked
+				summary.ServiceResults = results
+				emitSummary(summary)
+			}
+			summary.ServiceReachable = reachable
+			summary.ServiceBlocked = blocked
+			summary.ServiceResults = results
+			if len(reachable) > 0 {
+				emit(fmt.Sprintf("[+] %d services reachable: %s", len(reachable), strings.Join(reachable, ", ")))
+			}
+			if len(blocked) > 0 {
+				emit(fmt.Sprintf("[-] %d services blocked: %s", len(blocked), strings.Join(blocked, ", ")))
+			}
+			emitSummary(summary)
+		}
+	}
+
+	// ── TLS Certificate Inspection ──
+	if mode == ProbeModeChecks {
+		if err := ctx.Err(); err == nil {
+			emit("[*] Inspecting TLS certificates...")
+			tlsTarget := host
+			if strings.TrimSpace(endpoint) != "" {
+				if h, _, ok := parseProbeTarget(endpoint); ok {
+					tlsTarget = h
+				}
+			}
+			if org, intercepted := probeTLSInterception(ctx, tlsTarget, 443, 2*time.Second); intercepted {
+				summary.TLSIntercepted = true
+				summary.TLSInterceptOrg = org
+				emit(fmt.Sprintf("[!] TLS interception detected: issuer org = %s", org))
+			} else {
+				emit("[+] No TLS interception detected")
+			}
+			summary.TLSChecked = true
+			emitSummary(summary)
+		}
+	}
+
+	// ── Domain Fronting Detection (SNI Manipulation) ──
+	if mode == ProbeModeChecks && host != "" {
+		if err := ctx.Err(); err == nil {
+			emit("[*] Testing domain fronting (SNI manipulation)...")
+			frontingSNIs := []string{"www.google.com", "www.microsoft.com", "cdn.cloudflare.com"}
+			for _, testSNI := range frontingSNIs {
+				dialer := net.Dialer{Timeout: 2 * time.Second}
+				conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, "443"))
+				if err != nil {
+					continue
+				}
+				tlsConn := tls.Client(conn, &tls.Config{
+					ServerName:         testSNI,
+					InsecureSkipVerify: true,
+				})
+				_ = tlsConn.SetDeadline(time.Now().Add(2 * time.Second))
+				if err := tlsConn.Handshake(); err == nil {
+					summary.DomainFrontingPossible = true
+					summary.DomainFrontingSNI = testSNI
+					emit(fmt.Sprintf("[+] Domain fronting possible via SNI: %s", testSNI))
+					_ = tlsConn.Close()
+					break
+				}
+				_ = conn.Close()
+			}
+			if !summary.DomainFrontingPossible {
+				emit("[-] Domain fronting not detected")
+			}
+			emitSummary(summary)
+		}
+	}
+
+	// ── DNS Exfil Viability (TXT Queries) ──
+	if mode == ProbeModeChecks {
+		if err := ctx.Err(); err == nil {
+			emit("[*] Testing DNS exfil viability (TXT queries)...")
+			resolver := &net.Resolver{
+				PreferGo: true,
+				Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+					d := net.Dialer{Timeout: 2 * time.Second}
+					return d.DialContext(ctx, "udp", "8.8.8.8:53")
+				},
+			}
+			lookupCtx, lookupCancel := context.WithTimeout(ctx, 3*time.Second)
+			defer lookupCancel()
+			records, err := resolver.LookupTXT(lookupCtx, "google.com")
+			if err == nil && len(records) > 0 {
+				summary.DNSExfilViable = true
+				emit("[+] DNS exfil viable: TXT queries reach external resolvers")
+			} else {
+				emit("[-] DNS exfil blocked: TXT queries to external resolver failed")
+			}
+			summary.DNSExfilChecked = true
+			emitSummary(summary)
+		}
+	}
+
+	// ── HTTP Method Probing on reachable proxies ──
+	if mode == ProbeModeChecks {
+		if err := ctx.Err(); err == nil {
+			if summary.ReachableProxyCount > 0 {
+				emit("[*] Testing HTTP methods on reachable proxies...")
+				methodSet := make(map[string]struct{})
+				tested := 0
+				for _, ep := range summary.Proxies {
+					if !ep.Reachable || tested >= 3 {
+						break
+					}
+					if err := ctx.Err(); err != nil {
+						break
+					}
+					tested++
+					addr := net.JoinHostPort(ep.Host, strconv.Itoa(ep.Port))
+					for _, method := range []string{"CONNECT", "POST", "PUT"} {
+						if probeHTTPMethod(ctx, addr, method, 1500*time.Millisecond) {
+							methodSet[method] = struct{}{}
+						}
+					}
+				}
+				if len(methodSet) > 0 {
+					allowed := make([]string, 0, len(methodSet))
+					for _, m := range []string{"CONNECT", "POST", "PUT"} {
+						if _, ok := methodSet[m]; ok {
+							allowed = append(allowed, m)
+						}
+					}
+					summary.HTTPMethodsAllowed = allowed
+					emit(fmt.Sprintf("[+] HTTP methods allowed: %s", strings.Join(allowed, ", ")))
+				} else {
+					emit("[-] No HTTP methods accepted by tested proxies")
+				}
+			} else {
+				emit("[-] No HTTP methods accepted: no reachable proxies")
+			}
+			summary.HTTPMethodsChecked = true
+			emitSummary(summary)
+		}
+	}
+
+	emit("[*] Building report...")
+	emit("[+] Report complete")
 	findings = append(findings, buildProbeFindings(summary)...)
 	return summary, normalizeFindings(findings)
 }
@@ -457,6 +786,7 @@ func runRemoteProbeMatrix(
 	timeout time.Duration,
 	verificationRounds int,
 	probeFn func(context.Context, string, int, string, probeProtocol, time.Duration) bool,
+	onResult ...func(probeMatrixStats),
 ) probeMatrixStats {
 	if ctx == nil {
 		ctx = context.Background()
@@ -483,14 +813,11 @@ func runRemoteProbeMatrix(
 	for _, port := range ports {
 		portCounters[port] = &probePortCounter{port: port}
 		for _, proto := range protocols {
-			if includesTunnel {
-				// Sweep (connectivity-only) probes all methods. Checks mode verifies
-				// tunnel capability only on the explicit carrier methods.
-				if mode == probeMatrixModeTunnel || methodUsesSocksCarrierTunnel(proto.Name) {
+			if methodUsesSocksCarrierTunnel(proto.Name) {
+				if includesTunnel {
 					jobs = append(jobs, probeJob{kind: "tunnel", proto: proto, port: port})
 				}
-			}
-			if includesExfil {
+			} else if includesExfil {
 				jobs = append(jobs, probeJob{kind: "exfil", proto: proto, port: port})
 			}
 		}
@@ -512,13 +839,13 @@ func runRemoteProbeMatrix(
 		}
 		switch kind {
 		case "tunnel":
-			stats.tunnelAttempts++
 			m.tunnelA++
 			p.tunnelA++
+			stats.tunnelAttempts++
 			if success {
-				stats.tunnelSuccess++
 				m.tunnelS++
 				p.tunnelS++
+				stats.tunnelSuccess++
 			}
 		case "exfil":
 			stats.exfilAttempts++
@@ -602,11 +929,20 @@ func runRemoteProbeMatrix(
 		}()
 		attemptsByPort := make(map[int]int, len(ports))
 		successByPort := make(map[int]int, len(ports))
+		hasCallback := len(onResult) > 0 && onResult[0] != nil
+		lastNotify := time.Now()
 		for result := range resultsCh {
 			appendCheck(result.job.kind, result.job.proto, result.job.port, result.success)
 			attemptsByPort[result.job.port]++
 			if result.success {
 				successByPort[result.job.port]++
+			}
+			if hasCallback && time.Since(lastNotify) >= 2*time.Second {
+				lastNotify = time.Now()
+				snap := stats
+				snap.methodResults = flattenMethodCounters(methodCounters)
+				snap.portResults = flattenPortCounters(portCounters)
+				onResult[0](snap)
 			}
 		}
 		for _, port := range ports {
@@ -821,30 +1157,18 @@ func buildProbeFindings(summary ProbeSummary) []Finding {
 		case ratio >= 0.40 && summary.TunnelSuccess >= 16:
 			severity = "strong"
 		}
-		if summary.Role == ProbeRoleScan {
-			reason := fmt.Sprintf("Scan connectivity matrix succeeded on %d/%d protocol-port checks.", summary.TunnelSuccess, summary.TunnelAttempts)
-			findings = append(findings, makeProbeFinding("network", "connectivity-port-cycle", severity, "contour-probe-connectivity-matrix", reason, map[string]any{
-				"mode":           summary.Mode,
-				"endpoint":       summary.Endpoint,
-				"ports":          summary.Ports,
-				"protocol_count": len(summary.Protocols),
-				"success":        summary.TunnelSuccess,
-				"attempts":       summary.TunnelAttempts,
-			}))
-		} else {
-			reason := fmt.Sprintf("Tunnel probe matrix succeeded on %d/%d protocol-port checks.", summary.TunnelSuccess, summary.TunnelAttempts)
-			findings = append(findings, makeProbeFinding("tunnel", "multi-protocol-port-cycle", severity, "contour-probe-tunnel-matrix", reason, map[string]any{
-				"mode":           summary.Mode,
-				"endpoint":       summary.Endpoint,
-				"ports":          summary.Ports,
-				"protocol_count": len(summary.Protocols),
-				"success":        summary.TunnelSuccess,
-				"attempts":       summary.TunnelAttempts,
-			}))
-		}
+		reason := fmt.Sprintf("Tunnel probe matrix succeeded on %d/%d protocol-port checks.", summary.TunnelSuccess, summary.TunnelAttempts)
+		findings = append(findings, makeProbeFinding("tunnel", "multi-protocol-port-cycle", severity, "contour-probe-tunnel-matrix", reason, map[string]any{
+			"mode":           summary.Mode,
+			"endpoint":       summary.Endpoint,
+			"ports":          summary.Ports,
+			"protocol_count": len(summary.Protocols),
+			"success":        summary.TunnelSuccess,
+			"attempts":       summary.TunnelAttempts,
+		}))
 	}
 
-	if summary.Role != ProbeRoleScan && summary.ExfilAttempts > 0 {
+	if summary.ExfilAttempts > 0 {
 		ratio := float64(summary.ExfilSuccess) / float64(summary.ExfilAttempts)
 		severity := "watch"
 		switch {
@@ -922,6 +1246,39 @@ func buildProbeFindings(summary ProbeSummary) []Finding {
 			"config_endpoint_total":     len(summary.ConfigEndpoints),
 			"config_endpoint_reachable": summary.ReachableConfigCount,
 		}))
+	}
+
+	if len(summary.ServiceReachable) > 0 {
+		severity := "strong"
+		if len(summary.ServiceReachable) >= 5 {
+			severity = "active"
+		}
+		reason := fmt.Sprintf("%d exfil-capable service%s reachable from this host: %s",
+			len(summary.ServiceReachable), plural(len(summary.ServiceReachable)),
+			strings.Join(summary.ServiceReachable, ", "))
+		findings = append(findings, makeProbeFinding("exfiltration", "service-reachability", severity, "contour-probe-service-reachable", reason, map[string]any{
+			"reachable_services": summary.ServiceReachable,
+			"blocked_services":   summary.ServiceBlocked,
+		}))
+	}
+
+	if summary.TLSIntercepted {
+		reason := fmt.Sprintf("TLS interception detected — certificate issuer org: %s", summary.TLSInterceptOrg)
+		findings = append(findings, makeProbeFinding("network", "tls-interception", "strong", "contour-probe-tls-intercept", reason, map[string]any{
+			"tls_intercept_org": summary.TLSInterceptOrg,
+		}))
+	}
+
+	if summary.DomainFrontingPossible {
+		findings = append(findings, makeProbeFinding("escape", "domain-fronting", "active", "contour-probe-domain-fronting",
+			fmt.Sprintf("Domain fronting possible: TLS handshake succeeded with SNI %s on target %s", summary.DomainFrontingSNI, summary.Endpoint),
+			map[string]any{"sni": summary.DomainFrontingSNI}))
+	}
+
+	if summary.DNSExfilViable {
+		findings = append(findings, makeProbeFinding("exfiltration", "dns-exfil-viable", "strong", "contour-probe-dns-exfil",
+			"DNS TXT queries can reach external resolvers, making DNS tunneling viable",
+			map[string]any{"dns_exfil": true}))
 	}
 
 	return normalizeFindings(findings)
@@ -1065,6 +1422,108 @@ func probeEndpointTLSScan(ctx context.Context, host string, port int, method str
 		return true
 	}
 	return false
+}
+
+// probeTLSInterception dials the given host:port with TLS and inspects the
+// certificate issuer for signs of a TLS-intercepting proxy or firewall.
+// Returns the issuer organisation and true if interception keywords are found.
+func probeTLSInterception(ctx context.Context, host string, port int, timeout time.Duration) (string, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", false
+	}
+	serverName := host
+	if net.ParseIP(serverName) != nil {
+		serverName = ""
+	}
+	dialer := &net.Dialer{Timeout: timeout}
+	conn, err := tls.DialWithDialer(dialer, "tcp", net.JoinHostPort(host, strconv.Itoa(port)), &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         serverName,
+	})
+	if err != nil {
+		return "", false
+	}
+	defer conn.Close()
+
+	state := conn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return "", false
+	}
+	// Check the leaf certificate's issuer chain for interception keywords.
+	interceptKeywords := []string{
+		"proxy", "firewall", "inspect", "zscaler", "bluecoat",
+		"fortinet", "paloalto", "checkpoint", "mcafee", "symantec", "websense",
+	}
+	for _, cert := range state.PeerCertificates {
+		for _, org := range cert.Issuer.Organization {
+			orgLower := strings.ToLower(org)
+			for _, kw := range interceptKeywords {
+				if strings.Contains(orgLower, kw) {
+					return org, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// probeHTTPMethod sends a raw HTTP request with the given method to addr
+// (host:port) and returns true if the response indicates the method is
+// accepted (any 2xx, 3xx, or 407 status).
+func probeHTTPMethod(ctx context.Context, addr, method string, timeout time.Duration) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return false
+	}
+	dialer := net.Dialer{Timeout: timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+
+	var req string
+	switch method {
+	case "CONNECT":
+		req = "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"
+	case "POST":
+		body := "probe=1"
+		req = fmt.Sprintf("POST / HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n%s", addr, len(body), body)
+	case "PUT":
+		body := "probe=1"
+		req = fmt.Sprintf("PUT / HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n%s", addr, len(body), body)
+	default:
+		req = fmt.Sprintf("%s / HTTP/1.1\r\nHost: %s\r\n\r\n", method, addr)
+	}
+
+	if _, err := conn.Write([]byte(req)); err != nil {
+		return false
+	}
+	buf := make([]byte, 1024)
+	nr, err := conn.Read(buf)
+	if nr == 0 {
+		return false
+	}
+	line := string(buf[:nr])
+	// Look for an HTTP status line; accepted = 2xx, 3xx, or 407 (proxy auth required).
+	if !strings.HasPrefix(line, "HTTP/") {
+		return false
+	}
+	parts := strings.SplitN(line, " ", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	code, cerr := strconv.Atoi(parts[1])
+	if cerr != nil {
+		return false
+	}
+	return (code >= 200 && code < 400) || code == 407
 }
 
 func probeEndpointUDPScan(ctx context.Context, host string, port int, method string, timeout time.Duration) bool {

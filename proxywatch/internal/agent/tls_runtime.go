@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"proxywatch/internal/keystore"
+	"proxywatch/internal/safeio"
 )
 
 const (
@@ -144,7 +145,7 @@ func resolveTLSMaterialPaths() (tlsMaterialPaths, error) {
 		dir = expanded
 	}
 	if !filepath.IsAbs(dir) {
-		dir = filepath.Join(proxywatchDataRoot(), sanitizeRelativeTLSDir(dir, "tls"))
+		dir = filepath.Join(safeio.ProxywatchDataRoot(), safeio.SanitizeRelativePath(dir, "tls"))
 	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
@@ -409,7 +410,7 @@ func expandHome(path string) (string, error) {
 	if path[0] != '~' {
 		return path, nil
 	}
-	home := strings.TrimSpace(userHomeDir())
+	home := strings.TrimSpace(safeio.UserHomeDir())
 	if home == "" {
 		return "", fmt.Errorf("home directory not available")
 	}
@@ -422,56 +423,3 @@ func expandHome(path string) (string, error) {
 	return path, nil
 }
 
-func proxywatchDataRoot() string {
-	home := userHomeDir()
-	if home == "" {
-		return ".proxywatch"
-	}
-	return filepath.Join(home, ".proxywatch")
-}
-
-func userHomeDir() string {
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		return strings.TrimSpace(home)
-	}
-	for _, key := range []string{"HOME", "USERPROFILE"} {
-		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
-			return val
-		}
-	}
-	drive := strings.TrimSpace(os.Getenv("HOMEDRIVE"))
-	path := strings.TrimSpace(os.Getenv("HOMEPATH"))
-	if drive != "" && path != "" {
-		return drive + path
-	}
-	return ""
-}
-
-func sanitizeRelativeTLSDir(path, fallback string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return fallback
-	}
-	path = filepath.Clean(path)
-	if path == "." || path == "" {
-		return fallback
-	}
-	if strings.HasPrefix(path, ".proxywatch"+string(filepath.Separator)) {
-		path = strings.TrimPrefix(path, ".proxywatch"+string(filepath.Separator))
-	}
-	for strings.HasPrefix(path, "."+string(filepath.Separator)) {
-		path = strings.TrimPrefix(path, "."+string(filepath.Separator))
-	}
-	path = strings.TrimLeft(path, string(filepath.Separator))
-	parentPrefix := ".." + string(filepath.Separator)
-	for path == ".." || strings.HasPrefix(path, parentPrefix) {
-		if path == ".." {
-			return fallback
-		}
-		path = strings.TrimPrefix(path, parentPrefix)
-	}
-	if path == "" || path == "." {
-		return fallback
-	}
-	return path
-}

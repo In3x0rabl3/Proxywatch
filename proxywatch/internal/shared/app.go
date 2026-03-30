@@ -1,7 +1,9 @@
 package shared
 
 import (
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -34,6 +36,19 @@ type HostSummary struct {
 
 type AppState struct {
 	Screen tcell.Screen
+
+	// ScreenWidth and ScreenHeight are set by the bubbletea WindowSizeMsg
+	// and used by rendering code that needs dimensions without a tcell.Screen.
+	ScreenWidth  int
+	ScreenHeight int
+
+	// ProgressMu protects progress line slices that are written by
+	// background goroutines and read by the UI goroutine.
+	ProgressMu sync.Mutex
+
+	// YubiKeyTouchRequired is set true when a YubiKey touch is needed.
+	// The UI shows a prominent prompt when this is true.
+	YubiKeyTouchRequired bool
 
 	LastError           string
 	LastUpdate          time.Time
@@ -87,8 +102,22 @@ type AppState struct {
 	CollectStatusText  string
 	CollectStatusUntil time.Time
 	CollectStatusError bool
-	CollectShowHelp    bool
-	CollectHelpIndex   int
+
+	// Collection results for display.
+	CollectResultNodes      int
+	CollectResultEdges      int
+	CollectResultOutput     string
+	CollectResultUploaded   bool
+	CollectResultHasData    bool
+	CollectResultCandidates int
+	CollectResultHosts      int
+	CollectResultExternal   int
+	CollectResultInternal   int
+	CollectResultListeners  int
+	CollectResultDuration   string
+	CollectShowHelp        bool
+	CollectHelpIndex       int
+	CollectProgressLines   []string
 
 	CalibrateDuration  string
 	CalibrateProvider  string
@@ -97,16 +126,19 @@ type AppState struct {
 	CalibrateOutput    string
 	CalibrateField     int
 	CalibrateEditing   bool
+	CalibrateEditCursor int
 	CalibrateActive    bool
 	CalibrateAnalyzing bool
 	CalibrateCancel    func()
 	CalibrateStartedAt time.Time
 	CalibrateUntil     time.Time
-	CalibrateSamples   []Candidate
+	CalibrateSamples         []Candidate
+	CalibrateProgressLines   []string
 
-	CalibrateStatusText  string
-	CalibrateStatusUntil time.Time
-	CalibrateStatusError bool
+	CalibrateStatusText        string
+	CalibrateStatusUntil       time.Time
+	CalibrateStatusError       bool
+	CalibrateDecryptAttempted  bool
 
 	CalibrateProfiles        []string
 	CalibrateProfileIndex    int
@@ -157,7 +189,11 @@ type AppState struct {
 	ContourStatusText      string
 	ContourStatusUntil     time.Time
 	ContourStatusError     bool
-	ContourReportLines     []string
+	ContourProgressLines       []string
+	ContourPartialReportLines  []string
+	ContourPartialProbe        any // *contour.ProbeSummary during scan, nil otherwise
+	ContourReport              any // *contour.Report after scan completes, nil otherwise
+	ContourReportLines         []string
 	ContourReportPath      string
 	ContourReportTime      time.Time
 	ContourReportScroll    int
@@ -169,11 +205,28 @@ type AppState struct {
 	KeystoreField       int
 	KeystoreEditing     bool
 	KeystoreUnlocked    bool
+	KeystoreMethod      string // "local", "gpg", "yubikey"
+	KeystoreEntries     []string // list of keystore names
+	KeystoreSelected    int      // selected keystore index
+	KeystoreActiveEntry string   // currently active keystore name
+	KeystoreSecure      bool     // whether active keystore is hardware-key secured
+	KeystorePanel       int      // 0=setup, 1=keystores, 2=fields
 	KeystoreStatusText  string
 	KeystoreStatusUntil time.Time
 	KeystoreStatusError bool
-	KeystoreShowHelp    bool
-	KeystoreHelpIndex   int
+	KeystoreShowHelp       bool
+	KeystoreHelpIndex      int
+	KeystoreCreateMenuOpen bool
+	KeystoreCreateMenuOpts []string
+	KeystoreCreateMenuIdx  int
+	KeystoreDeleteConfirm  bool   // true = waiting for second 'd' press
+	KeystoreDeleteTarget   string // name of keystore pending delete
+	KeystoreWizardOpen     bool
+	KeystoreWizardField    int    // 0=name, 1=encryption, 2=slot, 3=create
+	KeystoreWizardName     string
+	KeystoreWizardSecure   bool
+	KeystoreWizardSlot     string
+	KeystoreWizardEditing  bool
 
 	SIEMDebugLogPath    string
 	SIEMRulesJSONPath   string
@@ -196,14 +249,25 @@ type AppState struct {
 	SIEMMenuTitle       string
 	SIEMMenuOptions     []string
 	SIEMMenuIndex       int
+	SIEMProgressLines   []string
 	SIEMGenerating      bool
 	SIEMStartedAt       time.Time
 	SIEMStatusText      string
 	SIEMStatusUntil     time.Time
-	SIEMStatusError     bool
+	SIEMStatusError        bool
+	SIEMDecryptAttempted   bool
 	StartSIEMGeneration func(sourceReport, provider, model, outputReport, outputJSON string)
 
+	AutoCalibrateInterval time.Duration
+	AutoCalibrateLastRun  time.Time
+	AutoCalibrateEnabled  bool
+
 	CalibrationCollect func() (*Snapshot, error)
+
+	PrevCandidateKeys map[string]string // key -> role from last refresh
+
+	SessionLogPath string
+	SessionLogFile *os.File
 
 	Candidates               []Candidate
 	SnapshotCandidates       []Candidate
@@ -219,7 +283,6 @@ type AppState struct {
 	WhitelistShowHelp        bool
 	WhitelistHelpIndex       int
 	InspectKey               string
-	InspectExplain           bool
 	InspectScroll            int
 	InspectMaxScroll         int
 	InspectSectionStarts     []int
@@ -394,4 +457,23 @@ func ApplyScoreAndRoleFilters(cands []Candidate, minScore int, roleFilter map[st
 		filtered = append(filtered, c)
 	}
 	return filtered
+}
+
+func DefaultHostID(fallback string) string {
+	name, err := os.Hostname()
+	if err == nil {
+		name = strings.TrimSpace(name)
+	}
+	if name == "" {
+		return fallback
+	}
+	return name
+}
+
+func DisplayHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "local"
+	}
+	return host
 }

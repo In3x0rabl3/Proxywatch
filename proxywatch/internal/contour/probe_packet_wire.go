@@ -7,26 +7,8 @@ import (
 	"hash/crc32"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 )
-
-func buildProbeRequestPacket(kind, method string, port int, exfil bool) []byte {
-	method = strings.ToLower(strings.TrimSpace(method))
-	methodID, ok := probeMethodIDs[method]
-	if !ok {
-		return nil
-	}
-	body := buildProbeMethodRequestBody(method, port, exfil)
-	if len(body) == 0 {
-		return nil
-	}
-	if len(body) > 0xffff {
-		return nil
-	}
-	nonce := atomic.AddUint64(&probeNonceCtr, 1)
-	return encodeProbePacket(false, kind, methodID, port, exfil, nonce, body)
-}
 
 func buildProbeResponsePacket(raw []byte) ([]byte, bool) {
 	packet, ok := decodeProbePacket(raw, false)
@@ -46,21 +28,6 @@ func buildProbeResponsePacket(raw []byte) ([]byte, bool) {
 	}
 	resp := encodeProbePacket(true, packet.Kind, methodID, packet.Port, packet.Exfil, packet.Nonce, respBody)
 	return resp, len(resp) > 0
-}
-
-func validateProbeResponse(request, response []byte) bool {
-	req, ok := decodeProbePacket(request, false)
-	if !ok {
-		return false
-	}
-	resp, ok := decodeProbePacket(response, true)
-	if !ok {
-		return false
-	}
-	if req.Kind != resp.Kind || req.Method != resp.Method || req.Port != resp.Port || req.Nonce != resp.Nonce {
-		return false
-	}
-	return validateProbeMethodResponse(resp.Method, req.Body, resp.Body)
 }
 
 func detectProbeRawMethod(body []byte) (string, bool, bool) {
@@ -268,20 +235,6 @@ func buildProbeAMQPProtocolHeader() []byte {
 	return []byte{'A', 'M', 'Q', 'P', 0x00, 0x00, 0x09, 0x01}
 }
 
-func buildProbeAMQPFrame(frameType byte, channel uint16, payload []byte) []byte {
-	if payload == nil {
-		payload = []byte{}
-	}
-	out := make([]byte, 0, 8+len(payload))
-	out = append(out, frameType)
-	out = append(out, byte(channel>>8), byte(channel))
-	size := uint32(len(payload))
-	out = append(out, byte(size>>24), byte(size>>16), byte(size>>8), byte(size))
-	out = append(out, payload...)
-	out = append(out, 0xCE)
-	return out
-}
-
 func buildProbeNTPRequestBody(extPayload []byte) []byte {
 	base := make([]byte, 48)
 	// LI=0, VN=4, Mode=3 (client).
@@ -430,6 +383,12 @@ func buildProbeSMB2NegotiateRequestBody() []byte {
 	out = append(out, 0x00, byte(length>>16), byte(length>>8), byte(length))
 	out = append(out, wire...)
 	return out
+}
+
+// IsCarrierTunnelMethod reports whether the given protocol method is a SOCKS5
+// carrier tunnel method (http, https, ws, wss, ssh).
+func IsCarrierTunnelMethod(method string) bool {
+	return methodUsesSocksCarrierTunnel(method)
 }
 
 func methodUsesSocksCarrierTunnel(method string) bool {

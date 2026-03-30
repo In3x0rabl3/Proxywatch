@@ -17,6 +17,8 @@ import (
 func DrawCollect(app *shared.AppState) {
 	s := app.Screen
 	clearScreen(s)
+	cursorVisible := false
+	cursorX, cursorY := 0, 0
 
 	w, h := s.Size()
 	drawPanel(s, 0, 0, w, 4, "BloodHound", "proxywatch")
@@ -67,9 +69,6 @@ func DrawCollect(app *shared.AppState) {
 			prefixStyle = styleTextB
 		}
 		value := row.value
-		if rowSelected && app.CollectEditing {
-			value += " [edit]"
-		}
 		rowY := setupY + 1 + i
 		fillSelectedRowBar(s, rowY, 2, w-3, rowSelected)
 		labelText := fmt.Sprintf("%s %-8s", prefix, row.label+":")
@@ -77,17 +76,49 @@ func DrawCollect(app *shared.AppState) {
 		PutStringStyle(s, 2, rowY, labelText, applySelectedRowStyle(labelStyle, rowSelected))
 		valueX := 2 + len(labelText) + 2
 		if valueX < w-2 {
-			PutStringStyle(s, valueX, rowY, TruncateToWidth(value, w-valueX-2), applySelectedRowStyle(valueStyle, rowSelected))
+			valueW := max(0, w-valueX-2)
+			PutStringStyle(s, valueX, rowY, TruncateToWidth(value, valueW), applySelectedRowStyle(valueStyle, rowSelected))
+			if rowSelected && app.CollectEditing && row.field == collectFieldOutput && !app.CollectShowHelp && !app.CollectShowMenu {
+				cursorVisible = true
+				cursorX = textCursorX(valueX, value, valueW)
+				cursorY = rowY
+			}
 		}
 		PutStringStyle(s, 2, rowY, string(prefix), applySelectedRowStyle(prefixStyle, rowSelected))
+		drawEditingTag(s, rowY, w, rowSelected && app.CollectEditing && row.field == collectFieldOutput)
 	}
 
-	notesY := setupY + setupH
-	drawPanel(s, 0, notesY, w, 4, "NOTES", "BloodHound")
-	PutStringStyle(s, 2, notesY+1, TruncateToWidth("Source lets you collect from all hosts or a specific host.", w-4), styleMuted)
-	PutStringStyle(s, 2, notesY+2, TruncateToWidth("Role metadata is omitted from BloodHound collection output.", w-4), styleMuted)
+	reportY := setupY + setupH
+	reportH := max(4, h-reportY)
+	if reportY+reportH > h {
+		reportH = h - reportY
+	}
+	if reportH >= 3 {
+		// Show live collection progress during active run.
+		if app.CollectActive {
+			drawPanel(s, 0, reportY, w, reportH, "LIVE", "BloodHound")
+			pRow := reportY + 1
+			pLines := collectLiveLines(app)
+			visible := reportH - 2
+			if visible < 1 {
+				visible = 1
+			}
+			start := 0
+			if len(pLines) > visible {
+				start = len(pLines) - visible
+			}
+			end := min(len(pLines), start+visible)
+			for idx := start; idx < end && pRow < reportY+reportH-1; idx++ {
+				PutStringStyle(s, 2, pRow, TruncateToWidth(pLines[idx], w-4), collectProgressLineStyle(pLines[idx]))
+				pRow++
+			}
+		} else {
+			drawPanel(s, 0, reportY, w, reportH, "REPORT", "BloodHound")
+			PutStringStyle(s, 2, reportY+1, TruncateToWidth("No collection report yet. Start a collection to build a graph.", w-4), styleMuted)
+		}
+	}
 
-	statusY := notesY + 4
+	statusY := h - 2
 	if statusY < h-1 {
 		now := time.Now()
 		if app.CollectStatusText != "" && now.Before(app.CollectStatusUntil) {
@@ -100,6 +131,9 @@ func DrawCollect(app *shared.AppState) {
 			PutStringStyle(s, 2, statusY, TruncateToWidth(app.LastError, w-4), styleAlert)
 		}
 	}
+	if cursorVisible {
+		showInputCursor(s, cursorX, cursorY)
+	}
 
 	drawCollectOverlays(app, w, h)
 }
@@ -107,6 +141,8 @@ func DrawCollect(app *shared.AppState) {
 func DrawContour(app *shared.AppState) {
 	s := app.Screen
 	clearScreen(s)
+	cursorVisible := false
+	cursorX, cursorY := 0, 0
 
 	w, h := s.Size()
 	drawPanel(s, 0, 0, w, 4, "Contour", "proxywatch")
@@ -144,28 +180,10 @@ func DrawContour(app *shared.AppState) {
 		label string
 		value string
 	}{
-		{contourFieldEndpoint, "Endpoint", nonEmptySIEMValue(strings.TrimSpace(app.ContourProbeEndpoint), "127.0.0.1")},
+		{contourFieldEndpoint, "Target", nonEmptySIEMValue(strings.TrimSpace(app.ContourProbeEndpoint), "127.0.0.1")},
 		{contourFieldOutput, "Output", nonEmptySIEMValue(strings.TrimSpace(app.ContourOutput), contour.DefaultOutputPath())},
+		{contourFieldAction, "Action", contourActionLabel(app)},
 	}
-	if contour.NormalizeProbeRole(app.ContourProbeRole) != contour.ProbeRoleListen {
-		rows = append(rows, struct {
-			field int
-			label string
-			value string
-		}{contourFieldProbeMode, "Probe", contour.ProbeModeLabel(app.ContourProbeMode)})
-	}
-	rows = append(rows,
-		struct {
-			field int
-			label string
-			value string
-		}{contourFieldProbeRole, "Role", contour.ProbeRoleLabel(app.ContourProbeRole)},
-		struct {
-			field int
-			label string
-			value string
-		}{contourFieldAction, "Action", contourActionLabel(app)},
-	)
 	for i, row := range rows {
 		y := setupY + 1 + i
 		if y >= setupY+setupH-1 {
@@ -182,18 +200,22 @@ func DrawContour(app *shared.AppState) {
 			prefixStyle = styleTextB
 		}
 		value := row.value
-		if app.ContourEditing && rowSelected {
-			value += " [edit]"
-		}
 		fillSelectedRowBar(s, y, 2, w-3, rowSelected)
 		labelText := fmt.Sprintf("%s %-8s", prefix, row.label+":")
 		labelText = TruncateToWidth(labelText, w-4)
 		PutStringStyle(s, 2, y, labelText, applySelectedRowStyle(labelStyle, rowSelected))
 		valueX := 2 + len(labelText) + 2
 		if valueX < w-2 {
-			PutStringStyle(s, valueX, y, TruncateToWidth(value, w-valueX-2), applySelectedRowStyle(valueStyle, rowSelected))
+			valueW := max(0, w-valueX-2)
+			PutStringStyle(s, valueX, y, TruncateToWidth(value, valueW), applySelectedRowStyle(valueStyle, rowSelected))
+			if rowSelected && app.ContourEditing && (row.field == contourFieldEndpoint || row.field == contourFieldOutput) && !app.ContourShowHelp && !app.ContourShowMenu {
+				cursorVisible = true
+				cursorX = textCursorX(valueX, value, valueW)
+				cursorY = y
+			}
 		}
 		PutStringStyle(s, 2, y, string(prefix), applySelectedRowStyle(prefixStyle, rowSelected))
+		drawEditingTag(s, y, w, rowSelected && app.ContourEditing && (row.field == contourFieldEndpoint || row.field == contourFieldOutput))
 	}
 
 	reportY := setupY + setupH
@@ -202,16 +224,29 @@ func DrawContour(app *shared.AppState) {
 		drawContourOverlays(app, w, h)
 		return
 	}
-	drawPanel(s, 0, reportY, w, reportH, "LATEST REPORT", "Contour")
-	row := reportY + 1
+	// During an active run, show live progress in the report panel.
+	panelLabel := "LATEST REPORT"
 	lines := app.ContourReportLines
-	if len(lines) == 0 {
+	if (app.ContourActive || app.ContourAnalyzing) && len(app.ContourProgressLines) > 0 {
+		panelLabel = "LIVE"
+		lines = app.ContourProgressLines
+		// Auto-scroll to bottom of live output.
+		visible := reportH - 2
+		if visible > 0 && len(lines) > visible {
+			app.ContourReportScroll = len(lines) - visible
+		}
+	}
+	drawPanel(s, 0, reportY, w, reportH, panelLabel, "Contour")
+	row := reportY + 1
+	if len(lines) == 0 && !app.ContourActive && !app.ContourAnalyzing {
 		app.ContourReportMaxScroll = 0
 		PutStringStyle(s, 2, row, TruncateToWidth("No contour report has been generated yet.", w-4), styleText)
 		row++
 		if row < reportY+reportH-1 {
 			PutStringStyle(s, 2, row, TruncateToWidth("Start a contour run to discover tunnel and escape patterns.", w-4), styleMuted)
 		}
+	} else if len(lines) == 0 {
+		PutStringStyle(s, 2, row, TruncateToWidth("Starting...", w-4), styleMuted)
 	} else {
 		visible := reportH - 2
 		if visible < 1 {
@@ -245,6 +280,9 @@ func DrawContour(app *shared.AppState) {
 		}
 		PutStringStyle(s, 2, max(reportY+1, h-2), TruncateToWidth(app.ContourStatusText, w-4), st)
 	}
+	if cursorVisible {
+		showInputCursor(s, cursorX, cursorY)
+	}
 
 	drawContourOverlays(app, w, h)
 }
@@ -252,6 +290,8 @@ func DrawContour(app *shared.AppState) {
 func DrawCalibration(app *shared.AppState) {
 	s := app.Screen
 	clearScreen(s)
+	cursorVisible := false
+	cursorX, cursorY := 0, 0
 
 	w, h := s.Size()
 	drawPanel(s, 0, 0, w, 4, "Calibration", "proxywatch")
@@ -325,18 +365,22 @@ func DrawCalibration(app *shared.AppState) {
 			prefixStyle = styleTextB
 		}
 		value := ln.value
-		if app.CalibrateEditing && rowSelected {
-			value += " [edit]"
-		}
 		fillSelectedRowBar(s, row, 2, w-3, rowSelected)
 		labelText := fmt.Sprintf("%s %-9s", prefix, ln.label+":")
 		labelText = TruncateToWidth(labelText, w-4)
 		PutStringStyle(s, 2, row, labelText, applySelectedRowStyle(labelStyle, rowSelected))
 		valueX := 2 + len(labelText) + 2
 		if valueX < w-2 {
-			PutStringStyle(s, valueX, row, TruncateToWidth(value, w-valueX-2), applySelectedRowStyle(valueStyle, rowSelected))
+			valueW := max(0, w-valueX-2)
+			PutStringStyle(s, valueX, row, TruncateToWidth(value, valueW), applySelectedRowStyle(valueStyle, rowSelected))
+			if rowSelected && app.CalibrateEditing && i == calibrateFieldOutput && !app.ShowCalibrateHelp && !app.ShowCalibrateMenu {
+				cursorVisible = true
+				cursorX = textCursorX(valueX, value, valueW)
+				cursorY = row
+			}
 		}
 		PutStringStyle(s, 2, row, string(prefix), applySelectedRowStyle(prefixStyle, rowSelected))
+		drawEditingTag(s, row, w, rowSelected && app.CalibrateEditing && i == calibrateFieldOutput)
 	}
 
 	accessY := setupY + setupH
@@ -355,12 +399,19 @@ func DrawCalibration(app *shared.AppState) {
 		{"Local LLM URL", access.LocalLLMURL},
 		{"Local LLM API key", access.LocalLLMKey},
 	}
+	labelWidth := 0
+	for _, item := range accessRows {
+		if n := len(item.label) + 1; n > labelWidth {
+			labelWidth = n
+		}
+	}
+	labelWidth = max(labelWidth, 18)
 	for i, item := range accessRows {
 		y := accessY + 1 + i
 		if y >= accessY+accessH-1 || y >= h {
 			break
 		}
-		labelText := fmt.Sprintf(" %-17s", item.label+":")
+		labelText := fmt.Sprintf(" %-*s", labelWidth, item.label+":")
 		labelText = TruncateToWidth(labelText, w-4)
 		PutStringStyle(s, 2, y, labelText, styleMuted)
 
@@ -382,10 +433,22 @@ func DrawCalibration(app *shared.AppState) {
 		drawCalibrationOverlays(app, w, h)
 		return
 	}
-	drawPanel(s, 0, reportY, w, reportH, "LATEST REPORT", "")
+	// During active collection or analysis, show live progress.
+	calibPanelLabel := "LATEST REPORT"
+	if app.CalibrateActive || app.CalibrateAnalyzing {
+		calibPanelLabel = "LIVE"
+	}
+	drawPanel(s, 0, reportY, w, reportH, calibPanelLabel, "")
 	row := reportY + 1
 	lines := app.CalibrateReportLines
-	if app.CalibrateActive && !app.CalibrateAnalyzing {
+	if (app.CalibrateActive || app.CalibrateAnalyzing) && len(app.CalibrateProgressLines) > 0 {
+		lines = app.CalibrateProgressLines
+		// Auto-scroll to bottom of live output.
+		visible := reportH - 2
+		if visible > 0 && len(lines) > visible {
+			app.CalibrateReportScroll = len(lines) - visible
+		}
+	} else if app.CalibrateActive && !app.CalibrateAnalyzing {
 		lines = calibrationCollectionLines(app)
 	} else if len(lines) == 0 && strings.TrimSpace(app.CalibrateReportSummary) != "" {
 		lines = []string{app.CalibrateReportSummary}
@@ -444,6 +507,9 @@ func DrawCalibration(app *shared.AppState) {
 		}
 		PutStringStyle(s, 2, reportY+reportH-2, TruncateToWidth(app.CalibrateStatusText, w-4), st)
 	}
+	if cursorVisible {
+		showInputCursor(s, cursorX, cursorY)
+	}
 
 	drawCalibrationOverlays(app, w, h)
 }
@@ -451,6 +517,8 @@ func DrawCalibration(app *shared.AppState) {
 func DrawSIEM(app *shared.AppState) {
 	s := app.Screen
 	clearScreen(s)
+	cursorVisible := false
+	cursorX, cursorY := 0, 0
 
 	w, h := s.Size()
 	drawPanel(s, 0, 0, w, 4, "SIEM", "proxywatch")
@@ -475,11 +543,11 @@ func DrawSIEM(app *shared.AppState) {
 	}
 
 	genY := 4
-	genH := 11
+	genH := 9
 	if genY+genH >= h {
-		genH = max(9, h-genY-1)
+		genH = max(7, h-genY-1)
 	}
-	drawPanel(s, 0, genY, w, genH, "SIEM GENERATION", "")
+	drawPanel(s, 0, genY, w, genH, "SIEM SETUP", "")
 	sourceValue := "(none found - run Calibrate)"
 	if len(app.SIEMSourceReports) > 0 {
 		selected := nonEmptySIEMValue(app.SIEMSourceReport, app.SIEMSourceReports[0])
@@ -490,13 +558,12 @@ func DrawSIEM(app *shared.AppState) {
 		label string
 		value string
 	}{
-		{siemFieldSourceReport, "Source report", sourceValue},
+		{siemFieldSourceReport, "Source", sourceValue},
 		{siemFieldProvider, "Provider", provider},
 		{siemFieldModel, "Model", nonEmptySIEMValue(app.SIEMModel, calibration.DefaultModel(app.SIEMProvider))},
 		{siemFieldReportOutput, "Report out", nonEmptySIEMValue(app.SIEMReportPath, siem.DefaultSIEMReportPath())},
 		{siemFieldJSONOutput, "JSON out", nonEmptySIEMValue(app.SIEMExportPath, siem.DefaultSIEMJSONPath())},
-		{siemFieldGenerate, "Generate", "Build SIEM report + JSON from calibration data"},
-		{siemFieldSaveGeneration, "Save", "Save generation settings to keystore"},
+		{siemFieldGenerate, "Generate", siemGenerateLabel(app)},
 		{siemFieldCalibrate, "Calibrate", "Open Calibration and start a run"},
 	}
 	for i, row := range genRows {
@@ -515,78 +582,45 @@ func DrawSIEM(app *shared.AppState) {
 			prefixStyle = styleTextB
 		}
 		value := row.value
-		if app.SIEMEditing && rowSelected {
-			value += " [edit]"
-		}
 		fillSelectedRowBar(s, y, 2, w-3, rowSelected)
-		labelText := fmt.Sprintf("%s %-13s", prefix, row.label+":")
+		labelText := fmt.Sprintf("%s %-11s", prefix, row.label+":")
 		labelText = TruncateToWidth(labelText, w-4)
 		PutStringStyle(s, 2, y, labelText, applySelectedRowStyle(labelStyle, rowSelected))
 		valueX := 2 + len(labelText) + 2
 		if valueX < w-2 {
-			PutStringStyle(s, valueX, y, TruncateToWidth(value, w-valueX-2), applySelectedRowStyle(valueStyle, rowSelected))
+			valueW := max(0, w-valueX-2)
+			PutStringStyle(s, valueX, y, TruncateToWidth(value, valueW), applySelectedRowStyle(valueStyle, rowSelected))
+			if rowSelected && app.SIEMEditing && siemFieldEditable(row.field) && !app.SIEMShowHelp && !app.SIEMShowMenu {
+				cursorVisible = true
+				cursorX = textCursorX(valueX, value, valueW)
+				cursorY = y
+			}
 		}
 		PutStringStyle(s, 2, y, string(prefix), applySelectedRowStyle(prefixStyle, rowSelected))
+		drawEditingTag(s, y, w, rowSelected && app.SIEMEditing && siemFieldEditable(row.field))
 	}
 
-	expY := genY + genH
-	expH := 8
-	if expY+expH >= h {
-		expH = max(6, h-expY-1)
-	}
-	drawPanel(s, 0, expY, w, expH, "RUNTIME EXPORTS", "")
-	debugValue := nonEmptySIEMValue(app.SIEMDebugLogPath, "(disabled)")
-	rulesValue := nonEmptySIEMValue(app.SIEMRulesJSONPath, "(disabled)")
-	expRows := []struct {
-		field int
-		label string
-		value string
-	}{
-		{siemFieldDebugLog, "Debug log", debugValue},
-		{siemFieldRulesJSON, "Rules JSON", rulesValue},
-		{siemFieldApply, "Apply", "Apply export paths to runtime"},
-		{siemFieldSave, "Save", "Save export paths to keystore + apply"},
-		{siemFieldDisable, "Disable", "Clear runtime export paths"},
-	}
-	for i, row := range expRows {
-		y := expY + 1 + i
-		if y >= expY+expH-1 {
-			break
-		}
-		rowSelected := app.SIEMField == row.field
-		prefix := " "
-		labelStyle := styleMuted
-		valueStyle := styleText
-		prefixStyle := styleText
-		if rowSelected {
-			prefix = ">"
-			valueStyle = styleTextB
-			prefixStyle = styleTextB
-		}
-		value := row.value
-		if app.SIEMEditing && rowSelected {
-			value += " [edit]"
-		}
-		fillSelectedRowBar(s, y, 2, w-3, rowSelected)
-		labelText := fmt.Sprintf("%s %-13s", prefix, row.label+":")
-		labelText = TruncateToWidth(labelText, w-4)
-		PutStringStyle(s, 2, y, labelText, applySelectedRowStyle(labelStyle, rowSelected))
-		valueX := 2 + len(labelText) + 2
-		if valueX < w-2 {
-			PutStringStyle(s, valueX, y, TruncateToWidth(value, w-valueX-2), applySelectedRowStyle(valueStyle, rowSelected))
-		}
-		PutStringStyle(s, 2, y, string(prefix), applySelectedRowStyle(prefixStyle, rowSelected))
-	}
-
-	reportY := expY + expH
+	reportY := genY + genH
 	reportH := max(4, h-reportY)
 	if reportY+reportH > h {
 		reportH = h - reportY
 	}
 	if reportH >= 3 {
-		drawPanel(s, 0, reportY, w, reportH, "REPORT", "SIEM")
+		// During an active generation, show live progress in the report panel.
+		siemPanelLabel := "REPORT"
+		siemLines := app.SIEMReportLines
+		if app.SIEMGenerating && len(app.SIEMProgressLines) > 0 {
+			siemPanelLabel = "LIVE"
+			siemLines = app.SIEMProgressLines
+			// Auto-scroll to bottom of live output.
+			visible := reportH - 2
+			if visible > 0 && len(siemLines) > visible {
+				app.SIEMReportScroll = len(siemLines) - visible
+			}
+		}
+		drawPanel(s, 0, reportY, w, reportH, siemPanelLabel, "SIEM")
 		row := reportY + 1
-		lines := app.SIEMReportLines
+		lines := siemLines
 		if len(lines) == 0 {
 			app.SIEMReportMaxScroll = 0
 			PutStringStyle(s, 2, row, TruncateToWidth("No SIEM report has been generated yet.", w-4), styleText)
@@ -633,6 +667,9 @@ func DrawSIEM(app *shared.AppState) {
 		}
 		PutStringStyle(s, 2, h-2, TruncateToWidth(app.SIEMStatusText, w-4), st)
 	}
+	if cursorVisible {
+		showInputCursor(s, cursorX, cursorY)
+	}
 
 	drawSIEMOverlays(app, w, h)
 }
@@ -664,6 +701,8 @@ func spinnerElapsed(start time.Time) time.Duration {
 func DrawKeystore(app *shared.AppState) {
 	s := app.Screen
 	clearScreen(s)
+	cursorVisible := false
+	cursorX, cursorY := 0, 0
 
 	w, h := s.Size()
 	drawPanel(s, 0, 0, w, 4, "Keystore", "proxywatch")
@@ -682,28 +721,52 @@ func DrawKeystore(app *shared.AppState) {
 	PutStringStyle(s, blockX, 2, stateLabel, styleCyanB)
 	PutStringStyle(s, blockX+len(stateLabel), 2, stateValue, styleTextB)
 
-	rows := []struct {
+	// All rows indexed by field constant. Hidden fields are skipped at render time.
+	allRows := map[int]struct{ label, value string }{
+		keystoreFieldOpenAIKey:         {"OpenAI key", keystore.MaskValue("OPENAI_API_KEY", app.KeystoreValues["OPENAI_API_KEY"])},
+		keystoreFieldOpenAIBaseURL:     {"OpenAI base URL", keystore.MaskValue("OPENAI_BASE_URL", app.KeystoreValues["OPENAI_BASE_URL"])},
+		keystoreFieldAnthropicKey:      {"Anthropic key", keystore.MaskValue("ANTHROPIC_API_KEY", app.KeystoreValues["ANTHROPIC_API_KEY"])},
+		keystoreFieldAnthropicBaseURL:  {"Anthropic base URL", keystore.MaskValue("ANTHROPIC_BASE_URL", app.KeystoreValues["ANTHROPIC_BASE_URL"])},
+		keystoreFieldLocalLLMURL:       {"Local LLM URL", keystore.MaskValue("LOCAL_LLM_URL", app.KeystoreValues["LOCAL_LLM_URL"])},
+		keystoreFieldLocalLLMAPIKey:    {"Local LLM key", keystore.MaskValue("LOCAL_LLM_API_KEY", app.KeystoreValues["LOCAL_LLM_API_KEY"])},
+		keystoreFieldCalibrationTimeout: {"Calibration timeout", keystore.MaskValue("CALIBRATION_HTTP_TIMEOUT", app.KeystoreValues["CALIBRATION_HTTP_TIMEOUT"])},
+		keystoreFieldBloodhoundURL:     {"BH URL", keystore.MaskValue("BLOODHOUND_API_URL", app.KeystoreValues["BLOODHOUND_API_URL"])},
+		keystoreFieldBloodhoundToken:   {"BH token", keystore.MaskValue("BLOODHOUND_API_TOKEN", app.KeystoreValues["BLOODHOUND_API_TOKEN"])},
+		keystoreFieldBloodhoundTokenID: {"BH token ID", keystore.MaskValue("BLOODHOUND_API_TOKEN_ID", app.KeystoreValues["BLOODHOUND_API_TOKEN_ID"])},
+		keystoreFieldTLSDir:            {"TLS dir", keystore.MaskValue("PROXYWATCH_TLS_DIR", app.KeystoreValues["PROXYWATCH_TLS_DIR"])},
+		keystoreFieldAgentToken:        {"Agent token", keystore.MaskValue("PROXYWATCH_AGENT_TOKEN", app.KeystoreValues["PROXYWATCH_AGENT_TOKEN"])},
+		keystoreFieldDisableClientCert: {"Disable client cert", keystore.MaskValue("PROXYWATCH_DISABLE_CLIENT_CERT", app.KeystoreValues["PROXYWATCH_DISABLE_CLIENT_CERT"])},
+		keystoreFieldTrustOnFirstUse:   {"Trust on first use", keystore.MaskValue("PROXYWATCH_TRUST_ON_FIRST_USE", app.KeystoreValues["PROXYWATCH_TRUST_ON_FIRST_USE"])},
+		keystoreFieldLoad:              {"Load", "Load encrypted keystore"},
+		keystoreFieldSave:              {"Save", "Save encrypted keystore"},
+		keystoreFieldApply:             {"Apply", "Apply values to runtime"},
+	}
+
+	// Build visible rows in display order.
+	type ksRow struct {
+		field int
 		label string
 		value string
-	}{
-		{"OpenAI key", keystore.MaskValue("OPENAI_API_KEY", app.KeystoreValues["OPENAI_API_KEY"])},
-		{"OpenAI base URL", keystore.MaskValue("OPENAI_BASE_URL", app.KeystoreValues["OPENAI_BASE_URL"])},
-		{"Anthropic key", keystore.MaskValue("ANTHROPIC_API_KEY", app.KeystoreValues["ANTHROPIC_API_KEY"])},
-		{"Anthropic base URL", keystore.MaskValue("ANTHROPIC_BASE_URL", app.KeystoreValues["ANTHROPIC_BASE_URL"])},
-		{"Local LLM URL", keystore.MaskValue("LOCAL_LLM_URL", app.KeystoreValues["LOCAL_LLM_URL"])},
-		{"Local LLM API key", keystore.MaskValue("LOCAL_LLM_API_KEY", app.KeystoreValues["LOCAL_LLM_API_KEY"])},
-		{"Calibration timeout", keystore.MaskValue("CALIBRATION_HTTP_TIMEOUT", app.KeystoreValues["CALIBRATION_HTTP_TIMEOUT"])},
-		{"BloodHound URL", keystore.MaskValue("BLOODHOUND_API_URL", app.KeystoreValues["BLOODHOUND_API_URL"])},
-		{"BloodHound token", keystore.MaskValue("BLOODHOUND_API_TOKEN", app.KeystoreValues["BLOODHOUND_API_TOKEN"])},
-		{"BloodHound token ID", keystore.MaskValue("BLOODHOUND_API_TOKEN_ID", app.KeystoreValues["BLOODHOUND_API_TOKEN_ID"])},
-		{"TLS dir", keystore.MaskValue("PROXYWATCH_TLS_DIR", app.KeystoreValues["PROXYWATCH_TLS_DIR"])},
-		{"Agent token", keystore.MaskValue("PROXYWATCH_AGENT_TOKEN", app.KeystoreValues["PROXYWATCH_AGENT_TOKEN"])},
-		{"Disable client cert", keystore.MaskValue("PROXYWATCH_DISABLE_CLIENT_CERT", app.KeystoreValues["PROXYWATCH_DISABLE_CLIENT_CERT"])},
-		{"Trust on first use", keystore.MaskValue("PROXYWATCH_TRUST_ON_FIRST_USE", app.KeystoreValues["PROXYWATCH_TRUST_ON_FIRST_USE"])},
-		{"Load", "Load encrypted keystore"},
-		{"Save", "Save encrypted keystore"},
-		{"Apply", "Apply values to runtime"},
 	}
+	rows := make([]ksRow, 0, 16)
+	fieldOrder := []int{
+		keystoreFieldOpenAIKey, keystoreFieldOpenAIBaseURL,
+		keystoreFieldAnthropicKey, keystoreFieldAnthropicBaseURL,
+		keystoreFieldLocalLLMURL, keystoreFieldLocalLLMAPIKey,
+		keystoreFieldCalibrationTimeout,
+		keystoreFieldBloodhoundURL, keystoreFieldBloodhoundToken, keystoreFieldBloodhoundTokenID,
+		keystoreFieldTLSDir, keystoreFieldAgentToken,
+		keystoreFieldDisableClientCert, keystoreFieldTrustOnFirstUse,
+		keystoreFieldLoad, keystoreFieldSave, keystoreFieldApply,
+	}
+	for _, f := range fieldOrder {
+		if !keystoreFieldVisible(f) {
+			continue
+		}
+		r := allRows[f]
+		rows = append(rows, ksRow{field: f, label: r.label, value: r.value})
+	}
+
 	setupY := 4
 	setupH := len(rows) + 4
 	if setupY+setupH >= h {
@@ -712,7 +775,7 @@ func DrawKeystore(app *shared.AppState) {
 	if setupY+setupH > h {
 		setupH = max(3, h-setupY)
 	}
-	drawPanel(s, 0, setupY, w, setupH, "KEYSTORE SETUP", "")
+	drawPanel(s, 0, setupY, w, setupH, "KEYSTORE", "")
 	fileLabel := fmt.Sprintf(" %-20s", "File:")
 	fileLabel = TruncateToWidth(fileLabel, w-4)
 	PutStringStyle(s, 2, setupY+1, fileLabel, styleMuted)
@@ -728,9 +791,17 @@ func DrawKeystore(app *shared.AppState) {
 		PutStringStyle(s, keyValueX, setupY+2, TruncateToWidth(keystore.KeyPath(app.KeystorePath), w-keyValueX-2), styleText)
 	}
 	maxVisibleRows := max(0, setupH-4)
+	// Find the display index of the selected field.
+	selectedDisplayIdx := 0
+	for i, row := range rows {
+		if row.field == app.KeystoreField {
+			selectedDisplayIdx = i
+			break
+		}
+	}
 	rowStart := 0
 	if maxVisibleRows > 0 && len(rows) > maxVisibleRows {
-		rowStart = app.KeystoreField - maxVisibleRows + 1
+		rowStart = selectedDisplayIdx - maxVisibleRows + 1
 		if rowStart < 0 {
 			rowStart = 0
 		}
@@ -742,7 +813,7 @@ func DrawKeystore(app *shared.AppState) {
 	for i := rowStart; i < len(rows) && i < rowStart+maxVisibleRows; i++ {
 		row := rows[i]
 		y := setupY + 3 + (i - rowStart)
-		rowSelected := i == app.KeystoreField
+		rowSelected := row.field == app.KeystoreField
 		prefix := " "
 		labelStyle := styleMuted
 		valueStyle := styleText
@@ -753,18 +824,25 @@ func DrawKeystore(app *shared.AppState) {
 			prefixStyle = styleTextB
 		}
 		value := row.value
-		if app.KeystoreEditing && rowSelected {
-			value += " [edit]"
-		}
 		fillSelectedRowBar(s, y, 2, w-3, rowSelected)
-		labelText := fmt.Sprintf("%s %-20s", prefix, row.label+":")
+		labelText := fmt.Sprintf("%s %-15s", prefix, row.label+":")
 		labelText = TruncateToWidth(labelText, w-4)
 		PutStringStyle(s, 2, y, labelText, applySelectedRowStyle(labelStyle, rowSelected))
 		valueX := 2 + len(labelText) + 2
 		if valueX < w-2 {
-			PutStringStyle(s, valueX, y, TruncateToWidth(value, w-valueX-2), applySelectedRowStyle(valueStyle, rowSelected))
+			valueW := max(0, w-valueX-2)
+			PutStringStyle(s, valueX, y, TruncateToWidth(value, valueW), applySelectedRowStyle(valueStyle, rowSelected))
+			if rowSelected && app.KeystoreEditing && !app.KeystoreShowHelp {
+				if _, editable := keystoreFieldEnvKey(row.field); editable {
+					cursorVisible = true
+					cursorX = textCursorX(valueX, value, valueW)
+					cursorY = y
+				}
+			}
 		}
 		PutStringStyle(s, 2, y, string(prefix), applySelectedRowStyle(prefixStyle, rowSelected))
+		_, keystoreEditable := keystoreFieldEnvKey(row.field)
+		drawEditingTag(s, y, w, rowSelected && app.KeystoreEditing && keystoreEditable)
 	}
 
 	notesY := setupY + setupH
@@ -773,12 +851,19 @@ func DrawKeystore(app *shared.AppState) {
 		notesH = h - notesY
 	}
 	if notesH >= 3 {
-		drawPanel(s, 0, notesY, w, notesH, "NOTES", "Keystore")
-		if notesY+1 < h {
-			PutStringStyle(s, 2, notesY+1, TruncateToWidth("Load/Save encrypts values on disk using AES-GCM and a local machine key file.", w-4), styleMuted)
+		drawPanel(s, 0, notesY, w, notesH, "", "Keystore")
+		noteRow := notesY + 1
+		notes := []string{
+			"Values are encrypted on disk with AES-GCM using a machine key.",
+			"Load reads the encrypted keystore. Save writes it. Apply pushes values to runtime.",
+			"Keys are used by Calibration (AI providers), SIEM, BloodHound, and agent transport.",
 		}
-		if notesY+2 < h {
-			PutStringStyle(s, 2, notesY+2, TruncateToWidth("Applied values update BloodHound, Calibration, and transport security runtime config.", w-4), styleMuted)
+		for _, note := range notes {
+			if noteRow >= notesY+notesH-1 {
+				break
+			}
+			PutStringStyle(s, 2, noteRow, TruncateToWidth(note, w-4), styleMuted)
+			noteRow++
 		}
 	}
 
@@ -789,6 +874,9 @@ func DrawKeystore(app *shared.AppState) {
 			st = styleAlert
 		}
 		PutStringStyle(s, 2, h-2, TruncateToWidth(app.KeystoreStatusText, w-4), st)
+	}
+	if cursorVisible {
+		showInputCursor(s, cursorX, cursorY)
 	}
 
 	drawKeystoreOverlays(app, w, h)
@@ -896,42 +984,61 @@ func calibrationReportLineStyle(line string) tcell.Style {
 	if trimmed == "" {
 		return styleText
 	}
+	// Section headers.
 	switch trimmed {
-	case "Overview", "Tuning", "Validation", "Risks", "Learning", "Memory", "Reasoning", "Similar runs:":
+	case "Tuning", "Validation", "Recommendations", "Learning", "History", "Reasoning":
 		return styleCyanB
 	}
-	if strings.HasPrefix(trimmed, "Summary:") {
-		return styleTextB
+	// Collection phase lines.
+	if strings.HasPrefix(trimmed, "Collection phase active.") || strings.HasPrefix(trimmed, "Remaining:") ||
+		strings.HasPrefix(trimmed, "Samples captured:") || strings.HasPrefix(trimmed, "Unique processes:") ||
+		strings.HasPrefix(trimmed, "Roles:") || strings.HasPrefix(trimmed, "States:") {
+		return styleText
 	}
-	if trimmed == "Successful checks:" || trimmed == "Failed checks:" {
-		return styleTextB
+	if strings.HasPrefix(trimmed, "Recent collected") {
+		return styleCyanB
 	}
-	if trimmed == "Successful checks:" || trimmed == "Failed checks:" {
-		return styleTextB
+	// Error lines.
+	if strings.Contains(trimmed, "[FAIL]") {
+		return styleAlert
 	}
-	if strings.HasPrefix(trimmed, "Mode: fallback") {
+	// Confidence — label muted, but number+level colored. Since we can only
+	// style the whole line, use the level color (it's the important part).
+	if strings.HasPrefix(trimmed, "Confidence:") {
+		if strings.Contains(trimmed, "(high)") {
+			return styleCyan
+		}
+		if strings.Contains(trimmed, "(moderate)") {
+			return styleWarn
+		}
+		return styleAlert // low
+	}
+	// Contamination coloring — color the whole line based on level.
+	if strings.Contains(trimmed, "Contamination:") {
+		if strings.Contains(trimmed, "(clean)") {
+			return styleCyan
+		}
+		if strings.Contains(trimmed, "(low)") {
+			return styleWatch
+		}
+		if strings.Contains(trimmed, "(elevated)") {
+			return styleWarn
+		}
+		return styleAlert // critical
+	}
+	// Validation verdict.
+	if strings.Contains(trimmed, "regressed") {
+		return styleAlert
+	}
+	if strings.Contains(trimmed, "improved") {
+		return styleWatch
+	}
+	// Risk tags.
+	if strings.Contains(trimmed, "[RISK]") {
 		return styleWarn
 	}
-	if strings.HasPrefix(trimmed, "Analysis error:") {
-		return styleAlert
-	}
-	if strings.HasPrefix(trimmed, "Collection phase active.") || strings.HasPrefix(trimmed, "Remaining:") || strings.HasPrefix(trimmed, "Samples captured:") || strings.HasPrefix(trimmed, "Unique processes:") || strings.HasPrefix(trimmed, "Roles:") || strings.HasPrefix(trimmed, "States:") {
-		return styleText
-	}
-	if strings.HasPrefix(trimmed, "Recent collected processes:") {
-		return styleCyanB
-	}
-	if strings.HasPrefix(trimmed, "Mode:") || strings.HasPrefix(trimmed, "Scope:") || strings.HasPrefix(trimmed, "Provider:") || strings.HasPrefix(trimmed, "Observed:") || strings.HasPrefix(trimmed, "Quality:") || strings.HasPrefix(trimmed, "Precision/Recall:") || strings.HasPrefix(trimmed, "False positives/negatives:") || strings.HasPrefix(trimmed, "Samples:") || strings.HasPrefix(trimmed, "Runs:") || strings.HasPrefix(trimmed, "Validated calibrations:") {
-		return styleText
-	}
-	if strings.HasPrefix(trimmed, "Dataset:") || strings.HasPrefix(trimmed, "Report:") || strings.HasPrefix(trimmed, "Model:") || strings.HasPrefix(trimmed, "Training dataset:") || strings.HasPrefix(trimmed, "Top processes:") || strings.HasPrefix(trimmed, "Normal baseline:") {
-		return styleMuted
-	}
-	if strings.Contains(strings.ToLower(trimmed), "regressed") {
-		return styleAlert
-	}
-	if strings.Contains(strings.ToLower(trimmed), "improved") {
-		return styleWatch
+	if strings.HasPrefix(trimmed, "- Warning:") {
+		return styleWarn
 	}
 	if strings.HasPrefix(trimmed, "- ") {
 		return styleText
@@ -939,7 +1046,25 @@ func calibrationReportLineStyle(line string) tcell.Style {
 	if strings.HasPrefix(line, "  ") {
 		return styleMuted
 	}
+	// Live progress lines.
+	if strings.HasPrefix(trimmed, "[*]") {
+		return styleMuted
+	}
+	if strings.HasPrefix(trimmed, "[+]") {
+		return styleCyan
+	}
+	if strings.HasPrefix(trimmed, "[-]") {
+		return styleAlert
+	}
 	return styleText
+}
+
+func siemGenerateLabel(app *shared.AppState) string {
+	if app.SIEMGenerating {
+		elapsed := spinnerElapsed(app.SIEMStartedAt)
+		return fmt.Sprintf("Stop generation (%s elapsed)", elapsed)
+	}
+	return "Build SIEM detections from calibration data"
 }
 
 func siemReportLineStyle(line string) tcell.Style {
@@ -947,28 +1072,127 @@ func siemReportLineStyle(line string) tcell.Style {
 	if trimmed == "" {
 		return styleText
 	}
-	if strings.HasPrefix(trimmed, "# ") || strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
+	// Section headers.
+	switch trimmed {
+	case "Detections", "Notes":
 		return styleCyanB
 	}
-	if strings.HasPrefix(trimmed, "Generated:") || strings.HasPrefix(trimmed, "Mode:") || strings.HasPrefix(trimmed, "Provider/Model:") || strings.HasPrefix(trimmed, "Source calibration ") || strings.HasPrefix(trimmed, "Scope:") {
-		return styleMuted
+	// Severity tags.
+	if strings.Contains(trimmed, "[HIGH]") || strings.Contains(trimmed, "[CRITICAL]") {
+		return styleAlert
 	}
-	if strings.HasPrefix(trimmed, "Role:") || strings.HasPrefix(trimmed, "Description:") {
-		return styleTextB
-	}
-	if strings.HasPrefix(trimmed, "Processes:") || strings.HasPrefix(trimmed, "Signals:") || strings.HasPrefix(trimmed, "Reasons:") {
-		return styleText
-	}
-	if strings.HasSuffix(trimmed, "query:") {
+	if strings.Contains(trimmed, "[MEDIUM]") {
 		return styleWarn
 	}
-	if strings.HasPrefix(trimmed, "```") {
+	if strings.Contains(trimmed, "[LOW]") {
+		return styleCyan
+	}
+	// Query lines (Splunk:, KQL:, ESQL:).
+	if strings.Contains(trimmed, "Splunk:") || strings.Contains(trimmed, "KQL:") || strings.Contains(trimmed, "ESQL:") {
 		return styleMuted
 	}
+	// Role/Process metadata lines.
+	if strings.Contains(trimmed, "Role:") && strings.Contains(trimmed, "Processes:") {
+		return styleMuted
+	}
+	// Stats line.
+	if strings.Contains(trimmed, "detections") && strings.Contains(trimmed, "candidates") {
+		return styleMuted
+	}
+	// Bullet points.
 	if strings.HasPrefix(trimmed, "- ") {
 		return styleText
 	}
-	if strings.Contains(trimmed, "[HIGH]") || strings.Contains(trimmed, "[CRITICAL]") {
+	// Live progress lines.
+	if strings.HasPrefix(trimmed, "[*]") {
+		return styleMuted
+	}
+	if strings.HasPrefix(trimmed, "[+]") {
+		return styleCyan
+	}
+	if strings.HasPrefix(trimmed, "[-]") {
+		return styleAlert
+	}
+	return styleText
+}
+
+func collectLiveLines(app *shared.AppState) []string {
+	lines := make([]string, 0, 16)
+	elapsed := time.Since(app.CollectStartedAt).Round(time.Second)
+	remaining := time.Until(app.CollectUntil).Round(time.Second)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	lines = append(lines, fmt.Sprintf("[*] Collection active  |  elapsed %s  |  %s remaining", elapsed, remaining))
+	lines = append(lines, fmt.Sprintf("[+] %d samples collected", len(app.CollectData)))
+
+	// Count unique processes and roles.
+	type pidInfo struct {
+		name string
+		role string
+	}
+	seen := make(map[int]pidInfo)
+	roleCounts := map[string]int{}
+	for _, c := range app.CollectData {
+		if c.Proc == nil {
+			continue
+		}
+		if _, ok := seen[c.Proc.Pid]; !ok {
+			seen[c.Proc.Pid] = pidInfo{name: c.Proc.Name, role: shared.RoleFamily(c.Role)}
+		}
+		roleCounts[shared.RoleFamily(c.Role)]++
+	}
+	lines = append(lines, fmt.Sprintf("[+] %d unique processes", len(seen)))
+
+	// Role breakdown.
+	parts := make([]string, 0, 6)
+	for _, r := range []string{"session", "beacon", "tunnel", "smb-pipe", "listen", "outbound"} {
+		if n := roleCounts[r]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", r, n))
+		}
+	}
+	if len(parts) > 0 {
+		lines = append(lines, "[+] "+strings.Join(parts, "  "))
+	}
+
+	// Recent processes (last 6 unique).
+	lines = append(lines, "")
+	lines = append(lines, "[*] Recent processes:")
+	added := 0
+	for i := len(app.CollectData) - 1; i >= 0 && added < 6; i-- {
+		c := app.CollectData[i]
+		if c.Proc == nil {
+			continue
+		}
+		key := c.Proc.Pid
+		info := seen[key]
+		delete(seen, key)
+		if info.name == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("    %-9d %-20s %8s", c.Proc.Pid, ClipToWidth(info.name, 20), info.role))
+		added++
+	}
+
+	// Append any finalization progress lines.
+	if len(app.CollectProgressLines) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, app.CollectProgressLines...)
+	}
+
+	return lines
+}
+
+func collectProgressLineStyle(line string) tcell.Style {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "[*]") {
+		return styleMuted
+	}
+	if strings.HasPrefix(trimmed, "[+]") {
+		return styleCyan
+	}
+	if strings.HasPrefix(trimmed, "[-]") {
 		return styleAlert
 	}
 	return styleText
@@ -995,9 +1219,8 @@ func calibrationCollectionLines(app *shared.AppState) []string {
 		"session":  0,
 		"beacon":   0,
 		"tunnel":   0,
-		"listener": 0,
+		"listen":   0,
 		"outbound": 0,
-		"other":    0,
 	}
 	stateCounts := map[string]int{
 		"watch":  0,
@@ -1022,6 +1245,10 @@ func calibrationCollectionLines(app *shared.AppState) []string {
 		if _, ok := seen[key]; ok {
 			continue
 		}
+		age := sample.SeenSeconds
+		if age <= 0 {
+			age = sample.ControlDurationSeconds
+		}
 		seen[key] = stats{
 			key:   key,
 			host:  shared.DisplayHost(sample.Host),
@@ -1029,25 +1256,35 @@ func calibrationCollectionLines(app *shared.AppState) []string {
 			name:  sample.Proc.Name,
 			role:  family,
 			state: state,
-			age:   formatDashboardAge(sample.ControlDurationSeconds),
+			age:   formatDashboardAge(age),
 		}
 		order = append(order, key)
 	}
 
+	elapsed := time.Since(app.CalibrateStartedAt).Round(time.Second)
 	lines := make([]string, 0, 20)
-	lines = append(lines, "Collection phase active. Analysis starts after collection timer completes.")
-	lines = append(lines, "Remaining: "+remaining.String())
-	lines = append(lines, fmt.Sprintf("Samples captured: %d", len(app.CalibrateSamples)))
-	lines = append(lines, fmt.Sprintf("Unique processes: %d", len(order)))
-	lines = append(lines, fmt.Sprintf("Roles: session %d   beacon %d   tunnel %d   listener %d   outbound %d", roleCounts["session"], roleCounts["beacon"], roleCounts["tunnel"], roleCounts["listener"], roleCounts["outbound"]))
-	lines = append(lines, fmt.Sprintf("States: watch %d   strong %d   active %d", stateCounts["watch"], stateCounts["strong"], stateCounts["active"]))
-	lines = append(lines, "")
-	lines = append(lines, "Recent collected processes:")
+	lines = append(lines, fmt.Sprintf("[*] Collecting calibration data  |  elapsed %s  |  %s remaining", elapsed, remaining))
+	lines = append(lines, fmt.Sprintf("[+] %d samples  |  %d unique processes", len(app.CalibrateSamples), len(order)))
 
+	// Role/state summary.
+	roleParts := make([]string, 0, 6)
+	for _, r := range []string{"session", "beacon", "tunnel", "smb-pipe", "listen", "outbound"} {
+		if n := roleCounts[r]; n > 0 {
+			roleParts = append(roleParts, fmt.Sprintf("%s %d", r, n))
+		}
+	}
+	if len(roleParts) > 0 {
+		lines = append(lines, "[+] "+strings.Join(roleParts, "  "))
+	}
+	lines = append(lines, fmt.Sprintf("[+] watch %d  strong %d  active %d", stateCounts["watch"], stateCounts["strong"], stateCounts["active"]))
+
+	// Recent processes.
+	lines = append(lines, "")
+	lines = append(lines, "[*] Recent processes:")
 	added := 0
 	for i := len(order) - 1; i >= 0 && added < 8; i-- {
 		item := seen[order[i]]
-		lines = append(lines, fmt.Sprintf("- %-5s %-6d %-24s role=%-8s state=%-6s age=%s", item.host, item.pid, ClipToWidth(item.name, 24), item.role, item.state, item.age))
+		lines = append(lines, fmt.Sprintf("    %-5s %-9d %-20s %8s %-6s %s", item.host, item.pid, ClipToWidth(item.name, 20), item.role, item.state, item.age))
 		added++
 	}
 	if added == 0 {
@@ -1151,33 +1388,24 @@ func calibrationActionLabel(app *shared.AppState) string {
 }
 
 func contourActionLabel(app *shared.AppState) string {
-	isListener := contour.NormalizeProbeRole(app.ContourProbeRole) == contour.ProbeRoleListen
+	depthLabel := contour.ProbeModeLabel(app.ContourProbeMode)
 	if app.ContourAnalyzing {
-		if isListener {
-			return "Stop contour (listener active)"
-		}
-		return "Stop contour (cancel run)"
+		return "Stop (analyzing)"
 	}
 	if app.ContourActive {
-		if isListener {
-			return "Stop contour (starting listener)"
-		}
 		if app.ContourUntil.IsZero() {
-			return "Stop contour (collecting)"
+			return "Stop (collecting)"
 		}
 		remaining := time.Until(app.ContourUntil).Round(time.Second)
 		if remaining < 0 {
 			remaining = 0
 		}
 		if remaining == 0 {
-			return "Stop contour (starting run)"
+			return "Stop (starting analysis)"
 		}
-		return "Stop contour (" + remaining.String() + " left)"
+		return "Stop (" + remaining.String() + " left)"
 	}
-	if isListener {
-		return "Start contour (" + contour.ProbeRoleLabel(app.ContourProbeRole) + ")"
-	}
-	return "Start contour (" + contour.ProbeRoleLabel(app.ContourProbeRole) + " / " + contour.ProbeModeLabel(app.ContourProbeMode) + ")"
+	return "Start contour (" + depthLabel + ")"
 }
 
 func contourReportLineStyle(line string) tcell.Style {
@@ -1185,64 +1413,256 @@ func contourReportLineStyle(line string) tcell.Style {
 	if trimmed == "" {
 		return styleText
 	}
+
+	// Finding severity — the only colored lines in the report.
+	if strings.HasPrefix(trimmed, "ACTIVE") {
+		return styleAlertB
+	}
+	if strings.HasPrefix(trimmed, "STRONG") {
+		return styleAlert
+	}
+	if strings.HasPrefix(trimmed, "WATCH") {
+		return styleWarn
+	}
+
+	// Section labels — subtle emphasis.
 	switch trimmed {
-	case "Overview", "Probe Matrix", "Probe Methods", "Tunnel Methods", "Exfiltration Methods", "Probe Ports", "Probe Checks", "Probe Discoveries", "Listener Ports", "Listener Checks", "Findings":
-		return styleCyanB
-	}
-	if strings.HasPrefix(trimmed, "Summary:") {
+	case "tunnels", "exfil", "services", "egress",
+		"Activity", "Listener Ports":
 		return styleTextB
 	}
-	if trimmed == "Successful checks:" || trimmed == "Failed checks:" {
-		return styleTextB
-	}
-	if strings.Contains(trimmed, "[PASS]") {
-		return styleCyan
-	}
-	if strings.Contains(trimmed, "[UP]") {
-		return styleCyan
-	}
+
+	// Proxy pivot lines.
 	if strings.Contains(trimmed, "[PIVOT]") {
 		return styleWarn
 	}
-	if strings.Contains(trimmed, "[FAIL]") {
+
+	// Live progress lines (during active run).
+	if strings.HasPrefix(trimmed, "[-]") {
 		return styleAlert
 	}
-	if strings.Contains(trimmed, "[MIXED]") {
-		return styleWarn
+	if strings.HasPrefix(trimmed, "[*]") || strings.HasPrefix(trimmed, "[+]") {
+		return styleDim
 	}
-	if strings.Contains(trimmed, "[NONE]") {
+
+	// Output path.
+	if strings.HasPrefix(trimmed, "output") {
 		return styleMuted
 	}
-	if strings.Contains(trimmed, "[ACTIVE]") {
-		return styleAlertB
-	}
-	if strings.Contains(trimmed, "[STRONG]") {
-		return styleWarn
-	}
-	if strings.HasPrefix(trimmed, "Report:") || strings.HasPrefix(trimmed, "Duration:") || strings.HasPrefix(trimmed, "Sample every:") || strings.HasPrefix(trimmed, "Source:") || strings.HasPrefix(trimmed, "Endpoint:") || strings.HasPrefix(trimmed, "Role:") || strings.HasPrefix(trimmed, "Captured samples:") || strings.HasPrefix(trimmed, "Unique processes:") || strings.HasPrefix(trimmed, "Findings:") || strings.HasPrefix(trimmed, "Calibration hints exported:") || strings.HasPrefix(trimmed, "Probe mode:") || strings.HasPrefix(trimmed, "Probe matrix") || strings.HasPrefix(trimmed, "Probe checks:") || strings.HasPrefix(trimmed, "Probe routes:") || strings.HasPrefix(trimmed, "Probe proxies:") || strings.HasPrefix(trimmed, "Probe config endpoints:") || strings.HasPrefix(trimmed, "Probe listener:") || strings.HasPrefix(trimmed, "Probe ports:") || strings.HasPrefix(trimmed, "Probe protocols:") || strings.HasPrefix(trimmed, "Internet-routable subnets:") || strings.HasPrefix(trimmed, "Proxy candidates:") || strings.HasPrefix(trimmed, "Config endpoints:") || strings.HasPrefix(trimmed, "Ports unavailable:") || strings.HasPrefix(trimmed, "Listener exchanges:") || strings.HasPrefix(trimmed, "Listener checks:") || strings.HasPrefix(trimmed, "Tunnel checks:") || strings.HasPrefix(trimmed, "Exfil checks:") || strings.HasPrefix(trimmed, "Ports bound:") {
-		return styleMuted
-	}
-	if strings.HasPrefix(trimmed, "- ") {
-		return styleText
-	}
+
+	// Default — uniform text.
 	return styleText
 }
 
-func stepDuration(current string, dir int) string {
-	if len(collectDurations) == 0 {
-		return current
+// --- whitelist view (merged from render_whitelist.go) ---
+
+func DrawWhitelist(app *shared.AppState) {
+	s := app.Screen
+	clearScreen(s)
+
+	w, h := s.Size()
+	defer drawWhitelistOverlays(app, w, h)
+	drawPanel(s, 0, 0, w, 3, "Whitelist", "proxywatch")
+	PutStringStyle(s, 2, 1, "? help", styleDim)
+	PutStringStyle(s, 10, 1, TruncateToWidth("UTC: "+time.Now().UTC().Format(utcTimeFormat), max(0, w-12)), styleText)
+	PutStringStyle(s, max(2, w-16), 1, "Entries: "+fmt.Sprintf("%d", len(app.WhitelistItems)), styleCyan)
+
+	setupY := 3
+	setupH := 5
+	if setupY+setupH >= h {
+		setupH = max(4, h-setupY-1)
 	}
-	index := 0
-	for i, v := range collectDurations {
-		if v == current {
-			index = i
-			break
+
+	// Show selected process and entry context in the panel title area.
+	selectedProc := "(select below)"
+	if c, ok := selectedWhitelistProcessCandidate(app); ok && c.Proc != nil {
+		selectedProc = shared.DisplayProcessName(c.Proc)
+		if c.Proc.Pid > 0 {
+			selectedProc = fmt.Sprintf("%s (pid %d)", selectedProc, c.Proc.Pid)
 		}
 	}
-	if dir > 0 {
-		index = (index + 1) % len(collectDurations)
-	} else if dir < 0 {
-		index = (index - 1 + len(collectDurations)) % len(collectDurations)
+	drawPanel(s, 0, setupY, w, setupH, "ACTIONS", "")
+	drawWhitelistSetupRow(s, w, setupY+1, app.WhitelistField == whitelistFieldAdd, "Add", "Whitelist: "+selectedProc)
+	selectedEntry := "(select below)"
+	if len(app.WhitelistItems) > 0 && app.WhitelistSelected >= 0 && app.WhitelistSelected < len(app.WhitelistItems) {
+		selectedEntry = formatWhitelistEntry(app.WhitelistItems[app.WhitelistSelected], w-24)
 	}
-	return collectDurations[index]
+	drawWhitelistSetupRow(s, w, setupY+2, app.WhitelistField == whitelistFieldRemove, "Remove", "Remove: "+selectedEntry)
+	if setupY+3 < setupY+setupH-1 {
+		PutStringStyle(s, 2, setupY+3, TruncateToWidth("UP/DOWN navigate  |  LEFT/RIGHT browse lists  |  ENTER execute action", w-4), styleMuted)
+	}
+
+	processY := setupY + setupH
+	remaining := h - processY
+	if remaining <= 4 {
+		return
+	}
+	processH := max(6, remaining/2)
+	if processY+processH > h-4 {
+		processH = max(4, h-processY-4)
+	}
+	if processH < 4 {
+		processH = 4
+	}
+	entriesY := processY + processH
+	entriesH := h - entriesY
+	if entriesH < 4 {
+		entriesH = 4
+		entriesY = max(processY+1, h-entriesH)
+		processH = max(4, entriesY-processY)
+	}
+
+	procs := whitelistProcessCandidates(app)
+	drawPanel(s, 0, processY, w, processH, "PROCESSES", fmt.Sprintf("%d/%d", max(0, app.WhitelistProcessSelected+1), len(procs)))
+	if len(procs) == 0 {
+		PutStringStyle(s, 2, processY+1, TruncateToWidth("No process snapshot is available yet.", w-4), styleText)
+		PutStringStyle(s, 2, processY+2, TruncateToWidth("Wait for refresh or return to dashboard briefly.", w-4), styleMuted)
+	} else {
+		if app.WhitelistProcessSelected < 0 {
+			app.WhitelistProcessSelected = 0
+		}
+		if app.WhitelistProcessSelected >= len(procs) {
+			app.WhitelistProcessSelected = len(procs) - 1
+		}
+		viewRows := max(1, processH-2)
+		if app.WhitelistProcessSelected < app.WhitelistProcessOffset {
+			app.WhitelistProcessOffset = app.WhitelistProcessSelected
+		}
+		if app.WhitelistProcessSelected >= app.WhitelistProcessOffset+viewRows {
+			app.WhitelistProcessOffset = app.WhitelistProcessSelected - viewRows + 1
+		}
+		maxOffset := max(0, len(procs)-viewRows)
+		if app.WhitelistProcessOffset > maxOffset {
+			app.WhitelistProcessOffset = maxOffset
+		}
+		if app.WhitelistProcessOffset < 0 {
+			app.WhitelistProcessOffset = 0
+		}
+
+		y := processY + 1
+		baseWidth := len(fmt.Sprintf("%s %-5s %-6d %-8s %-6s", ">", "host", 999999, "outbound", "strong"))
+		nameW := max(8, w-4-baseWidth-1)
+		for i := app.WhitelistProcessOffset; i < len(procs) && y < processY+processH-1; i++ {
+			c := procs[i]
+			host := shared.DisplayHost(c.Host)
+			pid := 0
+			name := "(unknown)"
+			if c.Proc != nil {
+				pid = c.Proc.Pid
+				name = shared.DisplayProcessName(c.Proc)
+			}
+			role := normalizeDashboardRole(c.Role)
+			state := "watch"
+			if c.ActiveProxying {
+				state = "active"
+			} else if c.StrongEvidence {
+				state = "strong"
+			}
+			prefix := " "
+			st := styleText
+			rowSelected := i == app.WhitelistProcessSelected
+			if rowSelected {
+				prefix = ">"
+				st = styleTextB
+			}
+			fillSelectedRowBar(s, y, 2, w-3, rowSelected)
+			line := fmt.Sprintf("%s %-5s %-6d %-*s %-8s %-6s", prefix, TruncateToWidth(host, 5), pid, nameW, ClipToWidth(name, nameW), TruncateToWidth(role, 8), TruncateToWidth(state, 6))
+			PutStringStyle(s, 2, y, ClipToWidth(line, w-4), applySelectedRowStyle(st, rowSelected))
+			y++
+		}
+	}
+
+	drawPanel(s, 0, entriesY, w, entriesH, "WHITELIST ENTRIES", fmt.Sprintf("%d/%d", max(0, app.WhitelistSelected+1), len(app.WhitelistItems)))
+	if len(app.WhitelistItems) == 0 {
+		PutStringStyle(s, 2, entriesY+1, TruncateToWidth("No whitelist entries are stored yet.", w-4), styleText)
+		PutStringStyle(s, 2, entriesY+2, TruncateToWidth("Select a process above and use Add.", w-4), styleMuted)
+		return
+	}
+	if app.WhitelistSelected < 0 {
+		app.WhitelistSelected = 0
+	}
+	if app.WhitelistSelected >= len(app.WhitelistItems) {
+		app.WhitelistSelected = len(app.WhitelistItems) - 1
+	}
+	viewRows := max(1, entriesH-2)
+	if app.WhitelistSelected < app.WhitelistListOffset {
+		app.WhitelistListOffset = app.WhitelistSelected
+	}
+	if app.WhitelistSelected >= app.WhitelistListOffset+viewRows {
+		app.WhitelistListOffset = app.WhitelistSelected - viewRows + 1
+	}
+	maxOffset := max(0, len(app.WhitelistItems)-viewRows)
+	if app.WhitelistListOffset > maxOffset {
+		app.WhitelistListOffset = maxOffset
+	}
+	if app.WhitelistListOffset < 0 {
+		app.WhitelistListOffset = 0
+	}
+	y := entriesY + 1
+	for i := app.WhitelistListOffset; i < len(app.WhitelistItems) && y < entriesY+entriesH-1; i++ {
+		entry := formatWhitelistEntry(app.WhitelistItems[i], w-8)
+		prefix := " "
+		st := styleText
+		rowSelected := i == app.WhitelistSelected
+		if rowSelected {
+			prefix = ">"
+			st = styleTextB
+		}
+		fillSelectedRowBar(s, y, 2, w-3, rowSelected)
+		PutStringStyle(s, 2, y, TruncateToWidth(prefix+" "+entry, w-4), applySelectedRowStyle(st, rowSelected))
+		y++
+	}
+
+}
+
+func drawWhitelistOverlays(app *shared.AppState, w, h int) {
+	if !app.WhitelistShowHelp {
+		return
+	}
+	opts := whitelistMenuHelpOptions()
+	drawMenuPanel(app.Screen, w, h, "Whitelist Menu", opts, clampIndex(app.WhitelistHelpIndex, len(opts)), "")
+}
+
+func drawWhitelistSetupRow(s tcell.Screen, w, y int, active bool, label, value string) {
+	prefix := " "
+	labelStyle := styleMuted
+	valueStyle := styleText
+	prefixStyle := styleText
+	if active {
+		prefix = ">"
+		valueStyle = styleTextB
+		prefixStyle = styleTextB
+	}
+	labelText := fmt.Sprintf("%s %-9s", prefix, label+":")
+	labelText = TruncateToWidth(labelText, w-4)
+	fillSelectedRowBar(s, y, 2, w-3, active)
+	PutStringStyle(s, 2, y, labelText, applySelectedRowStyle(labelStyle, active))
+	valueX := 2 + len(labelText) + 2
+	if valueX < w-2 {
+		PutStringStyle(s, valueX, y, TruncateToWidth(strings.TrimSpace(value), w-valueX-2), applySelectedRowStyle(valueStyle, active))
+	}
+	PutStringStyle(s, 2, y, string(prefix), applySelectedRowStyle(prefixStyle, active))
+}
+
+func formatWhitelistEntry(entry string, width int) string {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return "(none stored)"
+	}
+	parts := strings.SplitN(entry, "|", 2)
+	if len(parts) != 2 {
+		return TruncateToWidth(entry, width)
+	}
+	host := strings.TrimSpace(parts[0])
+	spec := strings.TrimSpace(parts[1])
+	switch {
+	case strings.HasPrefix(spec, "path:"):
+		spec = strings.TrimPrefix(spec, "path:")
+		return TruncateToWidth(fmt.Sprintf("%s  path  %s", host, spec), width)
+	case strings.HasPrefix(spec, "name:"):
+		spec = strings.TrimPrefix(spec, "name:")
+		return TruncateToWidth(fmt.Sprintf("%s  name  %s", host, spec), width)
+	default:
+		return TruncateToWidth(entry, width)
+	}
 }

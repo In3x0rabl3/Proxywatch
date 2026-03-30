@@ -6,8 +6,12 @@ import (
 	"proxywatch/internal/shared"
 )
 
+const (
+	fnvOffset64 uint64 = 1469598103934665603
+	fnvPrime64  uint64 = 1099511628211
+)
+
 func candidateSignature(c shared.Candidate) shared.CandidateSignature {
-	const fnvOffset64 uint64 = 1469598103934665603
 	var listenerHash uint64
 	for _, l := range c.Listeners {
 		h := fnvOffset64
@@ -94,10 +98,10 @@ func touchHistoryFromCandidate(c *shared.Candidate, now time.Time) {
 	}
 
 	switch c.Role {
-	case "reverse-proxy":
+	case "tunnel":
 		hist.LastSuspicious = now
 		hist.SuspicionKind = shared.SuspicionProxy
-	case "susp-beacon":
+	case "beacon":
 		hist.LastSuspicious = now
 		hist.SuspicionKind = shared.SuspicionBeacon
 	default:
@@ -119,9 +123,8 @@ func shouldRescoreUnchangedCandidate(c *shared.Candidate, prev *shared.Candidate
 	if !hasEstablishedEgress(c.Conns) {
 		return false
 	}
-	fam := shared.RoleFamily(prev.Role)
-	switch fam {
-	case "outbound", "session", "beacon", "tunnel":
+	switch prev.Role {
+	case "outbound", "session", "beacon", "tunnel", "smb-pipe", "listen":
 		// Time-based signals (e.g., persistent control duration, burst cadence)
 		// must still evolve even when socket tuple signatures are unchanged.
 	default:
@@ -150,7 +153,6 @@ func hasEstablishedEgress(conns []shared.ConnectionInfo) bool {
 }
 
 func fnvAddString(h uint64, s string) uint64 {
-	const fnvPrime64 uint64 = 1099511628211
 	for i := 0; i < len(s); i++ {
 		h ^= uint64(s[i])
 		h *= fnvPrime64
@@ -159,7 +161,6 @@ func fnvAddString(h uint64, s string) uint64 {
 }
 
 func fnvAddUint64(h uint64, v uint64) uint64 {
-	const fnvPrime64 uint64 = 1099511628211
 	for i := 0; i < 8; i++ {
 		h ^= v & 0xff
 		h *= fnvPrime64

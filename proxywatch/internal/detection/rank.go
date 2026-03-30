@@ -25,8 +25,16 @@ func ScoreCandidate(c *shared.Candidate) {
 	}
 
 	p := c.Proc
+	if p == nil {
+		c.Score = 0
+		return
+	}
 	now := time.Now()
 	benignClient := shared.IsLikelyBenignControlClient(p)
+	if benignClient && shared.BenignOverriddenByBehavior(c) {
+		benignClient = false
+		addSignal("benign-override")
+	}
 	scopedPID := historyPIDForCandidate(c)
 	behaviorKey := processBehaviorKey(c)
 	behavior := getOrCreateProcessBehavior(behaviorKey, now)
@@ -50,6 +58,20 @@ func ScoreCandidate(c *shared.Candidate) {
 			delegatedReason = "No direct socket ownership observed; likely delegated via proxy broker process"
 		}
 	}
+
+	// Parent-child chain scoring — if this process is delegated egress with a
+	// strong link and the parent process itself has an elevated detection score,
+	// the chain is more suspicious.
+	if c.DelegatedEgress && c.DelegatedStrong && c.DelegatedOwnerPID > 0 {
+		if parentHist, ok := shared.ProcHistoryByPID[c.DelegatedOwnerPID]; ok && parentHist != nil {
+			if parentHist.StickyScore >= 60 {
+				addSignal("suspicious-parent-chain")
+				scoreVal += 4
+				reasons = append(reasons, fmt.Sprintf("Parent process (PID %d) also has elevated detection score", c.DelegatedOwnerPID))
+			}
+		}
+	}
+
 	hist := getHistory(scopedPID, now)
 	updateConnHistory(scopedPID, c.Conns, now)
 	updateParentFreq(historyHostScope(c), p)
@@ -70,6 +92,61 @@ func ScoreCandidate(c *shared.Candidate) {
 	c.OutLongLived = outLongLived
 	c.OutShortLived = outShortLived
 	c.InboundTotal = activeClients
+
+	// Command-line proxy/tunnel flag detection
+	if shared.HasProxyFlags(p.CmdLine) {
+		addSignal("cmdline-proxy-flags")
+		scoreVal += 12
+		reasons = append(reasons, "Command line contains proxy/tunnel flags")
+	}
+
+	// Raw socket detection — process has open raw/packet sockets that
+	// bypass the kernel TCP stack (nmap SYN scan, ping, packet capture, etc.).
+	if c.RawSocket {
+		addSignal("raw-socket")
+		scoreVal += 20
+		reasons = append(reasons, "Raw socket open (bypasses TCP stack)")
+	}
+
+	// Loaded library detection — match behavioral patterns (socks, proxy,
+	// tunnel functionality) rather than specific library names.
+	if len(p.LoadedLibs) > 0 {
+		for _, lib := range p.LoadedLibs {
+			base := strings.ToLower(lib)
+			if idx := strings.LastIndexAny(base, "/\\"); idx >= 0 {
+				base = base[idx+1:]
+			}
+			if hasProxyTunnelLibPattern(base) {
+				addSignal("proxy-library-loaded")
+				scoreVal += 5
+				reasons = append(reasons, fmt.Sprintf("Proxy/tunnel library loaded: %s", lib))
+				break
+			}
+		}
+	}
+
+	// User-writable path detection — processes running from Downloads, Desktop,
+	// Temp, or other user-writable directories are more suspicious. This signal
+	// counteracts benign/verified suppression for processes in these locations.
+	suspiciousPath := isSuspiciousExePath(p.ExePath)
+	if suspiciousPath {
+		addSignal("suspicious-exe-path")
+		scoreVal += 8
+		reasons = append(reasons, "Executable runs from user-writable path ("+shared.NormalizeExePath(p.ExePath)+")")
+	}
+
+	// Time-of-day awareness: connections from user-session processes outside
+	// business hours (before 6am or after 10pm local time) get a small boost.
+	hour := time.Now().Hour()
+	offHours := hour < 6 || hour >= 22
+	if offHours && outTotal > 0 && !benignClient {
+		// Only apply to non-service processes (those with a user session).
+		if c.Proc != nil && c.Proc.SessionID > 0 {
+			addSignal("off-hours-activity")
+			scoreVal += 3
+			reasons = append(reasons, fmt.Sprintf("Network activity during off-hours (%02d:00 local time)", hour))
+		}
+	}
 
 	// Shape drift detection
 	totalNet := c.OutTotal + c.InboundTotal + c.OutLoopback
@@ -117,6 +194,77 @@ func ScoreCandidate(c *shared.Candidate) {
 	if outShortLived > 0 && outLongLived == 0 {
 		addSignal("outbound-bursty")
 	}
+
+	// DNS volume anomaly detection — high DNS query volume may indicate
+	// DNS tunneling or domain generation algorithm (DGA) activity.
+	{
+		dnsConnCount := 0
+		for i := range c.Conns {
+			if c.Conns[i].RemotePort == 53 {
+				dnsConnCount++
+			}
+		}
+		if dnsConnCount >= 5 {
+			addSignal("dns-volume-anomaly")
+			scoreVal += 6
+			reasons = append(reasons, fmt.Sprintf("High DNS query volume (%d connections to port 53) may indicate DNS tunneling or DGA", dnsConnCount))
+		}
+	}
+
+	// Port hopping detection — a process connecting to the same remote IP
+	// on many different ports is consistent with port rotation / scanning.
+	{
+		ipPorts := make(map[string]map[int]struct{})
+		for i := range c.Conns {
+			rip := c.Conns[i].RemoteAddress
+			rport := c.Conns[i].RemotePort
+			if rip == "" || rport == 0 {
+				continue
+			}
+			if _, ok := ipPorts[rip]; !ok {
+				ipPorts[rip] = make(map[int]struct{})
+			}
+			ipPorts[rip][rport] = struct{}{}
+		}
+		for ip, portSet := range ipPorts {
+			if len(portSet) >= 3 {
+				addSignal("port-hopping")
+				scoreVal += 5
+				reasons = append(reasons, fmt.Sprintf("Process connects to %s on %d different ports, consistent with port rotation", ip, len(portSet)))
+				break
+			}
+		}
+	}
+
+	// Proxy-assisted egress detection — a process connecting to known proxy
+	// ports on internal hosts while also maintaining external connections
+	// suggests it is routing traffic through an internal proxy.
+	{
+		proxyPorts := map[int]struct{}{3128: {}, 8080: {}, 8118: {}, 8888: {}}
+		hasInternalProxy := false
+		var internalProxyPort int
+		hasExternalConn := false
+		for i := range c.Conns {
+			rip := c.Conns[i].RemoteAddress
+			rport := c.Conns[i].RemotePort
+			if rip == "" {
+				continue
+			}
+			if _, isProxy := proxyPorts[rport]; isProxy && shared.IsInternalIP(rip) {
+				hasInternalProxy = true
+				internalProxyPort = rport
+			}
+			if !shared.IsInternalIP(rip) && !shared.IsLoopbackIP(rip) && !shared.IsWildcardIP(rip) {
+				hasExternalConn = true
+			}
+		}
+		if hasInternalProxy && hasExternalConn {
+			addSignal("proxy-assisted-egress")
+			scoreVal += 6
+			reasons = append(reasons, fmt.Sprintf("Process connects to internal proxy port (%d) and maintains external connections", internalProxyPort))
+		}
+	}
+
 	burstCount := 0
 	switch {
 	case outShortLived > 0:
@@ -154,6 +302,12 @@ func ScoreCandidate(c *shared.Candidate) {
 			}
 			reasons = append(reasons, fmt.Sprintf("Repeated pending outbound control attempts (%d observations) to stable target", pendingControlObs))
 		}
+	}
+
+	// Track SYN_SENT cycling — detects beacon callbacks when C2 is down.
+	synCycleBeacon, synCycles, synAvgInterval := updateSYNCycleTracking(scopedPID, c.Conns, ports, now)
+	if synCycleBeacon {
+		addSignal("syn-cycle-beacon")
 	}
 
 	reverseProxyNow := false
@@ -374,7 +528,7 @@ func ScoreCandidate(c *shared.Candidate) {
 	if beaconConfirmed {
 		addSignal("beacon-confirmed")
 	}
-	beaconBlockedByVerified := beaconEligible && outExternal > 0 && trafficVerified && !strongEvidence
+	beaconBlockedByVerified := beaconEligible && outExternal > 0 && trafficVerified && !strongEvidence && !suspiciousPath
 	beaconBlockedByBenignExternal := beaconEligible &&
 		benignClient &&
 		benignBeaconClient &&
@@ -414,7 +568,7 @@ func ScoreCandidate(c *shared.Candidate) {
 			reverseControl = false
 		} else {
 			reverseControl = true
-			addSignal("reverse-control")
+			addSignal("session")
 		}
 		// Avoid false positives on trusted system/application clients that only
 		// maintain a single external established channel without corroboration.
@@ -460,14 +614,14 @@ func ScoreCandidate(c *shared.Candidate) {
 				}
 
 				c.Score = scoreVal
-				c.Role = "reverse-transport"
+				c.Role = "tunnel"
 				c.ActiveProxying = true
 				c.ControlChannel = controlConn
 				c.ControlDurationSeconds = controlSecs
 				c.Reasons = []string{
 					"Persistent reverse control channel with local transport activity",
 				}
-				addSignal("reverse-transport")
+				addSignal("tunnel")
 				c.Signals = signals
 				c.Confidence = confidenceFor(c.Role, c.Score, c.ActiveProxying)
 				return
@@ -510,7 +664,7 @@ func ScoreCandidate(c *shared.Candidate) {
 		addSignal("reverse-control-suppressed-benign-external")
 	}
 	if reverseControl {
-		addSignal("reverse-control")
+		addSignal("session")
 	}
 
 	// ---------------- Heuristics ----------------
@@ -612,7 +766,7 @@ func ScoreCandidate(c *shared.Candidate) {
 	c.ActiveProxying = activeProxying
 	c.Role = deriveRole(hasListener, activeClients, outTotal, reverseTunnelEligible)
 
-	if c.Role == "outbound-only" &&
+	if c.Role == "outbound" &&
 		outInternal == 0 &&
 		!hasListener &&
 		!reverseProxyNow &&
@@ -624,16 +778,16 @@ func ScoreCandidate(c *shared.Candidate) {
 	}
 
 	if reverseProxyNow || (suspiciousRecent && hist.SuspicionKind == shared.SuspicionProxy && !singleControlNoProxy) {
-		c.Role = "reverse-proxy"
+		c.Role = "tunnel"
 		if hist.StickyScore > c.Score {
 			c.Score = hist.StickyScore
 		}
 		if reverseProxyNow {
 			c.Reasons = append(c.Reasons, "Persistent control channel with proxied outbound activity")
 		}
-		addSignal("reverse-proxy")
+		addSignal("tunnel")
 	} else if reverseControl || (suspiciousRecent && hist.SuspicionKind == shared.SuspicionControl && controlConn != nil && !reverseControlSuppressed) {
-		c.Role = "reverse-control"
+		c.Role = "session"
 		c.ActiveProxying = false
 		c.Reasons = []string{
 			"Persistent reverse control channel detected",
@@ -650,7 +804,7 @@ func ScoreCandidate(c *shared.Candidate) {
 		if hist.StickyScore > c.Score {
 			c.Score = hist.StickyScore
 		}
-		addSignal("reverse-control")
+		addSignal("session")
 	}
 
 	promoteSuspTun := suspTunEligible && (reverseProxyNow || reverseControl)
@@ -659,9 +813,9 @@ func ScoreCandidate(c *shared.Candidate) {
 	}
 
 	if promoteSuspTun {
-		c.Role = "susp-tun"
+		c.Role = "tunnel"
 		c.ActiveProxying = forwardActiveNow || reverseProxyNow || localTransportForwarding
-		addSignal("susp-tun")
+		addSignal("tunnel")
 
 		base := 55
 		if burstRecent && burstCount > 0 {
@@ -688,9 +842,9 @@ func ScoreCandidate(c *shared.Candidate) {
 			hist.StickyScore = c.Score
 		}
 	} else if reverseControl {
-		c.Role = "susp-session"
+		c.Role = "session"
 		c.ActiveProxying = false
-		addSignal("susp-session")
+		addSignal("session")
 		c.Reasons = []string{
 			"Persistent control session without proxying evidence",
 		}
@@ -713,7 +867,7 @@ func ScoreCandidate(c *shared.Candidate) {
 		controlSessionConn = pendingControlConn
 		controlSessionSecs = pendingControlSecs
 	}
-	if c.Role == "outbound-only" &&
+	if c.Role == "outbound" &&
 		shouldPromoteControlSession(
 			controlSessionConn,
 			benignClient,
@@ -735,10 +889,10 @@ func ScoreCandidate(c *shared.Candidate) {
 			internalLateral,
 			inboundBurst,
 		) {
-		c.Role = "susp-session"
+		c.Role = "session"
 		c.ActiveProxying = false
 		addSignal("control-session")
-		addSignal("susp-session")
+		addSignal("session")
 		if reverseControlSuppressed {
 			addSignal("control-session-override")
 		}
@@ -758,11 +912,9 @@ func ScoreCandidate(c *shared.Candidate) {
 	}
 
 	if forwardTunnelLikely &&
-		c.Role != "reverse-proxy" &&
-		c.Role != "reverse-transport" &&
-		c.Role != "reverse-control" &&
-		c.Role != "susp-session" {
-		c.Role = "susp-tun"
+		c.Role != "tunnel" &&
+		c.Role != "session" {
+		c.Role = "tunnel"
 		c.ActiveProxying = activeClients > 0 || localTransportRecent
 		addSignal("forward-tunnel")
 		c.Reasons = append(c.Reasons, "Loopback forward-listener with persistent control channel")
@@ -772,14 +924,14 @@ func ScoreCandidate(c *shared.Candidate) {
 	}
 
 	if c.DelegatedStrong &&
-		c.Role == "outbound-only" &&
+		c.Role == "outbound" &&
 		controlConn != nil &&
 		!hasListener &&
 		!localTransportRecent &&
 		!internalScanRecent {
-		c.Role = "susp-session"
+		c.Role = "session"
 		c.ActiveProxying = false
-		addSignal("susp-session")
+		addSignal("session")
 		c.Reasons = append(c.Reasons, "Delegated control-channel shape is consistent with a reverse session")
 		if c.Score < 45 {
 			c.Score = 45
@@ -788,11 +940,11 @@ func ScoreCandidate(c *shared.Candidate) {
 
 	// Promote listener+egress control shapes to tunnel even when strict forward-tunnel
 	// matching cannot be proven in a single refresh.
-	if (c.Role == "listener-with-outbound" || c.Role == "listener-with-clients" || c.Role == "listener-only") &&
+	if c.Role == "listen" &&
 		hasListener &&
 		outTotal > 0 &&
 		(activeClients > 0 || outInternal > 0 || internalLateral || localTransportForwarding || c.DelegatedStrong) {
-		c.Role = "susp-tun"
+		c.Role = "tunnel"
 		c.ActiveProxying = activeClients > 0 || localTransportRecent || internalScanRecent
 		addSignal("listener-egress-tunnel-shape")
 		c.Reasons = append(c.Reasons, "Listener + outbound control shape indicates likely tunnel behavior")
@@ -806,16 +958,68 @@ func ScoreCandidate(c *shared.Candidate) {
 		}
 	}
 
+	// Promote processes from suspicious paths (Downloads, Temp, Desktop) with pending
+	// control attempts to internal targets. These are strong C2 indicators even when
+	// the control server is offline and connections are SYN_SENT.
+	if c.Role == "outbound" &&
+		suspiciousPath &&
+		pendingControlConn != nil &&
+		!hasListener &&
+		outTotal <= 3 &&
+		len(distinctTargets) <= 2 &&
+		(shared.IsInternalIP(pendingControlConn.RemoteAddress) || pendingControlRepeated) {
+		c.Role = "session"
+		c.ActiveProxying = false
+		addSignal("suspicious-path-control-attempt")
+		c.Reasons = append(c.Reasons, "Process from user-writable path has pending control connection to internal target")
+		if c.ControlChannel == nil {
+			c.ControlChannel = pendingControlConn
+			c.ControlDurationSeconds = pendingControlSecs
+		}
+		if c.Score < 68 {
+			c.Score = 68
+		}
+		hist.LastSuspicious = now
+		hist.SuspicionKind = shared.SuspicionControl
+		if hist.StickyScore < c.Score {
+			hist.StickyScore = c.Score
+		}
+	}
+
+	// Promote to beacon when SYN_SENT cycling is detected — the process
+	// repeatedly attempts connections that appear and disappear, revealing a
+	// callback interval even when the C2 server is offline.
+	if synCycleBeacon && pendingControlConn != nil &&
+		!hasListener && outTotal <= 3 && len(distinctTargets) <= 2 {
+		c.Role = "beacon"
+		c.ActiveProxying = false
+		addSignal("syn-cycle-promoted")
+		c.Reasons = append(c.Reasons, fmt.Sprintf("SYN_SENT cycling detected (%d cycles, ~%.0fs interval) to %s:%d",
+			synCycles, synAvgInterval, pendingControlConn.RemoteAddress, pendingControlConn.RemotePort))
+		if c.ControlChannel == nil {
+			c.ControlChannel = pendingControlConn
+			c.ControlDurationSeconds = pendingControlSecs
+		}
+		if c.Score < 72 {
+			c.Score = 72
+		}
+		hist.LastSuspicious = now
+		hist.SuspicionKind = shared.SuspicionControl
+		if hist.StickyScore < c.Score {
+			hist.StickyScore = c.Score
+		}
+	}
+
 	// Promote recurring reconnect-style control callbacks to session when no persistent
 	// socket is visible long enough in a single sample.
-	if c.Role == "outbound-only" &&
+	if c.Role == "outbound" &&
 		!hasListener &&
 		outTotal > 0 &&
 		outTotal <= 3 &&
 		outExternal > 0 &&
 		outInternal == 0 &&
 		len(distinctTargets) <= 2 &&
-		!trafficVerified &&
+		(!trafficVerified || suspiciousPath) &&
 		(burstRecent || shared.ShortLivedBurstHits[scopedPID] >= 1) {
 		holdBenignReconnectingPromotion := benignClient &&
 			controlConn != nil &&
@@ -835,7 +1039,7 @@ func ScoreCandidate(c *shared.Candidate) {
 		} else if holdBenignReconnectingPromotion {
 			addSignal("reconnecting-control-session-suppressed-benign-external")
 		} else {
-			c.Role = "susp-session"
+			c.Role = "session"
 			c.ActiveProxying = false
 			addSignal("reconnecting-control-session")
 			c.Reasons = append(c.Reasons, "Recurring reconnecting control callback pattern detected")
@@ -891,9 +1095,9 @@ func ScoreCandidate(c *shared.Candidate) {
 			addSignal("beacon-promotion-blocked")
 		}
 		if !beaconBlocked && beaconEligible && (beaconConfirmed || beaconRecent || provisionalBeacon) {
-			c.Role = "susp-beacon"
+			c.Role = "beacon"
 			c.ActiveProxying = false
-			addSignal("susp-beacon")
+			addSignal("beacon")
 			if provisionalBeacon && !beaconConfirmed && !beaconRecent {
 				addSignal("beacon-provisional")
 			}
@@ -939,7 +1143,7 @@ func ScoreCandidate(c *shared.Candidate) {
 	}
 
 	// SMB pipe-like behavior should not remain plain outbound/listener.
-	smbBaseRole := c.Role == "outbound-only" || shared.RoleFamily(c.Role) == "listener"
+	smbBaseRole := c.Role == "outbound" || c.Role == "listen"
 	if smbBaseRole && smbPipeLikely && !reverseProxyNow && !forwardTunnelLikely {
 		promoteTunnel := smbTargets >= 2 || internalLateral || outInternal > 0 || activeClients > 0 || (hasListener && activeClients > 0)
 		if promoteTunnel {
@@ -974,7 +1178,7 @@ func ScoreCandidate(c *shared.Candidate) {
 
 	// Keep recently suspicious labels from collapsing to plain outbound immediately
 	// when callbacks go quiet between refreshes.
-	if c.Role == "outbound-only" && suspiciousRecent && !benignControlPattern {
+	if c.Role == "outbound" && suspiciousRecent && !benignControlPattern {
 		holdBenignExternalMemory := benignClient &&
 			outExternal > 0 &&
 			outInternal == 0 &&
@@ -996,19 +1200,19 @@ func ScoreCandidate(c *shared.Candidate) {
 		} else {
 			switch hist.SuspicionKind {
 			case shared.SuspicionProxy:
-				c.Role = "susp-tun"
+				c.Role = "tunnel"
 				if c.Score < 48 {
 					c.Score = 48
 				}
 				addSignal("suspicion-memory-tunnel")
 			case shared.SuspicionBeacon:
-				c.Role = "susp-beacon"
+				c.Role = "beacon"
 				if c.Score < 46 {
 					c.Score = 46
 				}
 				addSignal("suspicion-memory-beacon")
 			case shared.SuspicionControl:
-				c.Role = "susp-session"
+				c.Role = "session"
 				if c.Score < 46 {
 					c.Score = 46
 				}
@@ -1029,6 +1233,7 @@ func ScoreCandidate(c *shared.Candidate) {
 		observedConnAgeSecs,
 		smbMaxAgeSecs,
 		beaconAgeSecs,
+		suspiciousPath,
 		addSignal,
 	) {
 		strongEvidence = false
@@ -1036,7 +1241,7 @@ func ScoreCandidate(c *shared.Candidate) {
 
 	c.TrafficVerified = trafficVerified
 	c.StrongEvidence = strongEvidence
-	if !c.StrongEvidence && c.Role == "susp-session" && controlConn != nil {
+	if !c.StrongEvidence && c.Role == "session" && controlConn != nil {
 		suppressStrongExternalSession := benignClient &&
 			outExternal > 0 &&
 			outInternal == 0 &&
@@ -1057,16 +1262,15 @@ func ScoreCandidate(c *shared.Candidate) {
 		}
 	}
 	if !c.ActiveProxying && !c.StrongEvidence {
-		roleFamily := shared.RoleFamily(c.Role)
 		threshold := 88
-		switch roleFamily {
+		switch c.Role {
 		case "session":
 			threshold = 72
 		case "beacon":
 			threshold = 68
-		case "tunnel":
+		case "tunnel", "smb-pipe":
 			threshold = 74
-		case "listener":
+		case "listen":
 			threshold = 84
 		case "outbound":
 			threshold = 86
@@ -1109,7 +1313,7 @@ func ScoreCandidate(c *shared.Candidate) {
 		if c.Score >= threshold && corroboration > 0 {
 			c.StrongEvidence = true
 			addSignal("strong-role-dynamic")
-			c.Reasons = append(c.Reasons, fmt.Sprintf("Role-aware strong state promotion (%s, score=%d, corroboration=%d)", roleFamily, c.Score, corroboration))
+			c.Reasons = append(c.Reasons, fmt.Sprintf("Role-aware strong state promotion (%s, score=%d, corroboration=%d)", c.Role, c.Score, corroboration))
 		}
 	}
 	applyBehaviorAwareAdjustments(
@@ -1123,6 +1327,7 @@ func ScoreCandidate(c *shared.Candidate) {
 		strongEvidence,
 		benignControlPattern,
 		benignClient,
+		suspiciousPath,
 		addSignal,
 	)
 	if delegatedReason != "" {
@@ -1250,6 +1455,7 @@ func applyBehaviorAwareAdjustments(
 	strongEvidence bool,
 	benignControlPattern bool,
 	benignClient bool,
+	suspiciousPath bool,
 	addSignal func(string),
 ) {
 	if c == nil || behavior == nil || behavior.Observations < 6 {
@@ -1293,7 +1499,7 @@ func applyBehaviorAwareAdjustments(
 	}
 
 	if stableBenign &&
-		c.Role == "susp-session" &&
+		c.Role == "session" &&
 		controlConn != nil &&
 		benignControlPattern &&
 		!c.StrongEvidence &&
@@ -1302,8 +1508,9 @@ func applyBehaviorAwareAdjustments(
 		!internalLateral &&
 		distinctTargets <= 2 &&
 		c.ControlDurationSeconds < 600 &&
-		!c.DelegatedStrong {
-		c.Role = "outbound-only"
+		!c.DelegatedStrong &&
+		!suspiciousPath {
+		c.Role = "outbound"
 		if c.Score > 30 {
 			c.Score = 30
 		}
@@ -1313,7 +1520,7 @@ func applyBehaviorAwareAdjustments(
 
 	// Guardrail against weak one-off session labels on common system clients.
 	if benignClient &&
-		c.Role == "susp-session" &&
+		c.Role == "session" &&
 		controlConn != nil &&
 		!c.StrongEvidence &&
 		!c.ActiveProxying &&
@@ -1324,7 +1531,7 @@ func applyBehaviorAwareAdjustments(
 		c.OutTotal <= 2 &&
 		c.ControlDurationSeconds < 45 &&
 		c.Score < 55 {
-		c.Role = "outbound-only"
+		c.Role = "outbound"
 		if c.Score > 35 {
 			c.Score = 35
 		}
@@ -1354,8 +1561,7 @@ func updateProcessBehaviorProfile(
 	behavior.AvgDistinctTargets = ewma(behavior.AvgDistinctTargets, float64(distinctTargets), behavior.Observations)
 	behavior.AvgControlSeconds = ewma(behavior.AvgControlSeconds, float64(controlSecs), behavior.Observations)
 
-	roleFamily := shared.RoleFamily(c.Role)
-	suspiciousRole := roleFamily == "session" || roleFamily == "beacon" || roleFamily == "tunnel"
+	suspiciousRole := c.Role == "session" || c.Role == "beacon" || c.Role == "tunnel" || c.Role == "smb-pipe"
 	if suspiciousRole && (c.StrongEvidence || c.ActiveProxying || c.Score >= 70) {
 		behavior.SuspiciousObservations++
 	}
@@ -1369,8 +1575,8 @@ func updateProcessBehaviorProfile(
 	for prefix := range externalPrefixes {
 		behavior.KnownPrefixes[prefix]++
 	}
-	pruneStringCount(behavior.KnownPrefixes, 128)
-	pruneStringCount(behavior.LastRoles, 8)
+	shared.TrimStringIntMap(behavior.KnownPrefixes, 128)
+	shared.TrimStringIntMap(behavior.LastRoles, 8)
 }
 
 func ewma(current float64, sample float64, observations int) float64 {
@@ -1381,54 +1587,60 @@ func ewma(current float64, sample float64, observations int) float64 {
 	return current*(1-alpha) + sample*alpha
 }
 
-func pruneStringCount(in map[string]int, maxItems int) {
-	if len(in) <= maxItems || maxItems <= 0 {
-		return
-	}
-	type item struct {
-		key string
-		val int
-	}
-	items := make([]item, 0, len(in))
-	for k, v := range in {
-		items = append(items, item{key: k, val: v})
-	}
-	// Small bounded maps; insertion-sort style stability is unnecessary.
-	for i := 0; i < len(items); i++ {
-		for j := i + 1; j < len(items); j++ {
-			if items[j].val > items[i].val || (items[j].val == items[i].val && items[j].key < items[i].key) {
-				items[i], items[j] = items[j], items[i]
-			}
-		}
-	}
-	keep := map[string]struct{}{}
-	for i := 0; i < maxItems && i < len(items); i++ {
-		keep[items[i].key] = struct{}{}
-	}
-	for k := range in {
-		if _, ok := keep[k]; !ok {
-			delete(in, k)
-		}
+func deriveRole(hasListener bool, clients int, out int, reverseTunnelEligible bool) string {
+	switch {
+	case hasListener:
+		return "listen"
+	case out >= 3 && reverseTunnelEligible:
+		return "tunnel"
+	default:
+		return "outbound"
 	}
 }
 
-func deriveRole(hasListener bool, clients int, out int, reverseTunnelEligible bool) string {
-	switch {
-	case hasListener && clients > 0 && out > 0:
-		return "proxy-listener"
-	case hasListener && clients > 0:
-		return "listener-with-clients"
-	case hasListener && out > 0:
-		return "listener-with-outbound"
-	case hasListener:
-		return "listener-only"
-	case out >= 3 && reverseTunnelEligible:
-		return "reverse-tunnel"
-	case out > 0:
-		return "outbound-only"
-	default:
-		return "outbound-only"
+// hasProxyTunnelLibPattern returns true when a library base filename contains
+// substrings that indicate proxy, SOCKS, or tunneling functionality. No
+// specific library names are hardcoded — only protocol/technique keywords.
+// isSuspiciousExePath returns true when the executable runs from a
+// user-writable location that legitimate long-running software rarely uses.
+// This is purely path-based — no process names are checked.
+func isSuspiciousExePath(exePath string) bool {
+	p := shared.NormalizeExePath(exePath)
+	if p == "" {
+		return false
 	}
+	// Common user-writable staging locations.
+	markers := []string{
+		"/downloads/",
+		"/desktop/",
+		"/tmp/",
+		"/var/tmp/",
+		"/appdata/local/temp/",
+		"/public/",
+	}
+	for _, m := range markers {
+		if strings.Contains(p, m) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasProxyTunnelLibPattern(base string) bool {
+	if base == "" {
+		return false
+	}
+	// Match "lib" prefix combined with a proxy/tunnel keyword.
+	if !strings.HasPrefix(base, "lib") {
+		return false
+	}
+	keywords := []string{"socks", "proxy", "tunnel", "tun2"}
+	for _, kw := range keywords {
+		if strings.Contains(base, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasSMBListenerPort(ports map[int]struct{}) bool {
@@ -2001,6 +2213,95 @@ func pendingControlAttempt(
 	return best, ageSecs, hist.Observations, repeated
 }
 
+// updateSYNCycleTracking detects beacon-like SYN_SENT cycling patterns.
+// When a C2 server is down, the implant's reconnection attempts show as
+// SYN_SENT that appears, times out (disappears), then reappears on the
+// next callback. Tracking these cycles reveals the beacon interval.
+func updateSYNCycleTracking(pid int, conns []shared.ConnectionInfo, ports map[int]struct{}, now time.Time) (beaconLikeCycle bool, cycles int, avgInterval float64) {
+	// Find current SYN_SENT target (if any).
+	var currentTarget string
+	for _, cn := range conns {
+		if !isPendingControlState(cn.State) {
+			continue
+		}
+		if cn.RemoteAddress == "" || shared.IsWildcardIP(cn.RemoteAddress) || shared.IsLoopbackIP(cn.RemoteAddress) {
+			continue
+		}
+		if _, ok := ports[cn.LocalPort]; ok {
+			continue
+		}
+		currentTarget = cn.RemoteAddress + ":" + fmt.Sprintf("%d", cn.RemotePort)
+		break
+	}
+
+	hist := shared.SYNCycleByPID[pid]
+	present := currentTarget != ""
+
+	// No SYN_SENT and no history — nothing to track.
+	if !present && hist == nil {
+		return false, 0, 0
+	}
+
+	// Target changed or gap too long — reset tracking.
+	if hist != nil && (currentTarget != hist.Target && present) {
+		hist = nil
+	}
+	if hist != nil && now.Sub(hist.LastSeen) > 10*time.Minute {
+		hist = nil
+	}
+
+	if hist == nil {
+		if !present {
+			return false, 0, 0
+		}
+		shared.SYNCycleByPID[pid] = &shared.SYNCycleHistory{
+			Target:      currentTarget,
+			Cycles:      0,
+			LastPresent: true,
+			LastSeen:    now,
+			FirstSeen:   now,
+		}
+		return false, 0, 0
+	}
+
+	hist.LastSeen = now
+
+	// Detect transition: was absent, now present → new cycle.
+	if present && !hist.LastPresent {
+		hist.Cycles++
+		if hist.Cycles >= 2 && len(hist.Intervals) > 0 {
+			// Record interval since last cycle start.
+		}
+		// Track interval from first seen to now, divided by cycles.
+		elapsed := now.Sub(hist.FirstSeen).Seconds()
+		if hist.Cycles > 0 && elapsed > 0 {
+			avg := elapsed / float64(hist.Cycles)
+			// Keep a rolling window of up to 8 intervals.
+			if len(hist.Intervals) >= 8 {
+				hist.Intervals = hist.Intervals[1:]
+			}
+			hist.Intervals = append(hist.Intervals, avg)
+		}
+	}
+	hist.LastPresent = present
+
+	if hist.Cycles < 2 {
+		return false, hist.Cycles, 0
+	}
+
+	// Compute average interval.
+	if len(hist.Intervals) > 0 {
+		sum := 0.0
+		for _, v := range hist.Intervals {
+			sum += v
+		}
+		avgInterval = sum / float64(len(hist.Intervals))
+	}
+
+	// Consider it beacon-like if we've seen 2+ cycles.
+	return true, hist.Cycles, avgInterval
+}
+
 func isPendingControlState(state string) bool {
 	switch state {
 	case "SYN_SENT", "SYN_RECEIVED":
@@ -2026,31 +2327,17 @@ func controlStickyScore(controlSecs int) int {
 func confidenceFor(role string, score int, active bool) int {
 	base := 10
 	switch role {
-	case "reverse-transport":
+	case "tunnel":
 		base = 85
-	case "reverse-proxy":
-		base = 80
 	case "smb-pipe":
 		base = 78
-	case "susp-tun":
-		base = 70
-	case "susp-session":
-		base = 72
-	case "susp-beacon":
-		base = 68
-	case "reverse-control":
+	case "session":
 		base = 75
-	case "proxy-listener":
-		base = 60
-	case "reverse-tunnel":
+	case "beacon":
+		base = 68
+	case "listen":
 		base = 55
-	case "listener-with-clients":
-		base = 50
-	case "listener-with-outbound":
-		base = 45
-	case "listener-only":
-		base = 35
-	case "outbound-only":
+	case "outbound":
 		base = 30
 	}
 
@@ -2178,35 +2465,11 @@ func shouldPromoteReverseControl(
 	return controlSecs >= 45
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func warmupFallbackRole(hasListener bool, clients int, out int) string {
-	switch {
-	case hasListener && clients > 0 && out > 0:
-		return "proxy-listener"
-	case hasListener && clients > 0:
-		return "listener-with-clients"
-	case hasListener && out > 0:
-		return "listener-with-outbound"
-	case hasListener:
-		return "listener-only"
-	case out > 0:
-		return "outbound-only"
-	default:
-		return "outbound-only"
+	if hasListener {
+		return "listen"
 	}
+	return "outbound"
 }
 
 func applyRoleWarmupGates(
@@ -2219,21 +2482,26 @@ func applyRoleWarmupGates(
 	observedConnAgeSecs int,
 	smbMaxAgeSecs int,
 	beaconAgeSecs int,
+	suspiciousPath bool,
 	addSignal func(string),
 ) bool {
 	if c == nil {
 		return false
 	}
+	// Skip warmup entirely for processes from suspicious paths (Downloads,
+	// Temp, Desktop) — these should surface immediately.
+	if suspiciousPath {
+		return false
+	}
 
-	family := shared.RoleFamily(c.Role)
 	sessionAge := max(controlSecs, pendingControlSecs)
 	tunnelAge := max(observedConnAgeSecs, sessionAge)
 	smbAge := max(smbMaxAgeSecs, tunnelAge)
 	fallbackRole := warmupFallbackRole(hasListener, activeClients, outTotal)
 	blocked := false
 
-	switch {
-	case c.Role == "smb-pipe":
+	switch c.Role {
+	case "smb-pipe":
 		minSecs := int(shared.SMBPipeMinLabelDuration.Seconds())
 		if smbAge < minSecs {
 			c.Role = fallbackRole
@@ -2241,7 +2509,7 @@ func applyRoleWarmupGates(
 			c.Reasons = append(c.Reasons, fmt.Sprintf("SMB-pipe candidate warming up (%ds/%ds)", smbAge, minSecs))
 			blocked = true
 		}
-	case family == "tunnel":
+	case "tunnel":
 		minSecs := int(shared.TunnelMinLabelDuration.Seconds())
 		if tunnelAge < minSecs {
 			c.Role = fallbackRole
@@ -2249,33 +2517,32 @@ func applyRoleWarmupGates(
 			c.Reasons = append(c.Reasons, fmt.Sprintf("Tunnel candidate warming up (%ds/%ds)", tunnelAge, minSecs))
 			blocked = true
 		}
-	case family == "session":
+	case "session", "beacon":
 		minSecs := int(shared.SessionMinLabelDuration.Seconds())
-		if sessionAge < minSecs {
-			c.Role = fallbackRole
-			addSignal("warmup-session")
-			c.Reasons = append(c.Reasons, fmt.Sprintf("Session candidate warming up (%ds/%ds)", sessionAge, minSecs))
-			blocked = true
+		if c.Role == "beacon" {
+			minSecs = int(shared.BeaconMinLabelDuration.Seconds())
 		}
-	case family == "beacon":
-		minSecs := int(shared.BeaconMinLabelDuration.Seconds())
-		if beaconAgeSecs < minSecs {
+		age := sessionAge
+		if c.Role == "beacon" {
+			age = beaconAgeSecs
+		}
+		if age < minSecs {
 			c.Role = fallbackRole
-			addSignal("warmup-beacon")
-			c.Reasons = append(c.Reasons, fmt.Sprintf("Beacon candidate warming up (%ds/%ds)", beaconAgeSecs, minSecs))
+			addSignal("warmup-command")
+			c.Reasons = append(c.Reasons, fmt.Sprintf("Command candidate warming up (%ds/%ds)", age, minSecs))
 			blocked = true
 		}
 	}
 
 	if blocked {
-		if shared.RoleFamily(c.Role) == "outbound" {
+		if c.Role == "listen" || c.Role == "outbound" {
 			c.ActiveProxying = false
 		}
 		c.StrongEvidence = false
-		if c.Role == "outbound-only" && c.Score > shared.OutboundOnlyExternalCap {
+		if c.Role == "outbound" && c.Score > shared.OutboundOnlyExternalCap {
 			c.Score = shared.OutboundOnlyExternalCap
 		}
-		if shared.RoleFamily(c.Role) == "listener" && c.Score > 50 {
+		if c.Role == "listen" && c.Score > 50 {
 			c.Score = 50
 		}
 	}
@@ -2349,13 +2616,12 @@ func applyASNRankAssist(c *shared.Candidate, p *shared.ProcessInfo, addSignal fu
 		return
 	}
 
-	family := shared.RoleFamily(c.Role)
-	switch family {
-	case "session", "beacon", "tunnel":
+	switch c.Role {
+	case "session", "beacon", "tunnel", "smb-pipe":
 		c.Score += 8
 		addSignal("asn-org-mismatch")
 		c.Reasons = append(c.Reasons, "ASN organization does not align with process publisher context")
-	case "outbound":
+	case "listen", "outbound":
 		c.Score += 4
 		addSignal("asn-org-mismatch")
 		c.Reasons = append(c.Reasons, "ASN organization does not align with process publisher context")
@@ -2420,7 +2686,7 @@ func applySignalFusionAdjustments(
 	)
 
 	// Downgrade weak benign-looking sessions that lack corroboration.
-	if shared.RoleFamily(c.Role) == "session" &&
+	if c.Role == "session" &&
 		!c.StrongEvidence &&
 		!c.ActiveProxying &&
 		benignClient &&
@@ -2428,7 +2694,7 @@ func applySignalFusionAdjustments(
 		c.ControlDurationSeconds < 45 &&
 		benignFusion >= 2 &&
 		suspiciousFusion <= 1 {
-		c.Role = "outbound-only"
+		c.Role = "outbound"
 		if c.Score > 34 {
 			c.Score = 34
 		}
@@ -2438,7 +2704,7 @@ func applySignalFusionAdjustments(
 	}
 
 	// Promote strong multi-trigger control behavior that still sits in outbound-only.
-	if c.Role == "outbound-only" &&
+	if c.Role == "outbound" &&
 		(controlConn != nil || pendingControlRepeated) &&
 		!trafficVerified &&
 		(!benignControlPattern || benignFusion == 0) &&
@@ -2455,7 +2721,7 @@ func applySignalFusionAdjustments(
 		if holdBenignExternalPromotion {
 			addSignal("signal-fusion-session-hold-benign-external")
 		} else {
-			c.Role = "susp-session"
+			c.Role = "session"
 			if c.Score < 50 {
 				c.Score = 50
 			}
@@ -2532,9 +2798,9 @@ func canPromoteBeaconRole(
 	sessionCue bool,
 ) bool {
 	switch role {
-	case "susp-tun", "reverse-proxy", "reverse-transport":
+	case "tunnel":
 		return false
-	case "reverse-control", "susp-session":
+	case "session":
 		// Keep explicit session/tunnel shapes as session/tunnel.
 		if sessionCue || reverseControl || controlConn != nil || outLongLived > 0 {
 			return false
@@ -2544,7 +2810,7 @@ func canPromoteBeaconRole(
 			!hasListener &&
 			!localTransportRecent &&
 			!internalScanRecent
-	case "outbound-only":
+	case "outbound":
 		// If outbound currently carries session-like control cues, keep it out of beacon.
 		if sessionCue || reverseControl || controlConn != nil || outLongLived > 0 {
 			return false
@@ -2863,8 +3129,8 @@ func updateBurstHistory(pid int, burstCount int, now time.Time) {
 		shared.ShortLivedBurstInterval[pid] = interval
 		intervals := shared.ShortLivedIntervals[pid]
 		intervals = append(intervals, interval)
-		if len(intervals) > 6 {
-			intervals = intervals[len(intervals)-6:]
+		if len(intervals) > 20 {
+			intervals = intervals[len(intervals)-20:]
 		}
 		shared.ShortLivedIntervals[pid] = intervals
 		if interval >= shared.BeaconSleepThreshold {

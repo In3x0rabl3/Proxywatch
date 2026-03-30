@@ -59,6 +59,7 @@ func GetProcessInfoMap() (map[int]*shared.ProcessInfo, error) {
 				fillTimes(h, pi)
 				fillMemory(h, pi)
 				fillIOCounters(h, pi)
+				fillCmdLine(h, pi)
 				if !metaOK {
 					fillUser(h, pi)
 					fillExePath(h, pi)
@@ -373,4 +374,31 @@ func tokenIntegrity(token windows.Token) string {
 func filetimeToDuration(ft windows.Filetime) time.Duration {
 	v := (uint64(ft.HighDateTime) << 32) | uint64(ft.LowDateTime)
 	return time.Duration(v * 100)
+}
+
+func fillCmdLine(h windows.Handle, pi *shared.ProcessInfo) {
+	// ProcessCommandLineInformation (class 60) available on Windows 10+.
+	// Returns UNICODE_STRING with the full command line.
+	buf := make([]byte, 2048)
+	var retLen uint32
+	r, _, _ := platform.ProcNtQueryInformationProcess.Call(
+		uintptr(h),
+		uintptr(platform.ProcessCommandLineInfo),
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(len(buf)),
+		uintptr(unsafe.Pointer(&retLen)),
+	)
+	if r != 0 || retLen < 4 {
+		return
+	}
+	us := (*platform.UnicodeString)(unsafe.Pointer(&buf[0]))
+	if us.Length == 0 || us.Buffer == 0 {
+		return
+	}
+	charCount := int(us.Length) / 2
+	if charCount > 512 {
+		charCount = 512
+	}
+	chars := unsafe.Slice((*uint16)(unsafe.Pointer(us.Buffer)), charCount)
+	pi.CmdLine = strings.TrimSpace(windows.UTF16ToString(chars))
 }

@@ -41,20 +41,27 @@ func filterSamplesByScope(samples []shared.Candidate, scope string) []shared.Can
 func scopeRoleFilter(scope string) map[string]bool {
 	s := strings.ToLower(strings.TrimSpace(scope))
 	switch s {
-	case "", "recommended":
-		// Calibration "recommended" learns baseline environment traffic, so it
-		// must include normal outbound/listener behavior as well.
+	case "", "recommended", "all":
 		return shared.ParseRoleFilter("all")
-	case "all":
-		return shared.ParseRoleFilter("all")
-	case "control":
-		return shared.ParseRoleFilter("control")
-	case "reverse":
-		return shared.ParseRoleFilter("reverse")
-	case "listener":
-		return shared.ParseRoleFilter("listener")
+	case "session":
+		return shared.ParseRoleFilter("session")
+	case "beacon":
+		return shared.ParseRoleFilter("beacon")
+	case "tunnel":
+		return shared.ParseRoleFilter("tunnel")
+	case "listen":
+		return shared.ParseRoleFilter("listen")
 	case "outbound":
 		return shared.ParseRoleFilter("outbound")
+	// Legacy aliases.
+	case "command":
+		return shared.ParseRoleFilter("session,beacon")
+	case "network":
+		return shared.ParseRoleFilter("listen,outbound")
+	case "control", "reverse":
+		return shared.ParseRoleFilter("session,beacon,tunnel")
+	case "listener":
+		return shared.ParseRoleFilter("listen")
 	default:
 		parsed := shared.ParseRoleFilter(s)
 		if len(parsed) == 0 {

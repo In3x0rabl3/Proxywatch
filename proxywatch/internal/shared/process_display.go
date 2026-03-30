@@ -1,6 +1,12 @@
 package shared
 
-import "strings"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
 
 // DisplayProcessName returns a UI-friendly process label.
 func DisplayProcessName(p *ProcessInfo) string {
@@ -17,27 +23,87 @@ func DisplayProcessName(p *ProcessInfo) string {
 	return name
 }
 
-// IsProxywatchProcess identifies Proxywatch runtime binaries so they can be
-// hidden from operator-facing candidate views.
+// selfIdentity holds the dynamically resolved identity of the running process,
+// used for self-process filtering without any hardcoded binary names.
+var (
+	selfOnce    sync.Once
+	selfPID     int
+	selfExeName string // lowercase base name without extension
+	selfExePath string // full normalized path
+)
+
+func initSelfIdentity() {
+	selfOnce.Do(func() {
+		selfPID = os.Getpid()
+		if exe, err := os.Executable(); err == nil {
+			resolved, err := filepath.EvalSymlinks(exe)
+			if err == nil {
+				exe = resolved
+			}
+			selfExePath = strings.ToLower(strings.ReplaceAll(filepath.Clean(exe), "\\", "/"))
+			selfExeName = strings.TrimSuffix(strings.ToLower(filepath.Base(exe)), ".exe")
+		}
+	})
+}
+
+// IsProxywatchProcess returns true when p represents this running binary or a
+// direct child of it. Detection is fully dynamic — the binary's own PID and
+// executable path are resolved once at startup and every candidate is compared
+// against those values. No hardcoded process names are used.
 func IsProxywatchProcess(p *ProcessInfo) bool {
 	if p == nil {
 		return false
 	}
-	path := strings.ToLower(strings.TrimSpace(p.ExePath))
-	path = strings.ReplaceAll(path, "\\", "/")
-	base := path
-	if base != "" {
-		if idx := strings.LastIndexByte(base, '/'); idx >= 0 && idx+1 < len(base) {
-			base = base[idx+1:]
+	initSelfIdentity()
+
+	// Direct PID match (local process is us).
+	if selfPID > 0 && p.Pid == selfPID {
+		return true
+	}
+
+	// Immediate child of self (e.g. worker subprocess we spawned).
+	if selfPID > 0 && p.ParentPid > 0 && p.ParentPid == selfPID {
+		return true
+	}
+
+	// Executable path match — covers remote agents running the same binary
+	// under a potentially different PID.
+	if selfExeName != "" {
+		if matchesSelfExe(p.Name) || matchesSelfExe(exeBaseName(p.ExePath)) {
+			return true
 		}
 	}
-	name := strings.ToLower(strings.TrimSpace(p.Name))
-	if !hasProxywatchBinaryName(base) && !hasProxywatchBinaryName(name) {
-		return false
+
+	// Full path match (handles symlinks, different casing, etc.).
+	if selfExePath != "" {
+		normalized := strings.ToLower(strings.TrimSpace(p.ExePath))
+		normalized = strings.ReplaceAll(normalized, "\\", "/")
+		if normalized != "" && normalized == selfExePath {
+			return true
+		}
 	}
-	// Hide proxywatch runtime binaries regardless of where they are launched
-	// from (for example release binaries run from Downloads).
-	return true
+
+	return false
+}
+
+// matchesSelfExe compares a candidate name (already lowercase, no ext) to the
+// running binary's base name.
+func matchesSelfExe(name string) bool {
+	name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".exe")
+	return name != "" && name == selfExeName
+}
+
+// exeBaseName extracts the lowercase filename from an executable path.
+func exeBaseName(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = strings.ReplaceAll(path, "\\", "/")
+	if idx := strings.LastIndexByte(path, '/'); idx >= 0 && idx+1 < len(path) {
+		return path[idx+1:]
+	}
+	return path
 }
 
 // FilterProxywatchCandidates removes Proxywatch runtime processes from candidate lists.
@@ -53,40 +119,6 @@ func FilterProxywatchCandidates(cands []Candidate) []Candidate {
 		out = append(out, c)
 	}
 	return out
-}
-
-func hasProxywatchBinaryName(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	if name == "" {
-		return false
-	}
-	if name == "pwa" || name == "pwa.exe" {
-		return true
-	}
-	if name == "proxywatch" || name == "proxywatch.exe" {
-		return true
-	}
-	// Keep support for versioned build names like proxywatch17(.exe).
-	if strings.HasPrefix(name, "proxywatch") {
-		return true
-	}
-	return false
-}
-
-func isTrustedProxywatchPath(path string) bool {
-	path = strings.ToLower(strings.TrimSpace(path))
-	if path == "" {
-		return false
-	}
-	path = strings.ReplaceAll(path, "\\", "/")
-	if strings.Contains(path, "/opt/proxywatch/") ||
-		strings.Contains(path, "/.proxywatch/") ||
-		strings.Contains(path, "/program files/proxywatch/") ||
-		strings.Contains(path, "/programdata/proxywatch/") {
-		return true
-	}
-	// Match common source/build locations to hide local proxywatch runtime binaries.
-	return strings.Contains(path, "/proxywatch/build/") || strings.Contains(path, "/proxywatch/cmd/")
 }
 
 func aptMethodDisplayName(exePath string) string {
@@ -112,3 +144,54 @@ func aptMethodDisplayName(exePath string) string {
 	}
 	return "apt-" + method
 }
+
+type ProcessMeta struct {
+	UserName    string
+	ExePath     string
+	Company     string
+	Integrity   string
+	SessionID   uint32
+	SessionName string
+	FetchedAt   time.Time
+}
+
+type ProcessMetaCache struct {
+	mu      sync.Mutex
+	entries map[int]ProcessMeta
+}
+
+func NewProcessMetaCache() *ProcessMetaCache {
+	return &ProcessMetaCache{
+		entries: make(map[int]ProcessMeta),
+	}
+}
+
+func (c *ProcessMetaCache) Get(pid int, now time.Time) (ProcessMeta, bool) {
+	if c == nil {
+		return ProcessMeta{}, false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	meta, ok := c.entries[pid]
+	if !ok {
+		return ProcessMeta{}, false
+	}
+	if now.Sub(meta.FetchedAt) > ProcessMetaCacheTTL {
+		delete(c.entries, pid)
+		return ProcessMeta{}, false
+	}
+	return meta, true
+}
+
+func (c *ProcessMetaCache) Set(pid int, meta ProcessMeta) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[pid] = meta
+}
+
+var ProcMetaCache = NewProcessMetaCache()

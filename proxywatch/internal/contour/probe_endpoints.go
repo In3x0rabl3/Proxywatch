@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"proxywatch/internal/safeio"
 	"proxywatch/internal/shared"
 )
 
@@ -439,7 +440,7 @@ func expandPathPlaceholders(path string) string {
 	if path == "" {
 		return ""
 	}
-	path = expandHomePath(path)
+	path = safeio.ExpandHomePath(path)
 	path = os.ExpandEnv(path)
 	return expandWindowsEnvPath(path)
 }
@@ -694,7 +695,18 @@ func testEndpointReachability(ctx context.Context, endpoints []ProbeEndpoint, ti
 	return out, reachable, pivotable
 }
 
+func testProxyEndpointReachabilityWithTarget(ctx context.Context, endpoints []ProbeEndpoint, timeout time.Duration, pivotTarget string) ([]ProbeEndpoint, int, int) {
+	if strings.TrimSpace(pivotTarget) == "" {
+		pivotTarget = defaultProbePivotTarget
+	}
+	return testProxyEndpointReachabilityTo(ctx, endpoints, timeout, pivotTarget)
+}
+
 func testProxyEndpointReachability(ctx context.Context, endpoints []ProbeEndpoint, timeout time.Duration) ([]ProbeEndpoint, int, int) {
+	return testProxyEndpointReachabilityTo(ctx, endpoints, timeout, defaultProbePivotTarget)
+}
+
+func testProxyEndpointReachabilityTo(ctx context.Context, endpoints []ProbeEndpoint, timeout time.Duration, pivotTarget string) ([]ProbeEndpoint, int, int) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -737,10 +749,10 @@ func testProxyEndpointReachability(ctx context.Context, endpoints []ProbeEndpoin
 			continue
 		}
 		out[i].ProxyTried = strings.Join(schemes, ",")
-		out[i].PivotTarget = defaultProbePivotTarget
+		out[i].PivotTarget = pivotTarget
 		for _, scheme := range schemes {
 			candidate := scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port))
-			if !testProxyPivot(ctx, candidate, defaultProbePivotTarget, pivotTimeout) {
+			if !testProxyPivot(ctx, candidate, pivotTarget, pivotTimeout) {
 				continue
 			}
 			out[i].PivotReachable = true

@@ -19,6 +19,8 @@ type Candidate struct {
 	DelegatedStrong   bool
 	DelegatedOwnerPID int
 	DelegatedOwner    string
+	RawSocket         bool            // process has open raw sockets (nmap, ping, etc.)
+	RawConns          []RawSocketConn // raw/packet socket connection entries
 
 	// classifier-owned fields
 	Score          int
@@ -67,6 +69,8 @@ type ProcessInfo struct {
 	IOOtherBps   uint64
 	CpuTime      time.Duration // user + kernel
 	WindowTitle  string        // reserved
+	CmdLine      string        // full command line
+	LoadedLibs   []string      // notable shared libraries / DLLs
 }
 
 type ListenerInfo struct {
@@ -91,12 +95,24 @@ type UDPListenerInfo struct {
 	LocalPort    int
 }
 
+// RawSocketConn represents a raw or packet socket entry from /proc/net/raw,
+// /proc/net/raw6, or /proc/net/packet.
+type RawSocketConn struct {
+	Pid    int
+	Local  string
+	Remote string
+	State  string
+	Proto  string // "raw", "raw6", "packet"
+}
+
 type Snapshot struct {
-	Timestamp    time.Time
-	Processes    map[int]*ProcessInfo
-	Listeners    []ListenerInfo
-	Connections  []ConnectionInfo
-	UDPListeners []UDPListenerInfo
+	Timestamp     time.Time
+	Processes     map[int]*ProcessInfo
+	Listeners     []ListenerInfo
+	Connections   []ConnectionInfo
+	UDPListeners  []UDPListenerInfo
+	RawSocketPIDs map[int]bool      // PIDs with open raw sockets
+	RawConns      []RawSocketConn  // raw/packet socket entries
 }
 
 type ListenerKey struct {
@@ -160,4 +176,29 @@ func TargetPrefix(ip string) string {
 		return ""
 	}
 	return strings.ToLower(strings.Join(parts[:4], ":"))
+}
+
+// ContourHint is a contour-derived signal mapped to a process candidate.
+// Calibration can consume these hints to bias tuning toward observed
+// exfiltration and egress-escape patterns.
+type ContourHint struct {
+	CandidateKey string `json:"candidate_key,omitempty"`
+	Host         string `json:"host,omitempty"`
+	PID          int    `json:"pid,omitempty"`
+	Process      string `json:"process,omitempty"`
+	Category     string `json:"category,omitempty"`
+	Signal       string `json:"signal,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Severity     string `json:"severity,omitempty"`
+}
+
+func NormalizeContourSeverity(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "active", "critical", "high":
+		return "active"
+	case "strong", "medium":
+		return "strong"
+	default:
+		return "watch"
+	}
 }

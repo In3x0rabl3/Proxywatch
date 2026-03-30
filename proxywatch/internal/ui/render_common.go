@@ -45,11 +45,183 @@ func PutOverlayStringStyle(s tcell.Screen, x, y int, text string, st tcell.Style
 	}
 }
 
+// overlayState groups the pointer fields common to every workflow overlay
+// (help panel, selection menu) so a single generic handler can drive them all.
+type overlayState struct {
+	showHelp    *bool
+	showMenu    *bool
+	helpIndex   *int
+	menuIndex   *int
+	menuOptions *[]string
+	menuKind    *string
+	menuTitle   *string
+	helpOptions func() []string
+	applyMenu   func(*shared.AppState)
+}
+
+// anyOverlayOpen returns true when any workflow has a help or menu overlay visible.
+func anyOverlayOpen(app *shared.AppState) bool {
+	return app.ShowCalibrateHelp || app.ShowCalibrateMenu ||
+		app.ContourShowHelp || app.ContourShowMenu ||
+		app.SIEMShowHelp || app.SIEMShowMenu ||
+		app.KeystoreShowHelp ||
+		app.WhitelistShowHelp ||
+		app.ShowInspectMenu
+}
+
+// handleOverlayKey is the generic overlay key handler shared by all workflow
+// modes. It handles quit, ?, Escape, help navigation, and menu navigation.
+func handleOverlayKey(app *shared.AppState, tev *tcell.EventKey, ov overlayState) bool {
+	if tev.Rune() == 'q' {
+		return requestQuit(app)
+	}
+	if tev.Rune() == '?' {
+		if *ov.showHelp {
+			*ov.showHelp = false
+		} else {
+			*ov.showMenu = false
+			*ov.showHelp = true
+			*ov.helpIndex = 0
+		}
+		return false
+	}
+	if tev.Key() == tcell.KeyEscape {
+		if *ov.showHelp {
+			*ov.showHelp = false
+		} else {
+			*ov.showMenu = false
+		}
+		return false
+	}
+	if *ov.showHelp {
+		maxIdx := len(ov.helpOptions()) - 1
+		switch tev.Key() {
+		case tcell.KeyUp:
+			if *ov.helpIndex > 0 {
+				*ov.helpIndex--
+			}
+		case tcell.KeyDown:
+			if *ov.helpIndex < max(0, maxIdx) {
+				*ov.helpIndex++
+			}
+		}
+		return false
+	}
+	if !*ov.showMenu || len(*ov.menuOptions) == 0 {
+		return false
+	}
+	switch tev.Key() {
+	case tcell.KeyUp:
+		if *ov.menuIndex > 0 {
+			*ov.menuIndex--
+		}
+	case tcell.KeyDown:
+		if *ov.menuIndex < len(*ov.menuOptions)-1 {
+			*ov.menuIndex++
+		}
+	case tcell.KeyEnter:
+		ov.applyMenu(app)
+		*ov.showMenu = false
+	}
+	return false
+}
+
+// openWorkflowMenu is the generic menu opener shared by all workflow modes.
+func openWorkflowMenu(kind, title string, options []string, selected int, showHelp, showMenu *bool, menuKind, menuTitle *string, menuOptions *[]string, menuIndex *int) {
+	if len(options) == 0 {
+		return
+	}
+	if showHelp != nil {
+		*showHelp = false
+	}
+	*showMenu = true
+	*menuKind = kind
+	*menuTitle = title
+	*menuOptions = options
+	if selected < 0 {
+		selected = 0
+	}
+	if selected >= len(options) {
+		selected = len(options) - 1
+	}
+	*menuIndex = selected
+}
+
+// cycleField moves a field index up or down with wrap-around.
+func cycleField(field *int, minField, maxField int, up bool) {
+	if up {
+		if *field > minField {
+			*field--
+		} else {
+			*field = maxField
+		}
+	} else {
+		if *field < maxField {
+			*field++
+		} else {
+			*field = minField
+		}
+	}
+}
+
+// roleStyle returns the display style for a candidate role.
+func roleStyle(role string) tcell.Style {
+	switch role {
+	case "session":
+		return styleSession
+	case "beacon":
+		return styleWarn
+	case "tunnel":
+		return styleAlertB
+	default:
+		return styleTextB
+	}
+}
+
+// stateStyle returns the display style for a candidate state.
+func stateStyle(state string) tcell.Style {
+	switch state {
+	case "active":
+		return styleAlertB
+	case "strong":
+		return styleWarn
+	default:
+		return styleWatch
+	}
+}
+
+func scrollReport(scroll *int, maxScroll int, delta int) bool {
+	if delta == 0 || maxScroll <= 0 {
+		return false
+	}
+	before := *scroll
+	*scroll += delta
+	if *scroll < 0 {
+		*scroll = 0
+	}
+	if *scroll > maxScroll {
+		*scroll = maxScroll
+	}
+	return *scroll != before
+}
+
+func setWorkflowStatus(app *shared.AppState, text *string, isErr *bool, until *time.Time, msg string, isError bool) {
+	app.LastError = msg
+	*text = msg
+	*isErr = isError
+	now := time.Now()
+	if isError {
+		*until = now.Add(10 * time.Second)
+		return
+	}
+	*until = now.Add(5 * time.Second)
+}
+
 var (
 	uiWindows = runtime.GOOS == "windows"
 
 	// Palette tuned to match the reference screenshots.
-	colBg      = tcell.NewRGBColor(0, 0, 0)
+	colBg      = tcell.NewRGBColor(30, 30, 30)
 	colText    = tcell.NewRGBColor(226, 234, 242)
 	colTextHi  = tcell.NewRGBColor(245, 250, 255)
 	colFrame   = tcell.NewRGBColor(132, 92, 182)
@@ -64,7 +236,7 @@ var (
 	colAlert   = tcell.NewRGBColor(198, 118, 130)
 	colWarn    = tcell.NewRGBColor(201, 173, 94)
 	// Use a neutral slate selection background across all platforms.
-	colSelect = tcell.NewRGBColor(28, 34, 42)
+	colSelect = tcell.NewRGBColor(42, 52, 68)
 
 	styleText    = tcell.StyleDefault.Foreground(colText).Background(colBg)
 	styleTextB   = tcell.StyleDefault.Foreground(colText).Background(colBg).Bold(true)
@@ -115,7 +287,54 @@ func fillSelectedRowBar(s tcell.Screen, y, x, w int, selected bool) {
 
 func clearScreen(s tcell.Screen) {
 	s.SetStyle(styleText)
+	s.HideCursor()
 	s.Clear()
+}
+
+func textCursorX(startX int, value string, maxWidth int) int {
+	if maxWidth <= 0 {
+		return startX
+	}
+	width := len([]rune(value))
+	if width > maxWidth {
+		width = maxWidth
+	}
+	if width < 0 {
+		width = 0
+	}
+	return startX + width
+}
+
+func showInputCursor(s tcell.Screen, x, y int) {
+	if s == nil {
+		return
+	}
+	w, h := s.Size()
+	if w <= 0 || h <= 0 {
+		return
+	}
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	if x >= w {
+		x = w - 1
+	}
+	if y >= h {
+		y = h - 1
+	}
+	s.ShowCursor(x, y)
+}
+
+func drawEditingTag(s tcell.Screen, y, w int, active bool) {
+	if !active || s == nil || w <= 0 {
+		return
+	}
+	tag := "[editing]"
+	x := max(2, w-2-len(tag))
+	PutStringStyle(s, x, y, tag, styleWarn)
 }
 
 func fillLine(s tcell.Screen, x, y, w int, ch rune, st tcell.Style) {
@@ -149,15 +368,15 @@ func drawPanel(s tcell.Screen, x, y, w, h int, title, right string) {
 	if w < 2 || h < 2 {
 		return
 	}
-	fillLine(s, x, y, w, '-', styleFrame)
-	fillLine(s, x, y+h-1, w, '-', styleFrame)
-	s.SetContent(x, y, '+', nil, styleFrame)
-	s.SetContent(x+w-1, y, '+', nil, styleFrame)
-	s.SetContent(x, y+h-1, '+', nil, styleFrame)
-	s.SetContent(x+w-1, y+h-1, '+', nil, styleFrame)
+	fillLine(s, x+1, y, w-2, '─', styleFrame)
+	fillLine(s, x+1, y+h-1, w-2, '─', styleFrame)
+	s.SetContent(x, y, '┌', nil, styleFrame)
+	s.SetContent(x+w-1, y, '┐', nil, styleFrame)
+	s.SetContent(x, y+h-1, '└', nil, styleFrame)
+	s.SetContent(x+w-1, y+h-1, '┘', nil, styleFrame)
 	for yy := y + 1; yy < y+h-1; yy++ {
-		s.SetContent(x, yy, '|', nil, styleFrame)
-		s.SetContent(x+w-1, yy, '|', nil, styleFrame)
+		s.SetContent(x, yy, '│', nil, styleFrame)
+		s.SetContent(x+w-1, yy, '│', nil, styleFrame)
 	}
 
 	if title != "" && w > 6 {
@@ -190,14 +409,14 @@ func drawMenuPanel(s tcell.Screen, w, h int, title string, options []string, sel
 			maxLen = n
 		}
 	}
-	menuW := max(44, maxLen)
+	menuW := max(28, maxLen)
 	if w < menuW+2 {
 		menuW = w - 2
 	}
 	if menuW < 20 {
 		return
 	}
-	menuH := len(options) + 4
+	menuH := len(options) + 3
 	if footer != "" {
 		menuH++
 	}
@@ -253,15 +472,48 @@ func drawMenuPanel(s tcell.Screen, w, h int, title string, options []string, sel
 			break
 		}
 		row := y + 1 + rowOff
+		opt := options[optIdx]
 		rowSelected := selected >= 0 && optIdx == selected
+
+		// Section header lines (start with "[")
+		if strings.HasPrefix(opt, "[") {
+			PutStringStyle(s, x+2, row, TruncateToWidth("  "+opt, menuW-4), applySelectedRowStyle(styleMuted, rowSelected))
+			continue
+		}
+
+		// Separator lines
+		if opt == "" {
+			continue
+		}
+
 		prefix := "  "
-		st := styleText
 		if rowSelected {
 			prefix = "> "
-			st = styleTextB
+			fillSelectedRowBar(s, row, x+1, menuW-2, true)
 		}
-		fillSelectedRowBar(s, row, x+1, menuW-2, rowSelected)
-		PutStringStyle(s, x+2, row, TruncateToWidth(prefix+options[optIdx], menuW-4), applySelectedRowStyle(st, rowSelected))
+
+		// Split "KEY  Description" into key and desc parts for distinct styling.
+		keyPart, descPart := opt, ""
+		if idx := strings.Index(opt, "  "); idx > 0 {
+			keyPart = opt[:idx]
+			descPart = strings.TrimLeft(opt[idx:], " ")
+		}
+		keyStyle := applySelectedRowStyle(styleCyanB, rowSelected)
+		descStyle := applySelectedRowStyle(styleText, rowSelected)
+		prefixStyle := applySelectedRowStyle(styleDim, rowSelected)
+		if rowSelected {
+			descStyle = applySelectedRowStyle(styleTextB, rowSelected)
+		}
+
+		PutStringStyle(s, x+2, row, prefix, prefixStyle)
+		keyX := x + 2 + len(prefix)
+		PutStringStyle(s, keyX, row, TruncateToWidth(keyPart, menuW-4-len(prefix)), keyStyle)
+		if descPart != "" {
+			descX := keyX + 13
+			if descX < x+menuW-2 {
+				PutStringStyle(s, descX, row, TruncateToWidth(descPart, x+menuW-2-descX), descStyle)
+			}
+		}
 	}
 
 	if footer != "" && y+menuH-2 >= y+1 {
@@ -435,127 +687,172 @@ func refreshPresetOptions() []string {
 
 func dashboardMenuHelpOptions() []string {
 	return []string{
-		"'UP/DOWN': move selection",
-		"'PGUP/PGDN': move by page",
-		"'HOME/END': jump to start or end",
-		"'ENTER': open the selected host or inspect the selected process",
-		"'ESC': leave a host process view and return to the host list",
-		"'x': remove the selected disconnected host",
-		"'r': open refresh options",
-		"'f': open role/sort menu",
-		"'b': open BloodHound collection workflow",
-		"'o': open contour workflow",
-		"'c': open calibration workflow",
-		"'k': open keystore workflow",
-		"'m': open SIEM workflow",
-		"'w': open whitelist workflow",
-		"'?' or 'ESC': close this menu",
-		"'q': quit",
+		"[Navigation]",
+		"UP/DOWN      Move selection",
+		"PGUP/PGDN    Move by page",
+		"ENTER        Open selected row",
+		"ESC          Exit host process view",
+		"",
+		"[Workflows]",
+		"1            Calibration",
+		"2            SIEM",
+		"3            Contour",
+		"4            BloodHound",
+		"5            Whitelist",
+		"k            Keystore",
+		"LEFT/RIGHT   Cycle workflows",
+		"",
+		"[Actions]",
+		"r            Refresh / remove host",
+		"c            Role + sort menu",
+		"x            Remove disconnected host",
+		"?            Close this menu",
+		"q            Quit",
 	}
 }
 
 func calibrationMenuHelpOptions() []string {
 	return []string{
-		"'UP/DOWN': move selection",
-		"'TAB/SHIFT+TAB': move selection",
-		"'PGUP/PGDN': scroll report by page",
-		"'j'/'k': scroll report by line",
-		"'LEFT/RIGHT': quick-change selected value",
-		"'ENTER': edit field, open picker, or run action",
-		"'?': open or close this menu",
-		"'ESC': close menu or return to dashboard",
-		"'q': quit",
+		"[Navigation]",
+		"UP/DOWN      Move field",
+		"TAB/BTAB     Next / prev field",
+		"LEFT/RIGHT   Cycle workflows",
+		"",
+		"[Editing]",
+		"ENTER        Edit / open / apply",
+		"BACKSPACE    Delete while editing",
+		"",
+		"[Report]",
+		"PGUP/PGDN    Scroll report page",
+		"[ / ]        Scroll report line",
+		"",
+		"?            Close this menu",
+		"ESC          Back to dashboard",
+		"q            Quit",
 	}
 }
 
 func collectMenuHelpOptions() []string {
 	return []string{
-		"'UP/DOWN': move selection",
-		"'LEFT/RIGHT': quick-change source or duration",
-		"'ENTER': edit field, open picker, or run action",
-		"'?': open or close this menu",
-		"'ESC': close menu or return to dashboard",
-		"'q': quit",
+		"[Navigation]",
+		"UP/DOWN      Move field",
+		"LEFT/RIGHT   Cycle workflows",
+		"",
+		"[Editing]",
+		"ENTER        Edit / open / start",
+		"BACKSPACE    Delete while editing",
+		"",
+		"?            Close this menu",
+		"ESC          Back to dashboard",
+		"q            Quit",
 	}
 }
 
 func contourMenuHelpOptions() []string {
 	return []string{
-		"'UP/DOWN': move selection",
-		"'LEFT/RIGHT': quick-change role or probe mode",
-		"'PGUP/PGDN': scroll report by page",
-		"'j'/'k': scroll report by line",
-		"'ENTER': edit field, open picker, or run action",
-		"'?': open or close this menu",
-		"'ESC': close menu or return to dashboard",
-		"'q': quit",
+		"[Navigation]",
+		"UP/DOWN      Move field",
+		"TAB/BTAB     Next / prev field",
+		"LEFT/RIGHT   Cycle workflows",
+		"",
+		"[Editing]",
+		"ENTER        Edit / open / start",
+		"BACKSPACE    Delete while editing",
+		"",
+		"[Report]",
+		"PGUP/PGDN    Scroll report page",
+		"[ / ]        Scroll report line",
+		"",
+		"[Actions]",
+		"?            Close this menu",
+		"ESC          Back to dashboard",
+		"q            Quit",
 	}
 }
 
 func keystoreMenuHelpOptions() []string {
 	return []string{
-		"'UP/DOWN': move selection",
-		"'ENTER': edit field or run Load/Save/Apply",
-		"'BACKSPACE': remove last character while editing",
-		"'?': open or close this menu",
-		"'ESC': stop editing, then return to dashboard",
-		"'q': quit",
+		"[Navigation]",
+		"UP/DOWN      Move field / select keystore",
+		"PGUP         Jump to Setup",
+		"PGDN         Jump to Keystores list",
+		"TAB          Toggle fields / keystores list",
+		"LEFT/RIGHT   Cycle workflows",
+		"",
+		"[Editing]",
+		"ENTER        Edit / open / switch keystore",
+		"BACKSPACE    Delete while editing",
+		"",
+		"[Actions]",
+		"a            Activate selected keystore",
+		"n            Create new keystore",
+		"d            Delete selected keystore",
+		"?            Close this menu",
+		"ESC          Back / lock keystore",
+		"q            Quit",
 	}
 }
 
 func siemMenuHelpOptions() []string {
 	return []string{
-		"'UP/DOWN': move selection",
-		"'LEFT/RIGHT': quick-change provider/model/source",
-		"'PGUP/PGDN': scroll report by page",
-		"'j'/'k': scroll report by line",
-		"'ENTER': edit field, open picker, or run action",
-		"'?': open or close this menu",
-		"'ESC': close menu or return to dashboard",
-		"'q': quit",
+		"[Navigation]",
+		"UP/DOWN      Move field",
+		"LEFT/RIGHT   Cycle workflows",
+		"",
+		"[Editing]",
+		"ENTER        Edit / open / run",
+		"BACKSPACE    Delete while editing",
+		"",
+		"[Report]",
+		"PGUP/PGDN    Scroll report page",
+		"[ / ]        Scroll report line",
+		"",
+		"?            Close this menu",
+		"ESC          Back to dashboard",
+		"q            Quit",
 	}
 }
 
 func whitelistMenuHelpOptions() []string {
 	return []string{
-		"'UP/DOWN' or 'TAB/SHIFT+TAB': move setup selection",
-		"'LEFT/RIGHT' or 'j'/'k': browse focused list",
-		"'ENTER' or 'a': add selected process to whitelist",
-		"'d'/'u'/'x': remove selected whitelist entry",
-		"'?': open or close this menu",
-		"'ESC': return to dashboard",
-		"'q': quit",
+		"[Navigation]",
+		"UP/DOWN      Navigate within panel",
+		"PGUP         Switch to Processes",
+		"PGDN         Switch to Whitelisted",
+		"TAB          Toggle panels",
+		"LEFT/RIGHT   Cycle workflows",
+		"",
+		"[Actions]",
+		"ENTER        Add (processes) / Remove (whitelisted)",
+		"",
+		"?            Close this menu",
+		"ESC          Back to dashboard",
+		"q            Quit",
 	}
 }
 
 func inspectorMenuOptions() []string {
 	return []string{
-		"'UP/DOWN': scroll details",
-		"'TAB/SHIFT+TAB': jump between sections",
-		"'x': toggle explain section",
-		"'k': request kill (k/y to confirm)",
-		"'ESC': close menu",
-		"'ESC' again: return to dashboard",
-		"'?': close this menu",
-		"'q': quit",
+		"[Navigation]",
+		"UP/DOWN      Scroll details",
+		"TAB/BTAB     Jump sections",
+		"LEFT/RIGHT   Cycle workflows",
+		"",
+		"[Actions]",
+		"x            Toggle explain view",
+		"k            Kill process (k then y)",
+		"",
+		"?            Close this menu",
+		"ESC          Back to dashboard",
+		"q            Quit",
 	}
 }
 
 func normalizeDashboardRole(role string) string {
 	role = strings.ToLower(strings.TrimSpace(role))
 	switch role {
-	case "smb-pipe":
-		return "smb-pipe"
-	case "susp-session", "reverse-control", "session":
-		return "session"
-	case "susp-beacon", "beacon":
-		return "beacon"
-	case "susp-tun", "reverse-proxy", "reverse-transport", "reverse-tunnel", "tunnel":
-		return "tunnel"
-	case "proxy-listener", "listener-with-clients", "listener-with-outbound", "listener-only", "listener":
-		return "listener"
-	case "outbound-only", "outbound":
-		return "outbound"
+	case "session", "beacon", "tunnel", "smb-pipe", "listen", "outbound":
+		return role
 	default:
 		return "outbound"
 	}
@@ -601,7 +898,7 @@ func sortedCandidates(cands []shared.Candidate, preset string) []shared.Candidat
 	ageOf := func(c shared.Candidate) int {
 		return dashboardCandidateAgeSeconds(c)
 	}
-	roleOf := func(c shared.Candidate) string { return strings.ToLower(shared.RoleFamily(c.Role)) }
+	roleOf := func(c shared.Candidate) string { return strings.ToLower(c.Role) }
 
 	sort.SliceStable(view, func(i, j int) bool {
 		a, b := view[i], view[j]

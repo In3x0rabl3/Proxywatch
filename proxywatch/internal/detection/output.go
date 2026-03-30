@@ -774,7 +774,7 @@ func normalizeDetectionOutputPath(path, fallback, requiredExt string) (string, e
 	if path == "" {
 		return "", nil
 	}
-	path = expandHomePath(path)
+	path = safeio.ExpandHomePath(path)
 	if filepath.IsAbs(path) {
 		clean := filepath.Clean(path)
 		if clean == "" || clean == "." || clean == string(filepath.Separator) {
@@ -785,7 +785,7 @@ func normalizeDetectionOutputPath(path, fallback, requiredExt string) (string, e
 		}
 		return clean, nil
 	}
-	rel := sanitizeRelativeDetectionPath(path, fallback)
+	rel := safeio.SanitizeRelativePath(path, fallback)
 	out := filepath.Join(detectionOutputRootDir(), rel)
 	if requiredExt != "" && !strings.HasSuffix(strings.ToLower(out), requiredExt) {
 		out += requiredExt
@@ -804,72 +804,12 @@ func ensureDetectionOutputDir(path string) error {
 	return os.MkdirAll(dir, detectionOutputDirFileMode)
 }
 
-func sanitizeRelativeDetectionPath(path, fallback string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return fallback
-	}
-	path = filepath.Clean(path)
-	if path == "." || path == "" {
-		return fallback
-	}
-	path = strings.TrimLeft(path, string(filepath.Separator))
-	for strings.HasPrefix(path, "."+string(filepath.Separator)) {
-		path = strings.TrimPrefix(path, "."+string(filepath.Separator))
-	}
-	parentPrefix := ".." + string(filepath.Separator)
-	for path == ".." || strings.HasPrefix(path, parentPrefix) {
-		if path == ".." {
-			return fallback
-		}
-		path = strings.TrimPrefix(path, parentPrefix)
-	}
-	if path == "" || path == "." {
-		return fallback
-	}
-	return path
-}
-
 func detectionOutputRootDir() string {
-	home := userHomeDir()
+	home := safeio.UserHomeDir()
 	if home == "" {
 		return filepath.Join(".proxywatch", detectionOutputDirName)
 	}
 	return filepath.Join(home, ".proxywatch", detectionOutputDirName)
-}
-
-func expandHomePath(path string) string {
-	if path == "" || path[0] != '~' {
-		return path
-	}
-	home := userHomeDir()
-	if home == "" {
-		return path
-	}
-	if path == "~" {
-		return home
-	}
-	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
-		return filepath.Join(home, path[2:])
-	}
-	return path
-}
-
-func userHomeDir() string {
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		return strings.TrimSpace(home)
-	}
-	for _, key := range []string{"HOME", "USERPROFILE"} {
-		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
-			return val
-		}
-	}
-	drive := strings.TrimSpace(os.Getenv("HOMEDRIVE"))
-	path := strings.TrimSpace(os.Getenv("HOMEPATH"))
-	if drive != "" && path != "" {
-		return drive + path
-	}
-	return ""
 }
 
 func currentDetectionOutputConfig() detectionOutputConfig {

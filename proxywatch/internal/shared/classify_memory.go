@@ -64,12 +64,12 @@ func NormalizeClassifierMemoryPath(path string) string {
 	if path == "" {
 		path = defaultClassifierMemoryPath
 	}
-	path = expandHomePath(path)
+	path = safeio.ExpandHomePath(path)
 	if filepath.IsAbs(path) {
 		return filepath.Clean(path)
 	}
-	rel := sanitizeRelativePath(path, "classifier-memory.json")
-	return filepath.Join(proxywatchDataRoot(), "runtime", rel)
+	rel := safeio.SanitizeRelativePath(path, "classifier-memory.json")
+	return filepath.Join(safeio.ProxywatchDataRoot(), "runtime", rel)
 }
 
 func LoadClassifierMemory(path string) error {
@@ -78,10 +78,15 @@ func LoadClassifierMemory(path string) error {
 	if err != nil {
 		return err
 	}
+	// Treat empty or corrupt (null-byte prefix) files as fresh state.
+	if len(raw) == 0 || raw[0] == 0x00 {
+		return nil
+	}
 
 	var disk classifierMemoryDisk
 	if err := json.Unmarshal(raw, &disk); err != nil {
-		return err
+		// Corrupt file — start fresh rather than failing.
+		return nil
 	}
 	if disk.Version <= 0 {
 		disk.Version = classifierMemoryVersion
@@ -111,8 +116,8 @@ func LoadClassifierMemory(path string) error {
 	LocalTransportLast = cloneIntTimeMap(disk.LocalTransportLast, cutoff)
 	ParentChildFreq = cloneStringIntMap(disk.ParentChildFreq)
 	RareTupleCount = cloneStringIntMap(disk.RareTupleCount)
-	trimStringIntMap(ParentChildFreq, classifierMemoryMaxCountItems)
-	trimStringIntMap(RareTupleCount, classifierMemoryMaxCountItems)
+	TrimStringIntMap(ParentChildFreq, classifierMemoryMaxCountItems)
+	TrimStringIntMap(RareTupleCount, classifierMemoryMaxCountItems)
 
 	ConnFirstSeen = make(map[ConnKey]time.Time, len(disk.ConnFirstSeen))
 	ConnLastSeen = make(map[ConnKey]time.Time, len(disk.ConnFirstSeen))
@@ -189,8 +194,8 @@ func saveClassifierMemory(path string, now time.Time) error {
 		ParentChildFreq:      cloneStringIntMap(ParentChildFreq),
 		RareTupleCount:       cloneStringIntMap(RareTupleCount),
 	}
-	trimStringIntMap(disk.ParentChildFreq, classifierMemoryMaxCountItems)
-	trimStringIntMap(disk.RareTupleCount, classifierMemoryMaxCountItems)
+	TrimStringIntMap(disk.ParentChildFreq, classifierMemoryMaxCountItems)
+	TrimStringIntMap(disk.RareTupleCount, classifierMemoryMaxCountItems)
 
 	disk.ConnFirstSeen = make([]connFirstSeenRecord, 0, len(ConnFirstSeen))
 	for key, first := range ConnFirstSeen {
@@ -326,10 +331,10 @@ func pruneClassifierRuntimeMemory(now time.Time) {
 			continue
 		}
 		if len(behavior.KnownPrefixes) > classifierBehaviorMaxPrefixes {
-			trimStringIntMap(behavior.KnownPrefixes, classifierBehaviorMaxPrefixes)
+			TrimStringIntMap(behavior.KnownPrefixes, classifierBehaviorMaxPrefixes)
 		}
 		if len(behavior.LastRoles) > 8 {
-			trimStringIntMap(behavior.LastRoles, 8)
+			TrimStringIntMap(behavior.LastRoles, 8)
 		}
 	}
 	pruneIntTimeMap(RecentClientSeen, cutoff)
@@ -352,8 +357,8 @@ func pruneClassifierRuntimeMemory(now time.Time) {
 		}
 	}
 
-	trimStringIntMap(ParentChildFreq, classifierMemoryMaxCountItems)
-	trimStringIntMap(RareTupleCount, classifierMemoryMaxCountItems)
+	TrimStringIntMap(ParentChildFreq, classifierMemoryMaxCountItems)
+	TrimStringIntMap(RareTupleCount, classifierMemoryMaxCountItems)
 	if len(ProcessBehaviorByKey) > classifierBehaviorMaxItems {
 		trimProcessBehaviorMap(ProcessBehaviorByKey, classifierBehaviorMaxItems)
 	}
@@ -498,10 +503,10 @@ func cloneProcessBehaviorMap(in map[string]*ProcessBehavior, cutoff time.Time) m
 		copyBehavior.KnownPrefixes = cloneStringIntMap(behavior.KnownPrefixes)
 		copyBehavior.LastRoles = cloneStringIntMap(behavior.LastRoles)
 		if len(copyBehavior.KnownPrefixes) > classifierBehaviorMaxPrefixes {
-			trimStringIntMap(copyBehavior.KnownPrefixes, classifierBehaviorMaxPrefixes)
+			TrimStringIntMap(copyBehavior.KnownPrefixes, classifierBehaviorMaxPrefixes)
 		}
 		if len(copyBehavior.LastRoles) > 8 {
-			trimStringIntMap(copyBehavior.LastRoles, 8)
+			TrimStringIntMap(copyBehavior.LastRoles, 8)
 		}
 		out[key] = &copyBehavior
 	}
@@ -516,7 +521,9 @@ func pruneIntTimeMap(in map[int]time.Time, cutoff time.Time) {
 	}
 }
 
-func trimStringIntMap(in map[string]int, maxItems int) {
+// TrimStringIntMap prunes a string→int map to at most maxItems entries,
+// keeping the highest-count keys (stable by key on ties).
+func TrimStringIntMap(in map[string]int, maxItems int) {
 	if len(in) <= maxItems || maxItems <= 0 {
 		return
 	}
@@ -585,19 +592,3 @@ func trimProcessBehaviorMap(in map[string]*ProcessBehavior, maxItems int) {
 	}
 }
 
-func expandHomePath(path string) string {
-	if path == "" || path[0] != '~' {
-		return path
-	}
-	home := userHomeDir()
-	if home == "" {
-		return path
-	}
-	if path == "~" {
-		return home
-	}
-	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
-		return filepath.Join(home, path[2:])
-	}
-	return path
-}

@@ -633,14 +633,14 @@ func hostOr(process, host string) string {
 }
 
 func roleKindPrefix(role string) string {
-	switch shared.RoleFamily(role) {
-	case "tunnel":
+	switch role {
+	case "tunnel", "smb-pipe":
 		return "Tunnel"
 	case "session":
 		return "Session"
 	case "beacon":
 		return "Beacon"
-	case "listener":
+	case "listen":
 		return "Listener"
 	case "outbound":
 		return "Outbound"
@@ -821,94 +821,25 @@ func normalizeCollectionOutputPath(path string) string {
 	if path == "" {
 		return path
 	}
-	path = expandHomePath(path)
+	path = safeio.ExpandHomePath(path)
 	if filepath.IsAbs(path) {
 		return filepath.Clean(path)
 	}
-	rel := sanitizeRelativeCollectionPath(path, "proxywatch-collection.json")
+	// Strip collections/ prefix before common sanitization.
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if strings.HasPrefix(cleaned, "collections"+string(filepath.Separator)) {
+		cleaned = strings.TrimPrefix(cleaned, "collections"+string(filepath.Separator))
+	}
+	rel := safeio.SanitizeRelativePath(cleaned, "proxywatch-collection.json")
 	return filepath.Join(collectionsRootDir(), rel)
 }
 
 func collectionsRootDir() string {
-	return filepath.Join(proxywatchDataRoot(), "collections")
+	return filepath.Join(safeio.ProxywatchDataRoot(), "collections")
 }
 
 func proxywatchTempDir() string {
-	return filepath.Join(proxywatchDataRoot(), "tmp")
-}
-
-func proxywatchDataRoot() string {
-	home := userHomeDir()
-	if home == "" {
-		return ".proxywatch"
-	}
-	return filepath.Join(home, ".proxywatch")
-}
-
-func userHomeDir() string {
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		return strings.TrimSpace(home)
-	}
-	for _, key := range []string{"HOME", "USERPROFILE"} {
-		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
-			return val
-		}
-	}
-	drive := strings.TrimSpace(os.Getenv("HOMEDRIVE"))
-	path := strings.TrimSpace(os.Getenv("HOMEPATH"))
-	if drive != "" && path != "" {
-		return drive + path
-	}
-	return ""
-}
-
-func sanitizeRelativeCollectionPath(path, fallback string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return fallback
-	}
-	path = filepath.Clean(path)
-	if path == "." || path == "" {
-		return fallback
-	}
-	if strings.HasPrefix(path, "collections"+string(filepath.Separator)) {
-		path = strings.TrimPrefix(path, "collections"+string(filepath.Separator))
-	}
-	if strings.HasPrefix(path, ".proxywatch"+string(filepath.Separator)) {
-		path = strings.TrimPrefix(path, ".proxywatch"+string(filepath.Separator))
-	}
-	for strings.HasPrefix(path, "."+string(filepath.Separator)) {
-		path = strings.TrimPrefix(path, "."+string(filepath.Separator))
-	}
-	path = strings.TrimLeft(path, string(filepath.Separator))
-	parentPrefix := ".." + string(filepath.Separator)
-	for path == ".." || strings.HasPrefix(path, parentPrefix) {
-		if path == ".." {
-			return fallback
-		}
-		path = strings.TrimPrefix(path, parentPrefix)
-	}
-	if path == "" || path == "." {
-		return fallback
-	}
-	return path
-}
-
-func expandHomePath(path string) string {
-	if path == "" || path[0] != '~' {
-		return path
-	}
-	home := userHomeDir()
-	if home == "" {
-		return path
-	}
-	if path == "~" {
-		return home
-	}
-	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
-		return filepath.Join(home, path[2:])
-	}
-	return path
+	return filepath.Join(safeio.ProxywatchDataRoot(), "tmp")
 }
 
 func mapToSlice(m map[string]Node) []Node {

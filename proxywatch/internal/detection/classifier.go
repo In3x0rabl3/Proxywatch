@@ -35,6 +35,9 @@ func Classify(
 	var interesting []shared.Candidate
 	for i := range candidates {
 		c := &candidates[i]
+		if c.Proc == nil {
+			continue
+		}
 		if strings.TrimSpace(c.Host) == "" {
 			c.Host = hostScope
 		}
@@ -170,6 +173,11 @@ func buildCandidates(snap *shared.Snapshot) []shared.Candidate {
 		umap[u.Pid] = append(umap[u.Pid], u)
 	}
 
+	rmap := make(map[int][]shared.RawSocketConn)
+	for _, r := range snap.RawConns {
+		rmap[r.Pid] = append(rmap[r.Pid], r)
+	}
+
 	seen := make(map[int]bool)
 	for pid := range lmap {
 		seen[pid] = true
@@ -178,6 +186,9 @@ func buildCandidates(snap *shared.Snapshot) []shared.Candidate {
 		seen[pid] = true
 	}
 	for pid := range umap {
+		seen[pid] = true
+	}
+	for pid := range snap.RawSocketPIDs {
 		seen[pid] = true
 	}
 	seedConnHistoryFromSnapshot(cmap, now)
@@ -204,12 +215,31 @@ func buildCandidates(snap *shared.Snapshot) []shared.Candidate {
 			Listeners:         lmap[pid],
 			Conns:             cmap[pid],
 			UDPListeners:      umap[pid],
+			RawConns:          rmap[pid],
 			DelegatedEgress:   delegated[pid].ownerPID > 0,
 			DelegatedStrong:   delegated[pid].strong,
 			DelegatedOwnerPID: delegated[pid].ownerPID,
 			DelegatedOwner:    delegated[pid].ownerName,
+			RawSocket:         snap.RawSocketPIDs[pid],
 		})
 	}
 
 	return out
+}
+
+// ClassifyAllForCalibration scores every buildable candidate from a snapshot,
+// without display-gating/min-score filtering used by interactive views.
+func ClassifyAllForCalibration(snap *shared.Snapshot) []shared.Candidate {
+	if snap == nil {
+		return nil
+	}
+	candidates := buildCandidates(snap)
+	refreshObservedExternalPortProfile(candidates)
+	for i := range candidates {
+		ScoreCandidate(&candidates[i])
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return shared.CandidateLess(candidates[i], candidates[j])
+	})
+	return candidates
 }

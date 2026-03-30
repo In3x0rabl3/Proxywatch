@@ -186,7 +186,7 @@ func readTokenFile(path string) string {
 }
 
 func agentAuthPath(name string) string {
-	return filepath.Join(proxywatchDataRoot(), agentAuthDirName, name)
+	return filepath.Join(safeio.ProxywatchDataRoot(), agentAuthDirName, name)
 }
 
 func agentTokenPath() string {

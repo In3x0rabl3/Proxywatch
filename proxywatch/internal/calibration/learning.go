@@ -30,6 +30,10 @@ type learningModel struct {
 	RoleWeighted       map[string]float64        `json:"role_weighted"`
 	StateWeighted      map[string]float64        `json:"state_weighted"`
 	Processes          map[string]learnedProcess `json:"processes"`
+
+	// Contamination recovery tracking.
+	HighContaminationRuns int       `json:"high_contamination_runs,omitempty"`
+	LastRecovery          time.Time `json:"last_recovery,omitempty"`
 }
 
 type learnedProcess struct {
@@ -129,6 +133,18 @@ func updateLearningModel(model *learningModel, samples []shared.Candidate, now t
 	contaminationBefore := learningContaminationRatio(model)
 	runContamination := runSuspiciousRatio(samples)
 	quarantineNormalLearning := contaminationBefore >= 0.20 || runContamination >= 0.15
+
+	// Contamination recovery: if contamination stays above 50% for 3+
+	// consecutive runs, reset the suspicious weights so the model can
+	// self-heal after a red-team engagement or prolonged incident.
+	if contaminationBefore >= 0.50 {
+		model.HighContaminationRuns++
+	} else {
+		model.HighContaminationRuns = 0
+	}
+	if model.HighContaminationRuns >= 3 {
+		recoverLearningModel(model, now)
+	}
 	for _, sample := range samples {
 		if sample.Proc == nil {
 			continue
@@ -140,14 +156,14 @@ func updateLearningModel(model *learningModel, samples []shared.Candidate, now t
 			continue
 		}
 		model.ObservedSamples++
-		if family == "session" || family == "beacon" || family == "tunnel" {
+		if isSuspiciousFamily(family) {
 			model.ObservedSuspicious++
 		}
 
 		model.WeightedSamples += weight
 		model.RoleWeighted[family] += weight
 		model.StateWeighted[state] += weight
-		if family == "session" || family == "beacon" || family == "tunnel" {
+		if isSuspiciousFamily(family) {
 			model.SuspiciousWeighted += weight
 		}
 		if !learningProcessEligible(sample, family, quarantineNormalLearning) {
@@ -166,7 +182,7 @@ func updateLearningModel(model *learningModel, samples []shared.Candidate, now t
 		entry.SeenWeight += weight
 		entry.AvgOutbound = weightedAvg(entry.AvgOutbound, prevSeen, float64(sample.OutTotal), weight)
 		entry.AvgInbound = weightedAvg(entry.AvgInbound, prevSeen, float64(sample.InboundTotal), weight)
-		if family == "session" || family == "beacon" || family == "tunnel" {
+		if isSuspiciousFamily(family) {
 			entry.SuspiciousWeight += weight
 		}
 		if sample.StrongEvidence {
@@ -184,7 +200,7 @@ func updateLearningModel(model *learningModel, samples []shared.Candidate, now t
 	return model
 }
 
-func buildLearningContext(model *learningModel) LearningContext {
+func buildLearningContext(model *learningModel, currentSamples ...[]shared.Candidate) LearningContext {
 	model = ensureLearningModel(model)
 	ctx := LearningContext{
 		ModelPath:       learningModelPath(),
@@ -198,7 +214,17 @@ func buildLearningContext(model *learningModel) LearningContext {
 		ctx.Notes = []string{"No historical baseline yet. Complete a few calibrations to learn normal traffic shape."}
 		return ctx
 	}
-	ctx.SuspiciousRatio = learningContaminationRatio(model)
+	// Use the higher of the model's accumulated ratio and the current run's
+	// ratio so operators see the real contamination level, not a value diluted
+	// by historical decay.
+	modelRatio := learningContaminationRatio(model)
+	ctx.SuspiciousRatio = modelRatio
+	if len(currentSamples) > 0 && len(currentSamples[0]) > 0 {
+		runRatio := runSuspiciousRatio(currentSamples[0])
+		if runRatio > ctx.SuspiciousRatio {
+			ctx.SuspiciousRatio = runRatio
+		}
+	}
 	ctx.ContaminationPct = int(math.Round(ctx.SuspiciousRatio * 100))
 
 	for role, v := range model.RoleWeighted {
@@ -362,7 +388,7 @@ func sampleState(sample shared.Candidate) string {
 func learningSampleWeight(sample shared.Candidate, family string) float64 {
 	weight := 1.0
 	switch family {
-	case "session", "beacon", "tunnel":
+	case "session", "beacon", "tunnel", "smb-pipe":
 		weight = 0.20
 	case "other":
 		weight = 0.5
@@ -379,23 +405,29 @@ func learningSampleWeight(sample shared.Candidate, family string) float64 {
 	return weight
 }
 
+// isSuspiciousFamily returns true for roles that indicate C2, tunneling,
+// or lateral movement.
+func isSuspiciousFamily(family string) bool {
+	switch family {
+	case "session", "beacon", "tunnel", "smb-pipe":
+		return true
+	default:
+		return false
+	}
+}
+
 func learningContaminationRatio(model *learningModel) float64 {
 	if model == nil {
 		return 0
 	}
-	weightedRatio := 0.0
-	if model.WeightedSamples > 0 {
-		susp := model.RoleWeighted["session"] + model.RoleWeighted["beacon"] + model.RoleWeighted["tunnel"]
-		weightedRatio = susp / model.WeightedSamples
-	}
-	observedRatio := 0.0
+	// Use the observed ratio (actual count of suspicious candidates) rather
+	// than the weighted ratio. The weighted ratio suppresses suspicious roles
+	// to 0.20x which makes contamination appear artificially low. Operators
+	// need to see the real proportion of suspicious candidates.
 	if model.ObservedSamples > 0 {
-		observedRatio = model.ObservedSuspicious / model.ObservedSamples
+		return model.ObservedSuspicious / model.ObservedSamples
 	}
-	if observedRatio > weightedRatio {
-		return observedRatio
-	}
-	return weightedRatio
+	return 0
 }
 
 func runSuspiciousRatio(samples []shared.Candidate) float64 {
@@ -410,7 +442,7 @@ func runSuspiciousRatio(samples []shared.Candidate) float64 {
 		}
 		total++
 		family := shared.RoleFamily(sample.Role)
-		if family == "session" || family == "beacon" || family == "tunnel" {
+		if isSuspiciousFamily(family) {
 			susp++
 		}
 	}
@@ -424,7 +456,7 @@ func learningProcessEligible(sample shared.Candidate, family string, quarantine 
 	if sample.Proc == nil {
 		return false
 	}
-	if family == "session" || family == "beacon" || family == "tunnel" {
+	if isSuspiciousFamily(family) {
 		return false
 	}
 	if sample.ActiveProxying || sample.StrongEvidence {
@@ -495,4 +527,24 @@ func weightedAvg(current, currentWeight, value, weight float64) float64 {
 
 func round1(v float64) float64 {
 	return math.Round(v*10) / 10
+}
+
+// recoverLearningModel resets suspicious weights so the model can self-heal
+// after prolonged contamination (e.g. red-team exercise, ongoing incident).
+func recoverLearningModel(model *learningModel, now time.Time) {
+	// Clear suspicious process entries.
+	for key, proc := range model.Processes {
+		if proc.SuspiciousWeight > 0 {
+			proc.SuspiciousWeight = 0
+			proc.StrongWeight = 0
+			proc.ActiveWeight = 0
+			model.Processes[key] = proc
+		}
+	}
+	// Reset global suspicious counters to 10% of current weighted samples
+	// so the model retains some baseline awareness without being poisoned.
+	model.SuspiciousWeighted = model.WeightedSamples * 0.10
+	model.ObservedSuspicious = model.ObservedSamples * 0.10
+	model.HighContaminationRuns = 0
+	model.LastRecovery = now
 }

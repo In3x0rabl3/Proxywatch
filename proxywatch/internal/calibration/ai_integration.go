@@ -493,16 +493,16 @@ func samplePromptPriority(sample shared.Candidate) int {
 	if sample.StrongEvidence {
 		priority += 450
 	}
-	switch shared.RoleFamily(sample.Role) {
+	switch sample.Role {
 	case "session":
 		priority += 320
 	case "beacon":
 		priority += 300
-	case "tunnel":
+	case "tunnel", "smb-pipe":
 		priority += 280
 	case "outbound":
 		priority += 140
-	case "listener":
+	case "listen":
 		priority += 100
 	default:
 		priority += 50
@@ -820,7 +820,11 @@ func doJSONRequest(ctx context.Context, url string, headers map[string]string, b
 			return raw, nil
 		}
 
-		msg := fmt.Errorf("api %s returned status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(raw)))
+		body := strings.TrimSpace(string(raw))
+		if len(body) > 500 {
+			body = body[:500] + "..."
+		}
+		msg := fmt.Errorf("api %s returned status %d: %s", url, resp.StatusCode, body)
 		lastErr = msg
 		if attempt < maxAttempts && isRetryableStatus(resp.StatusCode) {
 			if !sleepWithContext(ctx, time.Duration(attempt*2)*time.Second) {
@@ -840,6 +844,9 @@ func calibrationHTTPTimeout() time.Duration {
 	raw := strings.TrimSpace(keystore.RuntimeValue("CALIBRATION_HTTP_TIMEOUT"))
 	if raw != "" {
 		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			if parsed > 5*time.Minute {
+				parsed = 5 * time.Minute
+			}
 			return parsed
 		}
 	}
@@ -930,4 +937,14 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// RequestSIEMAI exposes the shared calibration AI request pipeline for the
+// SIEM package, so SIEM generation can remain outside the calibration package
+// while reusing provider/runtime auth and retry behavior.
+func RequestSIEMAI(ctx context.Context, provider, model, system, user string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return requestCalibrationAI(ctx, provider, model, system, user)
 }

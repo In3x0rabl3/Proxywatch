@@ -25,7 +25,7 @@ const (
 
 var (
 	providerLabels  = []string{"OpenAI", "Anthropic", "Local"}
-	durationOptions = []string{"10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "4h"}
+	durationOptions = []string{"10s", "30s", "1m", "5m", "15m", "30m"}
 )
 
 type ProviderAccess struct {
@@ -100,6 +100,7 @@ type Report struct {
 	Memory                CalibrationMemory     `json:"memory,omitempty"`
 	SimilarPast           []SimilarCalibration  `json:"similar_past,omitempty"`
 	ContourHintsApplied   int                   `json:"contour_hints_applied,omitempty"`
+	EnvFingerprint        string                `json:"env_fingerprint,omitempty"`
 	ReportLines           []string              `json:"report_lines,omitempty"`
 }
 
@@ -135,6 +136,7 @@ type RunInput struct {
 	SampleEvery  time.Duration
 	Samples      []shared.Candidate
 	ContourHints []shared.ContourHint
+	OnProgress   func(lines []string)
 }
 
 type RunResult struct {
@@ -380,9 +382,27 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 		return RunResult{}, fmt.Errorf("duration must be greater than 0")
 	}
 
+	// Progress log — accumulated lines pushed to the UI during execution.
+	// Small pauses between steps let the UI animate each step turning green.
+	progress := make([]string, 0, 32)
+	emit := func(line string) {
+		progress = append(progress, line)
+		if input.OnProgress != nil {
+			input.OnProgress(progress)
+		}
+	}
+	stepPause := func() {
+		select {
+		case <-ctx.Done():
+		case <-time.After(600 * time.Millisecond):
+		}
+	}
+
+	emit("[*] Validating provider access...")
+	stepPause()
 	access := DetectProviderAccess()
 	if ready, reason := ProviderReady(provider, access); !ready {
-		return RunResult{}, fmt.Errorf("provider unavailable: %s", reason)
+		return RunResult{}, fmt.Errorf("%s — open a keystore with the API key first", reason)
 	}
 
 	outputPath := normalizeOutputPath(input.Output)
@@ -390,20 +410,42 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 	runID := fmt.Sprintf("%s-%06d", now.Format("20060102-150405"), now.UnixNano()%1_000_000)
 	scopedSamples := filterSamplesByScope(input.Samples, scope)
 	scopedSamples, contourHintsApplied := applyContourHints(scopedSamples, input.ContourHints)
+	emit(fmt.Sprintf("[*] Analyzing %d candidates (%s scope)...", len(input.Samples), scope))
+	stepPause()
 	uniqueSamples, roleCounts, stateCounts, topProcesses := analyzeSamples(scopedSamples)
+	emit(fmt.Sprintf("[+] %d candidates filtered by scope", len(uniqueSamples)))
+	stepPause()
+
+	// Build environment fingerprint from top process names + role distribution.
+	fpParts := make([]string, 0, 8)
+	fpLimit := len(topProcesses)
+	if fpLimit > 8 {
+		fpLimit = 8
+	}
+	for _, p := range topProcesses[:fpLimit] {
+		fpParts = append(fpParts, p.Process)
+	}
+	sort.Strings(fpParts)
+	envFingerprint := fmt.Sprintf("%s|%v", strings.Join(fpParts, ","), roleCounts)
+
 	current := CurrentSettings()
+	emit("[*] Loading learning model...")
+	stepPause()
 	learningModel, learningErr := loadLearningModel()
 	if learningErr != nil {
 		learningModel = defaultLearningModel()
 	}
-	learningCtx := buildLearningContext(learningModel)
+	learningCtx := buildLearningContext(learningModel, uniqueSamples)
 	learningNotes := make([]string, 0, 4)
 	if learningErr != nil {
 		learningNotes = append(learningNotes, "Learning model load failed: "+trimCalibrationError(learningErr.Error(), 220))
 	}
+	emit(fmt.Sprintf("[+] Learning model loaded (%d runs, %.0f samples)", learningCtx.Runs, learningCtx.WeightedSamples))
+	stepPause()
 
 	analysisMode := "ai"
 	analysisError := ""
+	emit(fmt.Sprintf("[*] Calling AI provider (%s / %s)...", provider, model))
 	aiResult, err := calibrateWithAI(ctx, provider, model, scope, input.Duration, current, uniqueSamples, roleCounts, stateCounts, topProcesses, learningCtx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -411,6 +453,7 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 		}
 		analysisMode = "fallback"
 		analysisError = trimCalibrationError(err.Error(), 320)
+		emit("[*] Running fallback tuning heuristics...")
 		tuned, recs, summary := recommendTuning(current, roleCounts, stateCounts, len(uniqueSamples), input.Duration, learningCtx)
 		recs = append(recs, "AI analysis was unavailable for this run; heuristic fallback recommendations were generated from collected telemetry.")
 		aiResult = aiCalibrationResult{
@@ -425,6 +468,9 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 			},
 			Settings: tuned,
 		}
+		emit("[+] Fallback analysis complete")
+	} else {
+		emit("[+] AI analysis complete")
 	}
 	tuned := aiResult.Settings
 	recommendations := sanitizeRecommendations(aiResult.Recommendations)
@@ -434,22 +480,24 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 	if summary == "" {
 		if analysisMode == "ai" {
 			summary = fmt.Sprintf(
-				"AI calibration analyzed %d unique processes in %s (session=%d beacon=%d tunnel=%d outbound=%d).",
+				"AI calibration analyzed %d unique processes in %s (session=%d beacon=%d tunnel=%d listen=%d outbound=%d).",
 				len(uniqueSamples),
 				input.Duration.Round(time.Second),
 				roleCounts["session"],
 				roleCounts["beacon"],
 				roleCounts["tunnel"],
+				roleCounts["listen"],
 				roleCounts["outbound"],
 			)
 		} else {
 			summary = fmt.Sprintf(
-				"Fallback calibration analyzed %d unique processes in %s (session=%d beacon=%d tunnel=%d outbound=%d).",
+				"Fallback calibration analyzed %d unique processes in %s (session=%d beacon=%d tunnel=%d listen=%d outbound=%d).",
 				len(uniqueSamples),
 				input.Duration.Round(time.Second),
 				roleCounts["session"],
 				roleCounts["beacon"],
 				roleCounts["tunnel"],
+				roleCounts["listen"],
 				roleCounts["outbound"],
 			)
 		}
@@ -482,13 +530,15 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 		OutputPath:           outputPath,
 		RecommendationSource: recommendationSource,
 		ContourHintsApplied:  contourHintsApplied,
+		EnvFingerprint:       envFingerprint,
 	}
 
+	emit("[*] Updating learning model...")
 	learningModel = updateLearningModel(learningModel, scopedSamples, now)
 	if err := saveLearningModel(learningModel); err != nil {
 		learningNotes = append(learningNotes, "Learning model save failed: "+trimCalibrationError(err.Error(), 220))
 	}
-	learningAfter := buildLearningContext(learningModel)
+	learningAfter := buildLearningContext(learningModel, uniqueSamples)
 	report.LearningModelPath = learningAfter.ModelPath
 	report.LearningRuns = learningAfter.Runs
 	report.LearningSamples = learningAfter.WeightedSamples
@@ -499,15 +549,25 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 		return RunResult{}, err
 	}
 
+	emit("[*] Running validation (baseline vs tuned)...")
 	if err := BuildReportArtifacts(&report, current, uniqueSamples, input.SampleEvery); err != nil {
 		return RunResult{}, err
 	}
+	verdict := "neutral"
+	if report.Validation.Improved {
+		verdict = "improved"
+	} else if report.Validation.ScoreDelta < 0 {
+		verdict = "regressed"
+	}
+	emit(fmt.Sprintf("[+] Quality: %d -> %d (%s)", report.Validation.BaselineScore, report.Validation.TunedScore, verdict))
 	if err := ctx.Err(); err != nil {
 		return RunResult{}, err
 	}
+	emit("[*] Writing report and profile...")
 	if err := writeJSONFile(outputPath, report); err != nil {
 		return RunResult{}, err
 	}
+	emit(fmt.Sprintf("[+] Report saved to %s", outputPath))
 
 	profile := Profile{
 		Name:            profileName,
@@ -756,7 +816,7 @@ func profilesPath() string {
 }
 
 func calibrationRoot() string {
-	return expandHomePath(defaultCalibrationDir)
+	return safeio.ExpandHomePath(defaultCalibrationDir)
 }
 
 func writeJSONFile(path string, value any) error {
@@ -782,41 +842,15 @@ func normalizeOutputPath(path string) string {
 	if path == "" {
 		path = defaultOutputPath
 	}
-	path = expandHomePath(path)
+	path = safeio.ExpandHomePath(path)
 	if filepath.IsAbs(path) {
 		path = filepath.Clean(path)
 	} else {
-		rel := sanitizeRelativeOutputPath(path, "latest.json")
+		rel := safeio.SanitizeRelativePath(path, "latest.json")
 		path = filepath.Join(calibrationRoot(), rel)
 	}
 	if !strings.HasSuffix(strings.ToLower(path), ".json") {
 		path += ".json"
-	}
-	return path
-}
-
-func sanitizeRelativeOutputPath(path, fallback string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return fallback
-	}
-	path = filepath.Clean(path)
-	if path == "." || path == "" {
-		return fallback
-	}
-	for strings.HasPrefix(path, "."+string(filepath.Separator)) {
-		path = strings.TrimPrefix(path, "."+string(filepath.Separator))
-	}
-	path = strings.TrimLeft(path, string(filepath.Separator))
-	parentPrefix := ".." + string(filepath.Separator)
-	for path == ".." || strings.HasPrefix(path, parentPrefix) {
-		if path == ".." {
-			return fallback
-		}
-		path = strings.TrimPrefix(path, parentPrefix)
-	}
-	if path == "" || path == "." {
-		return fallback
 	}
 	return path
 }
@@ -854,8 +888,8 @@ func analyzeSamples(samples []shared.Candidate) ([]shared.Candidate, map[string]
 		"session":  0,
 		"beacon":   0,
 		"tunnel":   0,
+		"listen":   0,
 		"outbound": 0,
-		"listener": 0,
 		"other":    0,
 	}
 	stateCounts := map[string]int{
@@ -1002,7 +1036,7 @@ func recommendTuning(current TuningSettings, roles, states map[string]int, total
 	}
 
 	suspicious := roles["session"] + roles["beacon"] + roles["tunnel"]
-	outbound := roles["outbound"]
+	outbound := roles["listen"] + roles["outbound"]
 	ratio := float64(suspicious) / float64(maxInt(total, 1))
 	baselineSusp := learning.SuspiciousRatio
 

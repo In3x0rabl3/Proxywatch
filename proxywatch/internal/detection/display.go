@@ -18,7 +18,7 @@ func shouldDisplayCandidate(c *shared.Candidate, now time.Time) bool {
 	}
 
 	hist := getHistory(historyPIDForCandidate(c), now)
-	if c.Role == "susp-session" && shouldDelayWeakSession(c) {
+	if c.Role == "session" && shouldDelayWeakSession(c) {
 		if !hist.LastDisplayEval.IsZero() && now.Sub(hist.LastDisplayEval) > stableDisplayResetGap {
 			hist.DisplayStreak = 0
 		}
@@ -80,7 +80,7 @@ func shouldShowImmediateUserEgress(c *shared.Candidate) bool {
 		return false
 	}
 
-	path := normalizeDisplayPath(c.Proc.ExePath)
+	path := shared.NormalizeExePath(c.Proc.ExePath)
 	if path == "" {
 		return false
 	}
@@ -97,7 +97,3 @@ func shouldShowImmediateUserEgress(c *shared.Candidate) bool {
 	return false
 }
 
-func normalizeDisplayPath(path string) string {
-	path = strings.ToLower(strings.TrimSpace(path))
-	return strings.ReplaceAll(path, "\\", "/")
-}

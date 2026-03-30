@@ -63,8 +63,12 @@ func FromPBCandidate(p *pb.Candidate, host string) shared.Candidate {
 	if p == nil {
 		return shared.Candidate{}
 	}
+	h := p.Host
+	if h == "" {
+		h = host
+	}
 	out := shared.Candidate{
-		Host:                   firstNonEmpty(p.Host, host),
+		Host:                   h,
 		Proc:                   FromPBProcess(p.Proc),
 		Score:                  int(p.Score),
 		Confidence:             int(p.Confidence),
@@ -131,6 +135,8 @@ func ToPBProcess(p *shared.ProcessInfo) *pb.ProcessInfo {
 		IOOtherBps:   p.IOOtherBps,
 		CpuTimeNanos: int64(p.CpuTime),
 		WindowTitle:  p.WindowTitle,
+		CmdLine:      p.CmdLine,
+		LoadedLibs:   append([]string(nil), p.LoadedLibs...),
 	}
 }
 
@@ -158,6 +164,8 @@ func FromPBProcess(p *pb.ProcessInfo) *shared.ProcessInfo {
 		IOOtherBps:   p.IOOtherBps,
 		CpuTime:      time.Duration(p.CpuTimeNanos),
 		WindowTitle:  p.WindowTitle,
+		CmdLine:      p.CmdLine,
+		LoadedLibs:   append([]string(nil), p.LoadedLibs...),
 	}
 }
 
@@ -221,15 +229,6 @@ func FromPBUDP(u *pb.UDPListenerInfo) shared.UDPListenerInfo {
 		LocalAddress: u.LocalAddress,
 		LocalPort:    int(u.LocalPort),
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func clampInt32(v int) int32 {

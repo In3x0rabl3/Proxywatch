@@ -3,8 +3,6 @@ package calibration
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -395,23 +393,6 @@ func adjustDuration(raw string, delta, min, max time.Duration) string {
 		base = max
 	}
 	return base.String()
-}
-
-func expandHomePath(path string) string {
-	if path == "" || path[0] != '~' {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return path
-	}
-	if path == "~" {
-		return home
-	}
-	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
-		return filepath.Join(home, path[2:])
-	}
-	return path
 }
 
 func normalizeProvider(provider string) string {

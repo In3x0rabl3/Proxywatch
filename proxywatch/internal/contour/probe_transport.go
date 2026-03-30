@@ -260,30 +260,6 @@ func readTCPWithIdleTimeout(conn net.Conn, maxBytes int, idle time.Duration) ([]
 	}
 }
 
-func readTCPOnce(conn net.Conn, maxBytes int, timeout time.Duration) ([]byte, error) {
-	if conn == nil {
-		return nil, io.EOF
-	}
-	if maxBytes <= 0 {
-		maxBytes = 64 * 1024
-	}
-	if timeout <= 0 {
-		timeout = 2 * time.Second
-	}
-	buf := make([]byte, maxBytes)
-	_ = conn.SetReadDeadline(time.Now().Add(timeout))
-	n, err := conn.Read(buf)
-	if n > 0 {
-		out := make([]byte, n)
-		copy(out, buf[:n])
-		return out, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return nil, io.EOF
-}
-
 func readTCPExact(conn net.Conn, n int, timeout time.Duration) ([]byte, error) {
 	if conn == nil {
 		return nil, io.EOF

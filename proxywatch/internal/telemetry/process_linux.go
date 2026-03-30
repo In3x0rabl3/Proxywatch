@@ -73,6 +73,8 @@ func readProcess(pid int) *shared.ProcessInfo {
 		IOWriteBytes: ioWrite,
 		IOOtherBytes: ioOther,
 		CpuTime:      cpuTime,
+		CmdLine:      readCmdLine(pid),
+		LoadedLibs:   readNotableLibs(pid),
 	}
 }
 
@@ -160,4 +162,70 @@ func readCPUTime(statFields []string) time.Duration {
 		return time.Duration(math.MaxInt64)
 	}
 	return time.Duration(totalTicks * nsPerTick)
+}
+
+func readCmdLine(pid int) string {
+	path := filepath.Join("/proc", strconv.Itoa(pid), "cmdline")
+	raw, err := safeio.ReadFile(path)
+	if err != nil || len(raw) == 0 {
+		return ""
+	}
+	// /proc/pid/cmdline uses null bytes as arg separators.
+	for i := range raw {
+		if raw[i] == 0 {
+			raw[i] = ' '
+		}
+	}
+	cmd := strings.TrimSpace(string(raw))
+	// Cap at 1024 chars to avoid storing huge argument lists.
+	if len(cmd) > 1024 {
+		cmd = cmd[:1024]
+	}
+	return cmd
+}
+
+// notableLibPatterns are substrings that indicate proxy/tunnel/crypto libraries
+// worth surfacing in process metadata.
+var notableLibPatterns = []string{
+	"libssh", "libssl", "libcrypto", "libgnutls",
+	"libproxy", "libcurl", "libsocks", "libtun",
+	"libpcap", "libnet", "libnghttp", "libwolfssl",
+	"libnss3", "libnspr4",
+}
+
+func readNotableLibs(pid int) []string {
+	path := filepath.Join("/proc", strconv.Itoa(pid), "maps")
+	raw, err := safeio.ReadFile(path)
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var libs []string
+	sc := bufio.NewScanner(strings.NewReader(string(raw)))
+	for sc.Scan() {
+		line := sc.Text()
+		// maps lines end with the mapped file path after the last space.
+		idx := strings.LastIndexByte(line, ' ')
+		if idx < 0 {
+			continue
+		}
+		mapped := strings.TrimSpace(line[idx+1:])
+		if mapped == "" || mapped[0] != '/' {
+			continue
+		}
+		base := strings.ToLower(filepath.Base(mapped))
+		for _, pat := range notableLibPatterns {
+			if strings.Contains(base, pat) {
+				if _, dup := seen[base]; !dup {
+					seen[base] = struct{}{}
+					libs = append(libs, base)
+				}
+				break
+			}
+		}
+		if len(libs) >= 20 {
+			break
+		}
+	}
+	return libs
 }

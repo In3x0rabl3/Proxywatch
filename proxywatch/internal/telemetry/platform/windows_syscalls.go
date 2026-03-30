@@ -17,6 +17,9 @@ var (
 	ProcGetExtendedTcp = IPHlpapi.NewProc("GetExtendedTcpTable")
 	ProcGetExtendedUdp = IPHlpapi.NewProc("GetExtendedUdpTable")
 
+	ModNtdll                       = windows.NewLazySystemDLL("ntdll.dll")
+	ProcNtQueryInformationProcess  = ModNtdll.NewProc("NtQueryInformationProcess")
+
 	ModVersion                 = windows.NewLazySystemDLL("version.dll")
 	ProcGetFileVersionInfoSize = ModVersion.NewProc("GetFileVersionInfoSizeW")
 	ProcGetFileVersionInfo     = ModVersion.NewProc("GetFileVersionInfoW")
@@ -28,7 +31,18 @@ const (
 	AF_INET6                = 23
 	TCP_TABLE_OWNER_PID_ALL = 5
 	UDP_TABLE_OWNER_PID     = 1
+
+	// NtQueryInformationProcess info classes
+	ProcessBasicInformation = 0
+	ProcessCommandLineInfo  = 60
 )
+
+// UnicodeString matches the Windows UNICODE_STRING structure.
+type UnicodeString struct {
+	Length        uint16
+	MaximumLength uint16
+	Buffer        uintptr
+}
 
 type ProcessMemoryCounters struct {
 	Cb             uint32

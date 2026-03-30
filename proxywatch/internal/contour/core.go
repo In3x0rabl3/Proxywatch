@@ -32,12 +32,31 @@ type RunInput struct {
 	ProbeTarget string
 	ProbeMode   string
 	Samples     []shared.Candidate
+	OnProgress  func(lines []string)       // called with cumulative progress lines during execution
+	OnPartial   func(report Report)         // called with partial report as data becomes available
 }
 
 type RunResult struct {
 	Report     Report
 	ReportPath string
 	Hints      []shared.ContourHint
+}
+
+// ServiceSummary captures classified egress services for a contour report.
+type ServiceSummary struct {
+	TotalClassified int                  `json:"total_classified"`
+	HighRisk        int                  `json:"high_risk"`
+	Services        []ServiceReportEntry `json:"services,omitempty"`
+	Categories      map[string]int       `json:"categories,omitempty"`
+}
+
+// ServiceReportEntry is one classified service in the report.
+type ServiceReportEntry struct {
+	Name     string `json:"name"`
+	Category string `json:"category"`
+	Risk     string `json:"risk"`
+	Conns    int    `json:"conns"`
+	UniqueIP int    `json:"unique_ips"`
 }
 
 type Report struct {
@@ -55,6 +74,7 @@ type Report struct {
 	Findings           []Finding            `json:"findings"`
 	Hints              []shared.ContourHint `json:"hints"`
 	Probe              *ProbeSummary        `json:"probe,omitempty"`
+	EgressServices     *ServiceSummary      `json:"egress_services,omitempty"`
 	ReportLines        []string             `json:"report_lines,omitempty"`
 }
 
@@ -95,6 +115,20 @@ type candidateAggregate struct {
 	portExt   map[int]int
 	tcpListen map[int]struct{}
 	udpListen map[int]struct{}
+
+	// Service-aware tracking (populated after resolveExternalServices).
+	services *serviceProfile
+
+	// Port distribution for protocol-mismatch detection.
+	portProtoHits map[int]int // external port -> connection count
+
+	// DNS-port traffic tracking.
+	dnsPortConns  int // connections to port 53 or 853
+	httpsConns    int // connections to port 443
+	sshConns      int // connections to port 22
+	socksConns    int // connections to typical SOCKS ports (1080, etc.)
+	longLivedExt  int // OutLongLived from candidate
+	shortLivedExt int // OutShortLived from candidate
 }
 
 func DefaultOutputPath() string {
@@ -124,7 +158,7 @@ func NewRunOutputPath() string {
 	now := time.Now().UTC()
 	day := now.Format("20060102")
 	name := fmt.Sprintf("proxywatch-contour-%s-%06d.json", now.Format("20060102-150405"), now.UnixNano()%1_000_000)
-	return filepath.Join(expandHomePath(defaultContourDir), day, name)
+	return filepath.Join(safeio.ExpandHomePath(defaultContourDir), day, name)
 }
 
 func Execute(input RunInput) (RunResult, error) {
@@ -141,6 +175,16 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 	if err := ctx.Err(); err != nil {
 		return RunResult{}, err
 	}
+
+	// Progress log — accumulated lines pushed to the UI during execution.
+	progress := make([]string, 0, 32)
+	emit := func(line string) {
+		progress = append(progress, line)
+		if input.OnProgress != nil {
+			input.OnProgress(progress)
+		}
+	}
+
 	source := strings.TrimSpace(input.Source)
 	if source == "" {
 		source = "all"
@@ -153,18 +197,84 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 	now := time.Now().UTC()
 	runID := fmt.Sprintf("%s-%06d", now.Format("20060102-150405"), now.UnixNano()%1_000_000)
 
+	uniquePIDs := make(map[int]struct{}, len(input.Samples))
+	for _, s := range input.Samples {
+		if s.Proc != nil {
+			uniquePIDs[s.Proc.Pid] = struct{}{}
+		}
+	}
+	emit(fmt.Sprintf("[*] Analyzing %d samples from %d processes...", len(input.Samples), len(uniquePIDs)))
 	scoped := filterBySource(input.Samples, source)
 	if err := ctx.Err(); err != nil {
 		return RunResult{}, err
 	}
 	aggs := aggregateCandidates(scoped)
-	findings := buildFindings(aggs)
+	emit(fmt.Sprintf("[*] Aggregated %d candidate profiles", len(aggs)))
+
+	// Resolve external IPs to known cloud/SaaS services via reverse DNS.
+	emit("[*] Resolving external IPs to cloud services (reverse DNS)...")
+	enrichAggregatesWithServices(ctx, aggs)
+	svcCount := 0
+	for _, agg := range aggs {
+		if agg.services != nil {
+			svcCount += agg.services.total
+		}
+	}
+	if svcCount > 0 {
+		emit(fmt.Sprintf("[+] Classified %d connections to known services", svcCount))
+	}
 	if err := ctx.Err(); err != nil {
 		return RunResult{}, err
 	}
+
+	emit("[*] Building behavioral findings from candidate profiles...")
+	findings := buildFindings(aggs)
+	if len(findings) > 0 {
+		emit(fmt.Sprintf("[+] %d behavioral findings generated", len(findings)))
+	}
+	if err := ctx.Err(); err != nil {
+		return RunResult{}, err
+	}
+
+	egressServices := buildEgressServiceSummary(aggs)
+
+	// Helper to push partial report to the UI as data becomes available.
+	emitPartial := func(probeSummary *ProbeSummary) {
+		if input.OnPartial == nil {
+			return
+		}
+		sevCounts := map[string]int{"watch": 0, "strong": 0, "active": 0}
+		for _, f := range findings {
+			sevCounts[shared.NormalizeContourSeverity(f.Severity)]++
+		}
+		partial := Report{
+			ID:                 runID,
+			GeneratedAt:        now,
+			Source:              source,
+			SampleCount:        len(scoped),
+			CandidateCount:     len(aggs),
+			FindingCount:       len(findings),
+			FindingsBySeverity: sevCounts,
+			Summary:            buildSummary(len(scoped), len(aggs), len(findings), sevCounts),
+			Findings:           findings,
+			Probe:              probeSummary,
+			EgressServices:     egressServices,
+		}
+		partial.ReportLines = RenderReportLines(partial)
+		input.OnPartial(partial)
+	}
+
+	// Emit partial after behavioral findings.
+	emitPartial(nil)
+
 	var probeSummary *ProbeSummary
 	if probeMode := NormalizeProbeMode(input.ProbeMode); probeMode != ProbeModeOff {
-		summary, probeFindings := runProbeSuite(ctx, probeMode, input.ProbeRole, input.ProbeTarget, input.Duration, scoped)
+		depth := ProbeModeLabel(probeMode)
+		target := strings.TrimSpace(input.ProbeTarget)
+		emit(fmt.Sprintf("[*] Starting %s probe to %s...", depth, target))
+		summary, probeFindings := runProbeSuiteWithProgress(ctx, probeMode, input.ProbeRole, input.ProbeTarget, input.Duration, scoped, emit, func(ps ProbeSummary) {
+			emitPartial(&ps)
+		})
 		probeSummary = &summary
 		if len(probeFindings) > 0 {
 			findings = append(findings, probeFindings...)
@@ -197,6 +307,7 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 		Findings:           findings,
 		Hints:              hints,
 		Probe:              probeSummary,
+		EgressServices:     egressServices,
 	}
 	report.ReportLines = RenderReportLines(report)
 	if err := ctx.Err(); err != nil {
@@ -240,204 +351,200 @@ func RenderReportLines(report Report) []string {
 		return renderListenerReportLines(report)
 	}
 
-	lines := make([]string, 0, 256)
-	summary := strings.TrimSpace(report.Summary)
-	if summary == "" {
-		summary = "No contour findings were generated."
-	}
-	lines = append(lines, "Overview")
-	lines = append(lines, "Summary: "+summary)
-	lines = append(lines, "Sample every: "+nonEmpty(strings.TrimSpace(report.SampleEvery), "10s"))
-	lines = append(lines, fmt.Sprintf("Captured samples: %d", report.SampleCount))
-	lines = append(lines, fmt.Sprintf("Unique processes: %d", report.CandidateCount))
-	lines = append(lines, fmt.Sprintf("Findings: %d (active %d strong %d watch %d)", report.FindingCount, report.FindingsBySeverity["active"], report.FindingsBySeverity["strong"], report.FindingsBySeverity["watch"]))
-	if report.Probe != nil && report.Probe.Enabled {
-		role := NormalizeProbeRole(report.Probe.Role)
+	lines := make([]string, 0, 64)
+
+	// ── Findings ───────────────────────────────────────────────
+	if len(report.Findings) > 0 {
 		lines = append(lines, "")
-		lines = append(lines, "Probe Matrix")
-		lines = append(lines, "Role: "+ProbeRoleLabel(report.Probe.Role))
-		lines = append(lines, "Endpoint: "+nonEmpty(strings.TrimSpace(report.Probe.Endpoint), "-"))
-		lines = append(lines, "Probe mode: "+ProbeModeLabel(report.Probe.Mode))
-		if role == ProbeRoleScan {
-			lines = append(lines, fmt.Sprintf("Probe matrix (connectivity): %d/%d", report.Probe.TunnelSuccess, report.Probe.TunnelAttempts))
-		} else {
-			lines = append(lines, fmt.Sprintf("Probe matrix (tunnel): %d/%d", report.Probe.TunnelSuccess, report.Probe.TunnelAttempts))
-			if report.Probe.ExfilAttempts > 0 {
-				lines = append(lines, fmt.Sprintf("Probe matrix (exfil): %d/%d", report.Probe.ExfilSuccess, report.Probe.ExfilAttempts))
+		shown := 0
+		for _, f := range report.Findings {
+			if shown >= 6 {
+				lines = append(lines, fmt.Sprintf("    +%d more", len(report.Findings)-shown))
+				break
 			}
-		}
-		totalChecks := len(report.Probe.SuccessfulChecks) + len(report.Probe.FailedChecks)
-		if totalChecks > 0 {
-			lines = append(lines, fmt.Sprintf("Probe checks: %d total (%d pass, %d fail)", totalChecks, len(report.Probe.SuccessfulChecks), len(report.Probe.FailedChecks)))
-		}
-		lines = append(lines, fmt.Sprintf("Probe routes: %d internal, %d internet-routable", len(report.Probe.InternalRoutes), len(report.Probe.InternetSubnets)))
-		lines = append(lines, fmt.Sprintf("Probe proxies: %d total (%d reachable, %d pivot-capable)", len(report.Probe.Proxies), report.Probe.ReachableProxyCount, report.Probe.PivotProxyCount))
-		lines = append(lines, fmt.Sprintf("Probe config endpoints: %d total (%d reachable)", len(report.Probe.ConfigEndpoints), report.Probe.ReachableConfigCount))
-		if strings.TrimSpace(report.Probe.ProxyPivotTarget) != "" {
-			lines = append(lines, "Probe pivot target: "+report.Probe.ProxyPivotTarget)
-		}
-		if report.Probe.ListenerReady {
-			lines = append(lines, fmt.Sprintf("Probe listener: ready on %d ports for %ds (exchanges %d)", len(report.Probe.Ports)-len(report.Probe.PortsUnavailable), report.Probe.ListenerSeconds, report.Probe.ListenerExchanges))
+			sev := strings.ToUpper(shared.NormalizeContourSeverity(f.Severity))
+			lines = append(lines, fmt.Sprintf("  %s  %s", reportSevTag(sev), f.Reason))
+			shown++
 		}
 	}
-	lines = append(lines, fmt.Sprintf("Calibration hints exported: %d", len(report.Hints)))
-	if strings.TrimSpace(report.OutputPath) != "" {
-		lines = append(lines, "Report: "+report.OutputPath)
-	}
 
-	if report.Probe != nil && report.Probe.Enabled {
-		role := NormalizeProbeRole(report.Probe.Role)
-		if len(report.Probe.MethodResults) > 0 {
-			if role == ProbeRoleScan {
-				lines = append(lines, "")
-				lines = append(lines, "Probe Methods")
-				shown := 0
-				for _, method := range report.Probe.MethodResults {
-					status := probeStatusLabel(method.TunnelSuccess, method.TunnelAttempts)
-					if status == "FAIL" {
-						continue
-					}
-					transport := strings.ToUpper(strings.TrimSpace(method.Transport))
-					methodName := clip(strings.TrimSpace(method.Method), 9)
-					shown++
-					lines = append(lines, fmt.Sprintf(
-						"- [%s] %-4s/%-9s connectivity %d/%d",
-						status,
-						transport,
-						methodName,
-						method.TunnelSuccess,
-						method.TunnelAttempts,
-					))
-				}
-				if shown == 0 {
-					lines = append(lines, "- [NONE] no verified methods")
-				}
-			} else {
-				lines = append(lines, "")
-				lines = append(lines, "Tunnel Methods")
-				shownTunnel := 0
-				for _, method := range report.Probe.MethodResults {
-					if method.TunnelAttempts <= 0 || method.TunnelSuccess <= 0 {
-						continue
-					}
-					status := probeStatusLabel(method.TunnelSuccess, method.TunnelAttempts)
-					transport := strings.ToUpper(strings.TrimSpace(method.Transport))
-					methodName := clip(strings.TrimSpace(method.Method), 9)
-					shownTunnel++
-					lines = append(lines, fmt.Sprintf(
-						"- [%s] %-4s/%-9s tunnel %d/%d",
-						status,
-						transport,
-						methodName,
-						method.TunnelSuccess,
-						method.TunnelAttempts,
-					))
-				}
-				if shownTunnel == 0 {
-					lines = append(lines, "- [NONE] no verified tunnel methods")
-				}
-
-				lines = append(lines, "")
-				lines = append(lines, "Exfiltration Methods")
-				shownExfil := 0
-				for _, method := range report.Probe.MethodResults {
-					if method.ExfilAttempts <= 0 || method.ExfilSuccess <= 0 {
-						continue
-					}
-					status := probeStatusLabel(method.ExfilSuccess, method.ExfilAttempts)
-					transport := strings.ToUpper(strings.TrimSpace(method.Transport))
-					methodName := clip(strings.TrimSpace(method.Method), 9)
-					shownExfil++
-					lines = append(lines, fmt.Sprintf(
-						"- [%s] %-4s/%-9s exfil %d/%d",
-						status,
-						transport,
-						methodName,
-						method.ExfilSuccess,
-						method.ExfilAttempts,
-					))
-				}
-				if shownExfil == 0 {
-					lines = append(lines, "- [NONE] no verified exfiltration methods")
-				}
-			}
-		}
-
-		if role == ProbeRoleScan && len(report.Probe.PortResults) > 0 {
+	if report.Probe == nil || !report.Probe.Enabled {
+		if strings.TrimSpace(report.OutputPath) != "" {
 			lines = append(lines, "")
-			lines = append(lines, "Probe Ports")
-			shown := 0
-			for _, port := range report.Probe.PortResults {
-				status := probeStatusLabel(port.TunnelSuccess, port.TunnelAttempts)
-				if status == "FAIL" {
-					continue
-				}
-				shown++
-				lines = append(lines, fmt.Sprintf(
-					"- [%s] port %-5d connectivity %d/%d",
-					status,
-					port.Port,
-					port.TunnelSuccess,
-					port.TunnelAttempts,
-				))
-			}
-			if shown == 0 {
-				lines = append(lines, "- [NONE] no verified ports")
-			}
+			lines = append(lines, "  output  "+report.OutputPath)
 		}
-
-		if len(report.Probe.SuccessfulChecks) > 0 || len(report.Probe.FailedChecks) > 0 {
-			lines = append(lines, "")
-			lines = append(lines, "Probe Checks")
-			lines = append(lines, renderProbeCheckSummary(report.Probe.SuccessfulChecks, report.Probe.FailedChecks)...)
-		}
-
-		lines = append(lines, "")
-		lines = append(lines, "Probe Discoveries")
-		if len(report.Probe.Ports) > 0 {
-			allowedPorts := len(report.Probe.Ports) - len(report.Probe.PortsUnavailable)
-			if allowedPorts < 0 {
-				allowedPorts = 0
-			}
-			lines = append(lines, fmt.Sprintf("Probe ports: %d total (%d allowed)", len(report.Probe.Ports), allowedPorts))
-		}
-		if len(report.Probe.Protocols) > 0 {
-			lines = append(lines, fmt.Sprintf("Probe protocols: %d (wire signatures validated)", len(report.Probe.Protocols)))
-		}
-		if len(report.Probe.InternetSubnets) > 0 {
-			lines = append(lines, "Internet-routable subnets: "+clip(strings.Join(report.Probe.InternetSubnets, ","), 100))
-		}
-		lines = append(lines, fmt.Sprintf("Proxy candidates: %d discovered", len(report.Probe.Proxies)))
-		lines = append(lines, renderProxyCandidateLines(report.Probe.Proxies)...)
-		if len(report.Probe.ConfigEndpoints) > 0 {
-			lines = append(lines, fmt.Sprintf("Config endpoints: %d discovered (%d reachable)", len(report.Probe.ConfigEndpoints), report.Probe.ReachableConfigCount))
-		}
-		if len(report.Probe.PortsUnavailable) > 0 {
-			lines = append(lines, fmt.Sprintf("Ports unavailable: %d denied", len(report.Probe.PortsUnavailable)))
-		}
-	}
-
-	lines = append(lines, "")
-	lines = append(lines, "Findings")
-	if len(report.Findings) == 0 {
-		lines = append(lines, "- No tunnel or egress-escape patterns exceeded contour thresholds.")
 		return lines
 	}
 
-	for _, finding := range report.Findings {
-		lines = append(lines, fmt.Sprintf(
-			"- [%s] %-8s pid=%-6d %-24s role=%-8s %s/%s :: %s",
-			strings.ToUpper(shared.NormalizeContourSeverity(finding.Severity)),
-			clip(shared.DisplayHost(finding.Host), 8),
-			finding.PID,
-			clip(finding.Process, 24),
-			clip(finding.Role, 8),
-			clip(finding.Category, 12),
-			clip(finding.Technique, 22),
-			finding.Reason,
-		))
+	probe := report.Probe
+
+	// ── Probe overview ─────────────────────────────────────────
+	lines = append(lines, "")
+	target := nonEmpty(strings.TrimSpace(probe.Endpoint), "-")
+	lines = append(lines, fmt.Sprintf("  target   %s", target))
+
+	portsOpen := 0
+	for _, pr := range probe.PortResults {
+		if pr.TunnelSuccess > 0 {
+			portsOpen++
+		}
+	}
+	totalPorts := len(probe.Ports)
+	if totalPorts == 0 {
+		totalPorts = len(defaultProbePorts)
+	}
+	lines = append(lines, fmt.Sprintf("  ports    %d open / %d tested", portsOpen, totalPorts))
+
+	if len(probe.InternalRoutes) > 0 || len(probe.InternetSubnets) > 0 {
+		lines = append(lines, fmt.Sprintf("  routes   %d internal, %d internet", len(probe.InternalRoutes), len(probe.InternetSubnets)))
+	}
+	if probe.AvgLatencyMs > 0 {
+		lines = append(lines, fmt.Sprintf("  latency  ~%dms", probe.AvgLatencyMs))
+	}
+	if probe.TLSIntercepted {
+		lines = append(lines, fmt.Sprintf("  tls      intercepted (%s)", probe.TLSInterceptOrg))
+	}
+
+	// ── Tunnels ────────────────────────────────────────────────
+	if probe.TunnelAttempts > 0 {
+		var carriers []string
+		for _, m := range probe.MethodResults {
+			if m.TunnelAttempts <= 0 || !methodUsesSocksCarrierTunnel(strings.ToLower(strings.TrimSpace(m.Method))) {
+				continue
+			}
+			switch probeStatusLabel(m.TunnelSuccess, m.TunnelAttempts) {
+			case "PASS":
+				carriers = append(carriers, m.Method)
+			case "MIXED":
+				carriers = append(carriers, fmt.Sprintf("%s %d/%d", m.Method, m.TunnelSuccess, m.TunnelAttempts))
+			}
+		}
+		if len(carriers) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, "  tunnels")
+			for _, c := range carriers {
+				lines = append(lines, "    - "+c)
+			}
+		}
+		if probe.DomainFrontingPossible {
+			lines = append(lines, fmt.Sprintf("    - domain fronting via %s", probe.DomainFrontingSNI))
+		}
+	}
+
+	// ── Exfiltration ───────────────────────────────────────────
+	if probe.ExfilAttempts > 0 {
+		var exfilPass, exfilPartial []string
+		exfilFail := 0
+		for _, m := range probe.MethodResults {
+			if m.ExfilAttempts <= 0 {
+				continue
+			}
+			switch probeStatusLabel(m.ExfilSuccess, m.ExfilAttempts) {
+			case "PASS":
+				exfilPass = append(exfilPass, m.Method)
+			case "MIXED":
+				exfilPartial = append(exfilPartial, fmt.Sprintf("%s %d/%d", m.Method, m.ExfilSuccess, m.ExfilAttempts))
+			default:
+				exfilFail++
+			}
+		}
+		if len(exfilPass) > 0 || len(exfilPartial) > 0 || probe.DNSExfilViable {
+			lines = append(lines, "")
+			lines = append(lines, "  exfil")
+			if len(exfilPass) > 0 {
+				lines = append(lines, wrapJoinLines("    pass  ", exfilPass, 72, "          ")...)
+			}
+			if len(exfilPartial) > 0 {
+				lines = append(lines, wrapJoinLines("    part  ", exfilPartial, 72, "          ")...)
+			}
+			if exfilFail > 0 {
+				lines = append(lines, fmt.Sprintf("    fail  %d protocol%s blocked", exfilFail, plural(exfilFail)))
+			}
+			if probe.DNSExfilViable {
+				lines = append(lines, "    - DNS TXT to external resolvers")
+			}
+		}
+	}
+
+	// ── Proxies ────────────────────────────────────────────────
+	if len(probe.Proxies) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("  proxies  %d found, %d reachable", len(probe.Proxies), probe.ReachableProxyCount))
+		for _, pline := range renderProxyCandidateLines(probe.Proxies) {
+			lines = append(lines, "    "+pline)
+		}
+	}
+
+	// ── Services ───────────────────────────────────────────────
+	if len(probe.ServiceReachable) > 0 || len(probe.ServiceBlocked) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "  services")
+		if len(probe.ServiceReachable) > 0 {
+			lines = append(lines, wrapJoinLines("    reach  ", probe.ServiceReachable, 72, "           ")...)
+		}
+		if len(probe.ServiceBlocked) > 0 {
+			lines = append(lines, wrapJoinLines("    block  ", probe.ServiceBlocked, 72, "           ")...)
+		}
+	}
+
+	// ── Egress ─────────────────────────────────────────────────
+	if report.EgressServices != nil && len(report.EgressServices.Services) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "  egress")
+		shown := 0
+		for _, svc := range report.EgressServices.Services {
+			if shown >= 6 {
+				lines = append(lines, fmt.Sprintf("    +%d more", len(report.EgressServices.Services)-shown))
+				break
+			}
+			lines = append(lines, fmt.Sprintf("    %-18s %d conn  %d IP%s",
+				clip(svc.Name, 18), svc.Conns, svc.UniqueIP, plural(svc.UniqueIP)))
+			shown++
+		}
+	}
+
+	if strings.TrimSpace(report.OutputPath) != "" {
+		lines = append(lines, "")
+		lines = append(lines, "  output  "+report.OutputPath)
 	}
 	return lines
+}
+
+// reportSevTag returns a fixed-width severity label for findings.
+func reportSevTag(sev string) string {
+	switch sev {
+	case "ACTIVE":
+		return "ACTIVE"
+	case "STRONG":
+		return "STRONG"
+	default:
+		return "WATCH "
+	}
+}
+
+// wrapJoinLines joins items with ", " and wraps at maxWidth, returning
+// multiple lines. The first line uses prefix, continuation lines use indent.
+func wrapJoinLines(prefix string, items []string, maxWidth int, indent string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	var result []string
+	line := prefix
+	for i, item := range items {
+		add := item
+		if i < len(items)-1 {
+			add += ", "
+		}
+		if len(line)+len(add) > maxWidth && line != prefix {
+			result = append(result, line)
+			line = indent
+		}
+		line += add
+	}
+	if line != "" {
+		result = append(result, line)
+	}
+	return result
 }
 
 func renderListenerReportLines(report Report) []string {
@@ -455,62 +562,61 @@ func renderListenerReportLines(report Report) []string {
 		}
 		tunnelChecks++
 	}
-	lines = append(lines, "Overview")
-	lines = append(lines, "Summary: "+summary)
-	lines = append(lines, "Role: Listener")
-	lines = append(lines, fmt.Sprintf("Listener exchanges: %d", report.Probe.ListenerExchanges))
-	lines = append(lines, fmt.Sprintf("Listener checks: %d", len(report.Probe.SuccessfulChecks)))
-	lines = append(lines, fmt.Sprintf("Tunnel checks: %d", tunnelChecks))
-	lines = append(lines, fmt.Sprintf("Exfil checks: %d", exfilChecks))
-	lines = append(lines, fmt.Sprintf("Ports bound: %d/%d", len(report.Probe.Ports)-len(report.Probe.PortsUnavailable), len(report.Probe.Ports)))
-	if len(report.Probe.PortsUnavailable) > 0 {
-		lines = append(lines, "Ports unavailable: "+joinInts(report.Probe.PortsUnavailable))
-	}
-	lines = append(lines, fmt.Sprintf("Calibration hints exported: %d", len(report.Hints)))
-	if strings.TrimSpace(report.OutputPath) != "" {
-		lines = append(lines, "Report: "+report.OutputPath)
+	boundPorts := len(report.Probe.Ports) - len(report.Probe.PortsUnavailable)
+	if boundPorts < 0 {
+		boundPorts = 0
 	}
 
-	if len(report.Probe.PortResults) > 0 {
-		lines = append(lines, "")
-		lines = append(lines, "Listener Ports")
-		for _, port := range report.Probe.PortResults {
-			status := "FAIL"
-			if port.ListenerBound {
-				status = "PASS"
-			}
-			lines = append(lines, fmt.Sprintf("- [%s] port %d listener %s", status, port.Port, ternaryBound(port.ListenerBound)))
-		}
-	}
-
+	lines = append(lines, summary)
 	lines = append(lines, "")
-	lines = append(lines, "Listener Checks")
+	lines = append(lines, fmt.Sprintf("  %d ports bound  |  %d exchanges  |  %d tunnel  %d exfil", boundPorts, report.Probe.ListenerExchanges, tunnelChecks, exfilChecks))
+	if len(report.Probe.PortsUnavailable) > 0 {
+		lines = append(lines, fmt.Sprintf("  %d port%s could not bind", len(report.Probe.PortsUnavailable), plural(len(report.Probe.PortsUnavailable))))
+	}
+
+	// ── Activity ────────────────────────────────────────────────
+	lines = append(lines, "")
+	lines = append(lines, "Activity")
 	if len(report.Probe.SuccessfulChecks) == 0 {
-		lines = append(lines, "- [NONE] no listener checks received")
+		lines = append(lines, "  No probes received. Run proxywatch in Egress mode targeting this host.")
 	} else {
+		var tunnelLines, exfilLines []string
 		for _, check := range report.Probe.SuccessfulChecks {
-			lines = append(lines, formatListenerCheckLine(check))
+			method := nonEmpty(strings.TrimSpace(check.Method), "-")
+			transport := strings.ToUpper(nonEmpty(strings.TrimSpace(check.Transport), "-"))
+			peer := nonEmpty(strings.TrimSpace(check.Peer), "?")
+			line := fmt.Sprintf("  [PASS] %s/%-8s port %-5d from %s", transport, method, check.Port, peer)
+			if strings.EqualFold(strings.TrimSpace(check.Kind), "exfil") {
+				exfilLines = append(exfilLines, line)
+			} else {
+				tunnelLines = append(tunnelLines, line)
+			}
+		}
+		if len(tunnelLines) > 0 {
+			lines = append(lines, fmt.Sprintf("  Tunnel (%d received)", len(tunnelLines)))
+			lines = append(lines, tunnelLines...)
+		}
+		if len(exfilLines) > 0 {
+			lines = append(lines, fmt.Sprintf("  Exfil (%d received)", len(exfilLines)))
+			lines = append(lines, exfilLines...)
 		}
 	}
 
+	// ── Findings ────────────────────────────────────────────────
 	lines = append(lines, "")
 	lines = append(lines, "Findings")
 	if len(report.Findings) == 0 {
-		lines = append(lines, "- No listener findings were generated.")
+		lines = append(lines, "  No findings from listener activity.")
 		return lines
 	}
-	for _, finding := range report.Findings {
-		lines = append(lines, fmt.Sprintf(
-			"- [%s] %-8s pid=%-6d %-24s role=%-8s %s/%s :: %s",
-			strings.ToUpper(shared.NormalizeContourSeverity(finding.Severity)),
-			clip(shared.DisplayHost(finding.Host), 8),
-			finding.PID,
-			clip(finding.Process, 24),
-			clip(finding.Role, 8),
-			clip(finding.Category, 12),
-			clip(finding.Technique, 22),
-			finding.Reason,
-		))
+	for _, f := range report.Findings {
+		sev := strings.ToUpper(shared.NormalizeContourSeverity(f.Severity))
+		lines = append(lines, fmt.Sprintf("  [%s] %s", sev, f.Technique))
+		lines = append(lines, "         "+f.Reason)
+	}
+	if strings.TrimSpace(report.OutputPath) != "" {
+		lines = append(lines, "")
+		lines = append(lines, "Report: "+report.OutputPath)
 	}
 	return lines
 }
@@ -546,17 +652,19 @@ func aggregateCandidates(samples []shared.Candidate) map[string]*candidateAggreg
 		agg, ok := aggs[key]
 		if !ok {
 			agg = &candidateAggregate{
-				key:       key,
-				host:      shared.DisplayHost(sample.Host),
-				pid:       sample.Proc.Pid,
-				process:   strings.TrimSpace(sample.Proc.Name),
-				role:      shared.RoleFamily(sample.Role),
-				tgtExt:    make(map[string]struct{}),
-				tgtInt:    make(map[string]struct{}),
-				tgtLoop:   make(map[string]struct{}),
-				portExt:   make(map[int]int),
-				tcpListen: make(map[int]struct{}),
-				udpListen: make(map[int]struct{}),
+				key:           key,
+				host:          shared.DisplayHost(sample.Host),
+				pid:           sample.Proc.Pid,
+				process:       strings.TrimSpace(sample.Proc.Name),
+				role:          shared.RoleFamily(sample.Role),
+				tgtExt:        make(map[string]struct{}),
+				tgtInt:        make(map[string]struct{}),
+				tgtLoop:       make(map[string]struct{}),
+				portExt:       make(map[int]int),
+				tcpListen:     make(map[int]struct{}),
+				udpListen:     make(map[int]struct{}),
+				services:      newServiceProfile(),
+				portProtoHits: make(map[int]int),
 			}
 			aggs[key] = agg
 		}
@@ -574,6 +682,8 @@ func aggregateCandidates(samples []shared.Candidate) map[string]*candidateAggreg
 		agg.outInt = max(agg.outInt, sample.OutInternal)
 		agg.outLoop = max(agg.outLoop, sample.OutLoopback)
 		agg.controlS = max(agg.controlS, sample.ControlDurationSeconds)
+		agg.longLivedExt = max(agg.longLivedExt, sample.OutLongLived)
+		agg.shortLivedExt = max(agg.shortLivedExt, sample.OutShortLived)
 		for _, conn := range sample.Conns {
 			remote := strings.TrimSpace(conn.RemoteAddress)
 			if remote == "" {
@@ -589,6 +699,18 @@ func aggregateCandidates(samples []shared.Candidate) map[string]*candidateAggreg
 				agg.tgtExt[target] = struct{}{}
 				if conn.RemotePort > 0 {
 					agg.portExt[conn.RemotePort]++
+					agg.portProtoHits[conn.RemotePort]++
+				}
+				// Track protocol-specific port hits for service detection.
+				switch conn.RemotePort {
+				case 53, 853:
+					agg.dnsPortConns++
+				case 443:
+					agg.httpsConns++
+				case 22:
+					agg.sshConns++
+				case 1080, 1081, 9050, 9150:
+					agg.socksConns++
 				}
 			}
 		}
@@ -604,6 +726,52 @@ func aggregateCandidates(samples []shared.Candidate) map[string]*candidateAggreg
 		}
 	}
 	return aggs
+}
+
+// enrichAggregatesWithServices collects all unique external IPs across
+// aggregates, resolves them to known services via reverse DNS, and populates
+// each aggregate's serviceProfile.
+func enrichAggregatesWithServices(ctx context.Context, aggs map[string]*candidateAggregate) {
+	if len(aggs) == 0 {
+		return
+	}
+
+	// Collect unique external IPs and map them back to their aggregates.
+	type ipOwner struct {
+		agg  *candidateAggregate
+		port int
+	}
+	ipAggs := make(map[string][]ipOwner, 64)
+	allIPs := make([]string, 0, 128)
+
+	for _, agg := range aggs {
+		for target := range agg.tgtExt {
+			host, portStr, err := net.SplitHostPort(target)
+			if err != nil {
+				continue
+			}
+			port, _ := strconv.Atoi(portStr)
+			if _, seen := ipAggs[host]; !seen {
+				allIPs = append(allIPs, host)
+			}
+			ipAggs[host] = append(ipAggs[host], ipOwner{agg: agg, port: port})
+		}
+	}
+
+	if len(allIPs) == 0 {
+		return
+	}
+
+	resolutions := resolveExternalServices(ctx, allIPs, 400*time.Millisecond, 80)
+	for _, res := range resolutions {
+		if !res.Matched {
+			continue
+		}
+		owners := ipAggs[res.IP]
+		for _, owner := range owners {
+			owner.agg.services.add(res.IP, owner.port, res.Match)
+		}
+	}
 }
 
 func buildFindings(aggs map[string]*candidateAggregate) []Finding {
@@ -677,6 +845,157 @@ func buildFindings(aggs map[string]*candidateAggregate) []Finding {
 				"Listening process also maintained external egress, consistent with pivot/escape behavior",
 				map[string]any{"tcp_listeners": len(agg.tcpListen), "udp_listeners": len(agg.udpListen), "external_targets": externalTargets}))
 		}
+
+		// --- Service-aware findings ---
+
+		if agg.services != nil && agg.services.total > 0 {
+			sp := agg.services
+
+			// Cloud storage upload detection.
+			storageConns := sp.categories[SvcCatCloudStorage]
+			if storageConns > 0 && agg.writeB >= 10*1024*1024 {
+				sev := "strong"
+				if agg.writeB >= 256*1024*1024 || agg.writeBps >= 1*1024*1024 {
+					sev = "active"
+				}
+				names := serviceNamesForCategory(sp, SvcCatCloudStorage)
+				findings = append(findings, makeFinding(agg, "exfiltration", "cloud-storage-upload", sev, "contour-exfil-cloud-storage",
+					fmt.Sprintf("Process writes %s to cloud storage service%s (%s)", formatBytes(agg.writeB), plural(len(names)), strings.Join(names, ", ")),
+					map[string]any{"write_bytes": agg.writeB, "services": names, "storage_conns": storageConns}))
+			}
+
+			// Messaging exfil detection (webhooks, file uploads).
+			msgConns := sp.categories[SvcCatMessaging]
+			if msgConns > 0 && agg.writeB >= 1*1024*1024 {
+				sev := "watch"
+				if agg.writeB >= 50*1024*1024 {
+					sev = "strong"
+				}
+				if agg.writeB >= 256*1024*1024 {
+					sev = "active"
+				}
+				names := serviceNamesForCategory(sp, SvcCatMessaging)
+				findings = append(findings, makeFinding(agg, "exfiltration", "messaging-channel", sev, "contour-exfil-messaging",
+					fmt.Sprintf("Process sends %s via messaging service%s (%s)", formatBytes(agg.writeB), plural(len(names)), strings.Join(names, ", ")),
+					map[string]any{"write_bytes": agg.writeB, "services": names, "messaging_conns": msgConns}))
+			}
+
+			// Code hosting exfil detection (gists, repos, releases, API).
+			codeConns := sp.categories[SvcCatCodeHosting]
+			if codeConns > 0 && agg.writeB >= 5*1024*1024 {
+				sev := "watch"
+				if agg.writeB >= 100*1024*1024 {
+					sev = "strong"
+				}
+				names := serviceNamesForCategory(sp, SvcCatCodeHosting)
+				findings = append(findings, makeFinding(agg, "exfiltration", "code-hosting-upload", sev, "contour-exfil-code-hosting",
+					fmt.Sprintf("Process writes %s to code hosting service%s (%s)", formatBytes(agg.writeB), plural(len(names)), strings.Join(names, ", ")),
+					map[string]any{"write_bytes": agg.writeB, "services": names, "code_conns": codeConns}))
+			}
+
+			// Paste/file share exfil detection.
+			pasteConns := sp.categories[SvcCatPasteShare]
+			if pasteConns > 0 {
+				sev := "strong"
+				if agg.writeB >= 10*1024*1024 {
+					sev = "active"
+				}
+				names := serviceNamesForCategory(sp, SvcCatPasteShare)
+				findings = append(findings, makeFinding(agg, "exfiltration", "paste-service-upload", sev, "contour-exfil-paste-service",
+					fmt.Sprintf("Process connects to paste/file-share service%s (%s) with %s written", plural(len(names)), strings.Join(names, ", "), formatBytes(agg.writeB)),
+					map[string]any{"write_bytes": agg.writeB, "services": names, "paste_conns": pasteConns}))
+			}
+
+			// Tunnel/VPN service detection.
+			tunnelConns := sp.categories[SvcCatTunnelVPN]
+			if tunnelConns > 0 {
+				sev := "active"
+				names := serviceNamesForCategory(sp, SvcCatTunnelVPN)
+				findings = append(findings, makeFinding(agg, "escape", "tunnel-service-egress", sev, "contour-escape-tunnel-service",
+					fmt.Sprintf("Process connects to tunnel/VPN service%s (%s)", plural(len(names)), strings.Join(names, ", ")),
+					map[string]any{"services": names, "tunnel_conns": tunnelConns}))
+			}
+
+			// CDN domain-fronting risk.
+			cdnConns := sp.categories[SvcCatCDN]
+			if cdnConns > 0 && (agg.writeB >= 50*1024*1024 || agg.role == "tunnel" || agg.active) {
+				sev := "watch"
+				if agg.writeB >= 256*1024*1024 || agg.role == "tunnel" {
+					sev = "strong"
+				}
+				names := serviceNamesForCategory(sp, SvcCatCDN)
+				findings = append(findings, makeFinding(agg, "escape", "cdn-domain-fronting-risk", sev, "contour-escape-cdn-fronting",
+					fmt.Sprintf("Process sends %s through CDN (%s), possible domain fronting", formatBytes(agg.writeB), strings.Join(names, ", ")),
+					map[string]any{"write_bytes": agg.writeB, "services": names, "cdn_conns": cdnConns}))
+			}
+
+			// Multi-service fan-out: process talks to many different exfil-capable services.
+			exfilCategories := 0
+			for cat, count := range sp.categories {
+				if count > 0 && exfilCapableCategory(cat) {
+					exfilCategories++
+				}
+			}
+			if exfilCategories >= 2 {
+				sev := "strong"
+				if exfilCategories >= 3 || sp.highRisk >= 3 {
+					sev = "active"
+				}
+				allNames := make([]string, 0, len(sp.hits))
+				for _, hit := range sp.sortedHits() {
+					if exfilCapableCategory(hit.Category) {
+						allNames = append(allNames, hit.Name)
+					}
+				}
+				findings = append(findings, makeFinding(agg, "exfiltration", "multi-service-fan-out", sev, "contour-exfil-multi-service",
+					fmt.Sprintf("Process fans out to %d exfil-capable service categories (%s)", exfilCategories, strings.Join(allNames, ", ")),
+					map[string]any{"exfil_categories": exfilCategories, "services": allNames, "total_classified": sp.total}))
+			}
+		}
+
+		// SOCKS port egress detection (external SOCKS proxies).
+		if agg.socksConns > 0 && externalTargets > 0 {
+			sev := "strong"
+			if agg.socksConns >= 3 || agg.active {
+				sev = "active"
+			}
+			findings = append(findings, makeFinding(agg, "escape", "socks-proxy-egress", sev, "contour-escape-socks-egress",
+				fmt.Sprintf("Process connects to %d external SOCKS proxy port%s", agg.socksConns, plural(agg.socksConns)),
+				map[string]any{"socks_conns": agg.socksConns, "external_targets": externalTargets}))
+		}
+
+		// DNS-port heavy traffic (potential DNS tunneling).
+		if agg.dnsPortConns >= 3 && externalTargets > 0 {
+			sev := "watch"
+			if agg.dnsPortConns >= 8 || agg.writeB >= 10*1024*1024 {
+				sev = "strong"
+			}
+			findings = append(findings, makeFinding(agg, "escape", "dns-tunnel-indicator", sev, "contour-escape-dns-tunnel",
+				fmt.Sprintf("Process maintains %d DNS-port connections to external targets with %s written", agg.dnsPortConns, formatBytes(agg.writeB)),
+				map[string]any{"dns_conns": agg.dnsPortConns, "write_bytes": agg.writeB, "external_targets": externalTargets}))
+		}
+
+		// Long-lived external session with high write (sustained exfil channel).
+		if agg.controlS >= 120 && externalTargets > 0 && agg.writeB >= 50*1024*1024 {
+			sev := "strong"
+			if agg.controlS >= 300 && agg.writeB >= 256*1024*1024 {
+				sev = "active"
+			}
+			findings = append(findings, makeFinding(agg, "exfiltration", "sustained-session-exfil", sev, "contour-exfil-sustained-session",
+				fmt.Sprintf("Long-lived external session (%ds) with %s written across %d target%s", agg.controlS, formatBytes(agg.writeB), externalTargets, plural(externalTargets)),
+				map[string]any{"control_seconds": agg.controlS, "write_bytes": agg.writeB, "external_targets": externalTargets}))
+		}
+
+		// SSH egress fan-out (potential SSH tunneling/pivoting).
+		if agg.sshConns >= 2 && externalTargets > 0 {
+			sev := "watch"
+			if agg.sshConns >= 4 || agg.active {
+				sev = "strong"
+			}
+			findings = append(findings, makeFinding(agg, "escape", "ssh-egress-fan-out", sev, "contour-escape-ssh-fanout",
+				fmt.Sprintf("Process maintains %d SSH connections to external targets", agg.sshConns),
+				map[string]any{"ssh_conns": agg.sshConns, "external_targets": externalTargets}))
+		}
 	}
 
 	return normalizeFindings(findings)
@@ -740,37 +1059,9 @@ func dedupeFindings(findings []Finding) []Finding {
 	return out
 }
 
-func formatEndpointList(endpoints []ProbeEndpoint) string {
-	if len(endpoints) == 0 {
-		return "(none)"
-	}
-	parts := make([]string, 0, len(endpoints))
-	for _, endpoint := range endpoints {
-		label := endpoint.Endpoint
-		scope := strings.TrimSpace(endpoint.Scope)
-		if scope != "" {
-			label = scope + ":" + label
-		}
-		if endpoint.Reachable {
-			label += "[up]"
-		}
-		if endpoint.PivotReachable {
-			label += "[pivot]"
-		}
-		parts = append(parts, label)
-		if len(parts) >= 6 {
-			break
-		}
-	}
-	if len(endpoints) > len(parts) {
-		parts = append(parts, fmt.Sprintf("+%d more", len(endpoints)-len(parts)))
-	}
-	return strings.Join(parts, ", ")
-}
-
 func renderProxyCandidateLines(endpoints []ProbeEndpoint) []string {
 	if len(endpoints) == 0 {
-		return []string{"- [NONE] no proxy candidates discovered"}
+		return []string{"- none discovered"}
 	}
 	type row struct {
 		status string
@@ -807,7 +1098,7 @@ func renderProxyCandidateLines(endpoints []ProbeEndpoint) []string {
 		}
 	}
 	if len(rows) == 0 {
-		return []string{"- [NONE] no reachable proxy candidates"}
+		return []string{"- none reachable"}
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		scopeI := endpointScopeRank(rows[i].scope)
@@ -820,11 +1111,15 @@ func renderProxyCandidateLines(endpoints []ProbeEndpoint) []string {
 		}
 		return rows[i].label < rows[j].label
 	})
-	lines := make([]string, 0, len(rows))
+	out := make([]string, 0, len(rows))
 	for _, row := range rows {
-		lines = append(lines, fmt.Sprintf("- [%s] %s", row.status, row.label))
+		if row.status == "PIVOT" {
+			out = append(out, "[PIVOT] "+row.label)
+		} else {
+			out = append(out, "- "+row.label)
+		}
 	}
-	return lines
+	return out
 }
 
 func endpointDisplayTarget(endpoint ProbeEndpoint) string {
@@ -840,6 +1135,12 @@ func endpointDisplayTarget(endpoint ProbeEndpoint) string {
 	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
+// ProbeStatusLabel returns "PASS", "MIXED", "FAIL", or "NONE" for the given
+// success/attempts ratio.
+func ProbeStatusLabel(success, attempts int) string {
+	return probeStatusLabel(success, attempts)
+}
+
 func probeStatusLabel(success, attempts int) string {
 	if attempts <= 0 {
 		return "NONE"
@@ -853,185 +1154,89 @@ func probeStatusLabel(success, attempts int) string {
 	return "MIXED"
 }
 
-func mergeProbeStatuses(a, b string) string {
-	normalize := func(v string) string {
-		switch strings.ToUpper(strings.TrimSpace(v)) {
-		case "PASS":
-			return "PASS"
-		case "FAIL":
-			return "FAIL"
-		case "MIXED":
-			return "MIXED"
-		default:
-			return "NONE"
-		}
-	}
-	a = normalize(a)
-	b = normalize(b)
-	if a == "NONE" {
-		return b
-	}
-	if b == "NONE" {
-		return a
-	}
-	if a == b {
-		return a
-	}
-	if a == "MIXED" || b == "MIXED" {
-		return "MIXED"
-	}
-	return "MIXED"
-}
+// buildEgressServiceSummary merges service profiles across all aggregates into
+// a single report-level summary.
+func buildEgressServiceSummary(aggs map[string]*candidateAggregate) *ServiceSummary {
+	merged := make(map[string]*serviceHit, 32)
+	categories := make(map[string]int, 12)
+	total := 0
+	highRisk := 0
 
-func ternaryBound(bound bool) string {
-	if bound {
-		return "bound"
-	}
-	return "unavailable"
-}
-
-func formatListenerCheckLine(check ProbeCheck) string {
-	status := "PASS"
-	if !check.Success {
-		status = "FAIL"
-	}
-	kind := strings.ToUpper(nonEmpty(strings.TrimSpace(check.Kind), "tunnel"))
-	method := nonEmpty(strings.TrimSpace(check.Method), "-")
-	transport := strings.ToUpper(nonEmpty(strings.TrimSpace(check.Transport), "-"))
-	peer := nonEmpty(strings.TrimSpace(check.Peer), "-")
-	return fmt.Sprintf("- [%s] %-6s %s/%s@%d <- %s", status, kind, transport, method, check.Port, peer)
-}
-
-func renderProbeCheckSummary(successful, failed []ProbeCheck) []string {
-	total := len(successful) + len(failed)
-	if total == 0 {
-		return []string{"- [NONE] (none)"}
-	}
-	lines := make([]string, 0, 3)
-	lines = append(lines, fmt.Sprintf("- [%s] coverage %d/%d (fail=%d)", probeStatusLabel(len(successful), total), len(successful), total, len(failed)))
-	if len(successful) > 0 {
-		lines = append(lines, "- [PASS] pass by method: "+summarizeProbeChecksByMethod(successful, 5))
-	} else {
-		lines = append(lines, "- [NONE] no successful checks")
-	}
-	return lines
-}
-
-func summarizeProbeChecksByMethod(checks []ProbeCheck, limit int) string {
-	if len(checks) == 0 {
-		return "(none)"
-	}
-	counts := make(map[string]int, len(checks))
-	for _, check := range checks {
-		kind := strings.ToUpper(strings.TrimSpace(check.Kind))
-		method := nonEmpty(strings.TrimSpace(check.Method), "-")
-		transport := strings.ToUpper(nonEmpty(strings.TrimSpace(check.Transport), "-"))
-		label := transport + "/" + method
-		if kind != "" && kind != "TUNNEL" {
-			label = kind + ":" + label
-		}
-		counts[label]++
-	}
-	return summarizeProbeCheckCounts(counts, limit)
-}
-
-func summarizeProbeChecksByPort(checks []ProbeCheck, limit int) string {
-	if len(checks) == 0 {
-		return "(none)"
-	}
-	type portCount struct {
-		Port  int
-		Count int
-	}
-	counts := make(map[int]int, len(checks))
-	for _, check := range checks {
-		if check.Port <= 0 {
+	for _, agg := range aggs {
+		if agg.services == nil {
 			continue
 		}
-		counts[check.Port]++
-	}
-	if len(counts) == 0 {
-		return "(none)"
-	}
-	items := make([]portCount, 0, len(counts))
-	for port, count := range counts {
-		items = append(items, portCount{Port: port, Count: count})
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].Count != items[j].Count {
-			return items[i].Count > items[j].Count
+		for name, hit := range agg.services.hits {
+			m, ok := merged[name]
+			if !ok {
+				m = &serviceHit{
+					Name:     hit.Name,
+					Category: hit.Category,
+					Risk:     hit.Risk,
+					IPs:      make(map[string]struct{}),
+					Ports:    make(map[int]struct{}),
+				}
+				merged[name] = m
+			}
+			m.Count += hit.Count
+			for ip := range hit.IPs {
+				m.IPs[ip] = struct{}{}
+			}
+			for port := range hit.Ports {
+				m.Ports[port] = struct{}{}
+			}
 		}
-		return items[i].Port < items[j].Port
+		for cat, count := range agg.services.categories {
+			categories[cat] += count
+		}
+		total += agg.services.total
+		highRisk += agg.services.highRisk
+	}
+
+	if total == 0 {
+		return nil
+	}
+
+	entries := make([]ServiceReportEntry, 0, len(merged))
+	for _, hit := range merged {
+		entries = append(entries, ServiceReportEntry{
+			Name:     hit.Name,
+			Category: hit.Category,
+			Risk:     hit.Risk,
+			Conns:    hit.Count,
+			UniqueIP: len(hit.IPs),
+		})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if riskRank(entries[i].Risk) != riskRank(entries[j].Risk) {
+			return riskRank(entries[i].Risk) > riskRank(entries[j].Risk)
+		}
+		if entries[i].Conns != entries[j].Conns {
+			return entries[i].Conns > entries[j].Conns
+		}
+		return entries[i].Name < entries[j].Name
 	})
-	if limit <= 0 || limit > len(items) {
-		limit = len(items)
+
+	return &ServiceSummary{
+		TotalClassified: total,
+		HighRisk:        highRisk,
+		Services:        entries,
+		Categories:      categories,
 	}
-	parts := make([]string, 0, limit+1)
-	for i := 0; i < limit; i++ {
-		parts = append(parts, fmt.Sprintf("%d(x%d)", items[i].Port, items[i].Count))
-	}
-	if len(items) > limit {
-		parts = append(parts, fmt.Sprintf("+%d more", len(items)-limit))
-	}
-	return strings.Join(parts, ", ")
 }
 
-func summarizeProbeCheckSamples(checks []ProbeCheck, limit int) string {
-	if len(checks) == 0 {
-		return "(none)"
+// serviceNamesForCategory returns the names of services in a specific category.
+func serviceNamesForCategory(sp *serviceProfile, category string) []string {
+	if sp == nil {
+		return nil
 	}
-	if limit <= 0 {
-		limit = 5
-	}
-	parts := make([]string, 0, min(limit, len(checks))+1)
-	for i, check := range checks {
-		if i >= limit {
-			break
+	names := make([]string, 0, 4)
+	for _, hit := range sp.sortedHits() {
+		if hit.Category == category {
+			names = append(names, hit.Name)
 		}
-		kind := strings.ToUpper(strings.TrimSpace(check.Kind))
-		method := nonEmpty(strings.TrimSpace(check.Method), "-")
-		transport := strings.ToUpper(nonEmpty(strings.TrimSpace(check.Transport), "-"))
-		label := fmt.Sprintf("%s/%s@%d", transport, method, check.Port)
-		if kind != "" && kind != "TUNNEL" {
-			label = kind + ":" + label
-		}
-		parts = append(parts, label)
 	}
-	if len(checks) > limit {
-		parts = append(parts, fmt.Sprintf("+%d more", len(checks)-limit))
-	}
-	return strings.Join(parts, ", ")
-}
-
-func summarizeProbeCheckCounts(counts map[string]int, limit int) string {
-	if len(counts) == 0 {
-		return "(none)"
-	}
-	type countItem struct {
-		Label string
-		Count int
-	}
-	items := make([]countItem, 0, len(counts))
-	for label, count := range counts {
-		items = append(items, countItem{Label: label, Count: count})
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].Count != items[j].Count {
-			return items[i].Count > items[j].Count
-		}
-		return items[i].Label < items[j].Label
-	})
-	if limit <= 0 || limit > len(items) {
-		limit = len(items)
-	}
-	parts := make([]string, 0, limit+1)
-	for i := 0; i < limit; i++ {
-		parts = append(parts, fmt.Sprintf("%s(x%d)", items[i].Label, items[i].Count))
-	}
-	if len(items) > limit {
-		parts = append(parts, fmt.Sprintf("+%d more", len(items)-limit))
-	}
-	return strings.Join(parts, ", ")
+	return names
 }
 
 func makeFinding(agg *candidateAggregate, category, technique, severity, signal, reason string, evidence map[string]any) Finding {
@@ -1083,20 +1288,14 @@ func severityPriority(severity string) int {
 }
 
 func rolePriority(role string) int {
-	family := strings.ToLower(strings.TrimSpace(role))
-	switch family {
-	case "tunnel", "session", "beacon", "listener", "outbound", "other":
-	default:
-		family = shared.RoleFamily(role)
-	}
-	switch family {
-	case "tunnel":
-		return 5
+	switch role {
 	case "session":
 		return 4
 	case "beacon":
 		return 3
-	case "listener":
+	case "tunnel", "smb-pipe":
+		return 3
+	case "listen":
 		return 2
 	case "outbound":
 		return 1
@@ -1155,57 +1354,14 @@ func normalizeOutputPath(path string) string {
 	if path == "" {
 		path = defaultOutputPath
 	}
-	path = expandHomePath(path)
+	path = safeio.ExpandHomePath(path)
 	if filepath.IsAbs(path) {
 		path = filepath.Clean(path)
 	} else {
-		path = filepath.Join(expandHomePath(defaultContourDir), sanitizeRelativeOutputPath(path, "latest.json"))
+		path = filepath.Join(safeio.ExpandHomePath(defaultContourDir), safeio.SanitizeRelativePath(path, "latest.json"))
 	}
 	if !strings.HasSuffix(strings.ToLower(path), ".json") {
 		path += ".json"
-	}
-	return path
-}
-
-func sanitizeRelativeOutputPath(path, fallback string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return fallback
-	}
-	path = filepath.Clean(path)
-	if path == "." || path == "" {
-		return fallback
-	}
-	for strings.HasPrefix(path, "."+string(filepath.Separator)) {
-		path = strings.TrimPrefix(path, "."+string(filepath.Separator))
-	}
-	path = strings.TrimLeft(path, string(filepath.Separator))
-	parentPrefix := ".." + string(filepath.Separator)
-	for path == ".." || strings.HasPrefix(path, parentPrefix) {
-		if path == ".." {
-			return fallback
-		}
-		path = strings.TrimPrefix(path, parentPrefix)
-	}
-	if path == "" || path == "." {
-		return fallback
-	}
-	return path
-}
-
-func expandHomePath(path string) string {
-	if path == "" || path[0] != '~' {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return path
-	}
-	if path == "~" {
-		return home
-	}
-	if strings.HasPrefix(path, "~/") {
-		return filepath.Join(home, path[2:])
 	}
 	return path
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"proxywatch/internal/keystore"
+	"proxywatch/internal/safeio"
 )
 
 const (
@@ -137,5 +138,5 @@ func agentTrustPath(addr string) string {
 		name = "server"
 	}
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(name))
-	return filepath.Join(proxywatchDataRoot(), agentAuthDirName, agentTrustDirName, encoded+".pin")
+	return filepath.Join(safeio.ProxywatchDataRoot(), agentAuthDirName, agentTrustDirName, encoded+".pin")
 }

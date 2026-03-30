@@ -18,8 +18,10 @@ type ProcessInfo struct {
 	IOReadBps    uint64 `json:"io_read_bps"`
 	IOWriteBps   uint64 `json:"io_write_bps"`
 	IOOtherBps   uint64 `json:"io_other_bps"`
-	CpuTimeNanos int64  `json:"cpu_time_nanos"`
-	WindowTitle  string `json:"window_title"`
+	CpuTimeNanos int64    `json:"cpu_time_nanos"`
+	WindowTitle  string   `json:"window_title"`
+	CmdLine      string   `json:"cmd_line,omitempty"`
+	LoadedLibs   []string `json:"loaded_libs,omitempty"`
 }
 
 type ListenerInfo struct {

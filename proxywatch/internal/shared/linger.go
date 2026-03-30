@@ -88,9 +88,3 @@ func lingerKeepFor(c Candidate, base time.Duration) time.Duration {
 	return keep
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

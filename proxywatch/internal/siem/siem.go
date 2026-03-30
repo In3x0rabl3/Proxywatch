@@ -13,6 +13,7 @@ import (
 
 	"proxywatch/internal/calibration"
 	"proxywatch/internal/safeio"
+	"proxywatch/internal/shared"
 )
 
 const (
@@ -27,6 +28,7 @@ type SIEMRunInput struct {
 	Model        string
 	OutputReport string
 	OutputJSON   string
+	OnProgress   func(lines []string)
 }
 
 type SIEMRunResult struct {
@@ -75,14 +77,29 @@ type SIEMDetection struct {
 	Processes   []string    `json:"processes,omitempty"`
 	Signals     []string    `json:"signals,omitempty"`
 	Reasons     []string    `json:"reasons,omitempty"`
-	Queries     SIEMQueries `json:"queries"`
+	Techniques         []string            `json:"mitre_techniques,omitempty"`
+	Tactics            []string            `json:"mitre_tactics,omitempty"`
+	Queries            SIEMQueries         `json:"queries"`
+	CalibrationContext *SIEMCalibrationCtx `json:"calibration_context,omitempty"`
+}
+
+// SIEMCalibrationCtx carries calibrated thresholds so downstream SIEM
+// consumers can reference the tuned values in alert logic.
+type SIEMCalibrationCtx struct {
+	BeaconSleepThreshold string `json:"beacon_sleep_threshold,omitempty"`
+	BeaconJitterCoVMax   string `json:"beacon_jitter_cov_max,omitempty"`
+	ShapeDeltaThreshold  string `json:"shape_delta_threshold,omitempty"`
+	ReverseStickyScore   int    `json:"reverse_sticky_score,omitempty"`
+	Confidence           int    `json:"confidence_pct,omitempty"`
 }
 
 type SIEMQueries struct {
-	Splunk  string         `json:"splunk"`
-	KQL     string         `json:"kql"`
-	Elastic string         `json:"elastic_esql"`
-	Sigma   map[string]any `json:"sigma_like"`
+	Splunk    string         `json:"splunk"`
+	KQL       string         `json:"kql"`
+	Elastic   string         `json:"elastic_esql"`
+	Sigma     map[string]any `json:"sigma_like"`
+	YARA      string         `json:"yara,omitempty"`
+	Suricata  string         `json:"suricata,omitempty"`
 }
 
 type siemRoleStats struct {
@@ -132,13 +149,31 @@ func DefaultSIEMJSONPath() string {
 }
 
 func ExecuteSIEM(input SIEMRunInput) (SIEMRunResult, error) {
+	// Progress log — accumulated lines pushed to the UI during execution.
+	progress := make([]string, 0, 32)
+	emit := func(line string) {
+		progress = append(progress, line)
+		if input.OnProgress != nil {
+			input.OnProgress(progress)
+		}
+	}
+
+	stepPause := func() {
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	now := time.Now().UTC()
+	emit("[*] Loading calibration profile...")
+	stepPause()
 	sourceReport := normalizeOutputPath(input.SourceReport)
 	report, err := calibration.LoadReport(sourceReport)
 	if err != nil {
 		return SIEMRunResult{}, fmt.Errorf("load calibration report: %w", err)
 	}
+	emit(fmt.Sprintf("[+] Loaded: %d candidates, scope %s", report.CandidateCount, report.Scope))
+	stepPause()
 	datasetPath := normalizeSIEMDatasetPath(report.OutputPath, report.DatasetPath)
+	emit("[*] Loading dataset (up to 800 rows)...")
 	datasetRows, err := loadSIEMDatasetRows(datasetPath, maxSIEMDatasetRows)
 	if err != nil {
 		fallbackRows := buildSIEMRowsFromReport(report)
@@ -148,6 +183,8 @@ func ExecuteSIEM(input SIEMRunInput) (SIEMRunResult, error) {
 		datasetRows = fallbackRows
 		datasetPath = "derived-from-report"
 	}
+	emit(fmt.Sprintf("[+] Dataset loaded: %d rows", len(datasetRows)))
+	stepPause()
 
 	provider := normalizeProvider(input.Provider)
 	if provider == "" {
@@ -167,6 +204,8 @@ func ExecuteSIEM(input SIEMRunInput) (SIEMRunResult, error) {
 	reportPath := normalizeSIEMOutputPath(input.OutputReport, defaultSIEMReportPath, ".md")
 	jsonPath := normalizeSIEMOutputPath(input.OutputJSON, defaultSIEMJSONPath, ".json")
 
+	emit("[*] Building role statistics...")
+	stepPause()
 	roleStats := buildSIEMRoleStats(datasetRows)
 	mode := "fallback"
 	aiSummary := ""
@@ -174,6 +213,7 @@ func ExecuteSIEM(input SIEMRunInput) (SIEMRunResult, error) {
 	aiDetections := []aiSIEMDetection{}
 	aiErr := ""
 	if ready, reason := calibration.ProviderReady(provider, calibration.DetectProviderAccess()); ready {
+		emit(fmt.Sprintf("[*] Calling AI provider (%s / %s)...", provider, model))
 		if parsed, err := generateSIEMWithAI(provider, model, report, roleStats, datasetRows); err == nil {
 			mode = "ai"
 			aiSummary = strings.TrimSpace(parsed.Summary)
@@ -183,10 +223,14 @@ func ExecuteSIEM(input SIEMRunInput) (SIEMRunResult, error) {
 			aiErr = trimError(err.Error(), 240)
 		}
 	} else {
+		emit("[*] Building fallback detections...")
 		aiErr = reason
 	}
 
 	detections := buildSIEMDetections(report, roleStats, aiDetections)
+	detections = deduplicateSIEMDetections(detections)
+	emit(fmt.Sprintf("[+] Generated %d detections", len(detections)))
+	stepPause()
 	summary := aiSummary
 	if summary == "" {
 		summary = fallbackSIEMSummary(report, len(detections))
@@ -225,12 +269,15 @@ func ExecuteSIEM(input SIEMRunInput) (SIEMRunResult, error) {
 	}
 	bundle.ReportLines = renderSIEMReportLines(bundle)
 
+	emit("[*] Writing SIEM detections...")
+	stepPause()
 	if err := writeSIEMJSON(jsonPath, bundle); err != nil {
 		return SIEMRunResult{}, err
 	}
 	if err := writeSIEMReport(reportPath, bundle); err != nil {
 		return SIEMRunResult{}, err
 	}
+	emit(fmt.Sprintf("[+] Detections saved as %s", jsonPath))
 
 	return SIEMRunResult{
 		GeneratedAt:    now,
@@ -243,6 +290,52 @@ func ExecuteSIEM(input SIEMRunInput) (SIEMRunResult, error) {
 		ReportLines:    append([]string(nil), bundle.ReportLines...),
 		DetectionCount: len(detections),
 	}, nil
+}
+
+func deduplicateSIEMDetections(detections []SIEMDetection) []SIEMDetection {
+	if len(detections) <= 1 {
+		return detections
+	}
+	type dedupKey struct {
+		role      string
+		processes string
+	}
+	seen := make(map[dedupKey]int) // key -> index in result
+	result := make([]SIEMDetection, 0, len(detections))
+
+	sevRank := func(s string) int {
+		switch strings.ToUpper(strings.TrimSpace(s)) {
+		case "HIGH", "CRITICAL":
+			return 3
+		case "MEDIUM":
+			return 2
+		case "LOW":
+			return 1
+		default:
+			return 0
+		}
+	}
+
+	for _, det := range detections {
+		procs := make([]string, len(det.Processes))
+		copy(procs, det.Processes)
+		sort.Strings(procs)
+		key := dedupKey{role: det.Role, processes: strings.Join(procs, ",")}
+
+		if idx, ok := seen[key]; ok {
+			// Keep higher severity
+			if sevRank(det.Severity) > sevRank(result[idx].Severity) {
+				det.Description += " (merged from duplicate detection)"
+				result[idx] = det
+			} else {
+				result[idx].Description += " (merged with duplicate)"
+			}
+		} else {
+			seen[key] = len(result)
+			result = append(result, det)
+		}
+	}
+	return result
 }
 
 func loadSIEMDatasetRows(path string, maxRows int) ([]siemDatasetRow, error) {
@@ -338,7 +431,7 @@ func generateSIEMWithAI(provider, model string, report calibration.Report, roleS
 			"states":        topMapCounts(st.States, 3),
 		}
 	}
-	rowSamples := make([]map[string]any, 0, minInt(32, len(rows)))
+	rowSamples := make([]map[string]any, 0, min(32, len(rows)))
 	for i := 0; i < len(rows) && i < 32; i++ {
 		row := rows[i]
 		rowSamples = append(rowSamples, map[string]any{
@@ -485,6 +578,10 @@ func buildSIEMDetections(report calibration.Report, roleStats map[string]*siemRo
 		))
 	}
 
+	// Attach calibrated thresholds from the report so downstream SIEM
+	// consumers can reference the tuned values in alert logic.
+	ctx := calibrationContextFromReport(report)
+
 	seen := make(map[string]bool, len(out))
 	filtered := make([]SIEMDetection, 0, len(out))
 	for _, det := range out {
@@ -492,9 +589,24 @@ func buildSIEMDetections(report calibration.Report, roleStats map[string]*siemRo
 			continue
 		}
 		seen[det.ID] = true
+		det.CalibrationContext = ctx
 		filtered = append(filtered, det)
 	}
 	return filtered
+}
+
+func calibrationContextFromReport(report calibration.Report) *SIEMCalibrationCtx {
+	s := report.Settings
+	if s.BeaconSleepThreshold == "" && s.BeaconJitterCoVMax == 0 && s.ShapeDeltaThreshold == 0 && s.ReverseStickyScore == 0 {
+		return nil
+	}
+	return &SIEMCalibrationCtx{
+		BeaconSleepThreshold: s.BeaconSleepThreshold,
+		BeaconJitterCoVMax:   fmt.Sprintf("%.2f", s.BeaconJitterCoVMax),
+		ShapeDeltaThreshold:  fmt.Sprintf("%.2f", s.ShapeDeltaThreshold),
+		ReverseStickyScore:   s.ReverseStickyScore,
+		Confidence:           report.Confidence,
+	}
 }
 
 func makeSIEMDetection(role, severity, title, description string, processes, signals, reasons []string) SIEMDetection {
@@ -516,12 +628,16 @@ func makeSIEMDetection(role, severity, title, description string, processes, sig
 		Processes:   processes,
 		Signals:     signals,
 		Reasons:     reasons,
+		Techniques:  shared.MITRETechniques(role),
+		Tactics:     shared.MITRETactics(role),
 	}
 	det.Queries = SIEMQueries{
-		Splunk:  buildSIEMSplunkQuery(det),
-		KQL:     buildSIEMKQLQuery(det),
-		Elastic: buildSIEMElasticQuery(det),
-		Sigma:   buildSIEMSigma(det),
+		Splunk:   buildSIEMSplunkQuery(det),
+		KQL:      buildSIEMKQLQuery(det),
+		Elastic:  buildSIEMElasticQuery(det),
+		Sigma:    buildSIEMSigma(det),
+		YARA:     buildSIEMYARA(det),
+		Suricata: buildSIEMSuricata(det),
 	}
 	return det
 }
@@ -552,15 +668,15 @@ func sanitizeDetectionID(id string) string {
 func normalizeSIEMRole(role string) string {
 	s := strings.ToLower(strings.TrimSpace(role))
 	switch s {
-	case "session", "susp-session", "reverse-control":
+	case "session":
 		return "session"
-	case "beacon", "susp-beacon":
+	case "beacon":
 		return "beacon"
-	case "tunnel", "tun", "susp-tun", "reverse-transport", "reverse-proxy", "reverse-tunnel", "smb-pipe":
+	case "tunnel", "smb-pipe":
 		return "tunnel"
-	case "listener", "proxy-listener", "listener-with-clients", "listener-with-outbound", "listener-only":
+	case "listen", "listener":
 		return "listener"
-	case "outbound", "outbound-only":
+	case "outbound":
 		return "outbound"
 	default:
 		return "other"
@@ -639,7 +755,7 @@ func fallbackSIEMSummary(report calibration.Report, detections int) string {
 
 func fallbackSIEMHighlights(report calibration.Report, roleStats map[string]*siemRoleStats) []string {
 	out := []string{
-		fmt.Sprintf("Calibration source role mix: session=%d beacon=%d tunnel=%d listener=%d outbound=%d.", report.RoleCounts["session"], report.RoleCounts["beacon"], report.RoleCounts["tunnel"], report.RoleCounts["listener"], report.RoleCounts["outbound"]),
+		fmt.Sprintf("Calibration source role mix: session=%d, beacon=%d, tunnel=%d, listen=%d, outbound=%d.", report.RoleCounts["session"], report.RoleCounts["beacon"], report.RoleCounts["tunnel"], report.RoleCounts["listen"], report.RoleCounts["outbound"]),
 	}
 	roles := orderedRoleFamiliesFromReport(report, roleStats)
 	if len(roles) > 0 {
@@ -671,7 +787,7 @@ func sanitizeStringList(values []string, limit int) []string {
 		return nil
 	}
 	seen := make(map[string]bool, len(values))
-	out := make([]string, 0, minInt(limit, len(values)))
+	out := make([]string, 0, min(limit, len(values)))
 	for _, value := range values {
 		clean := strings.TrimSpace(value)
 		if clean == "" {
@@ -822,6 +938,70 @@ func buildSIEMSigma(det SIEMDetection) map[string]any {
 	}
 }
 
+func buildSIEMYARA(det SIEMDetection) string {
+	if len(det.Processes) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	ruleName := strings.ReplaceAll(det.ID, "-", "_")
+	b.WriteString(fmt.Sprintf("rule %s {\n", ruleName))
+	b.WriteString("    meta:\n")
+	b.WriteString(fmt.Sprintf("        description = \"%s\"\n", escapeSIEMQuery(det.Title)))
+	b.WriteString(fmt.Sprintf("        severity = \"%s\"\n", det.Severity))
+	if len(det.Techniques) > 0 {
+		b.WriteString(fmt.Sprintf("        mitre = \"%s\"\n", strings.Join(det.Techniques, ",")))
+	}
+	b.WriteString(fmt.Sprintf("        role = \"%s\"\n", det.Role))
+	b.WriteString("    strings:\n")
+	for i, proc := range det.Processes {
+		if i >= 10 {
+			break
+		}
+		escaped := strings.ReplaceAll(proc, "\\", "\\\\")
+		b.WriteString(fmt.Sprintf("        $proc%d = \"%s\" ascii nocase\n", i, escaped))
+	}
+	for i, sig := range det.Signals {
+		if i >= 5 {
+			break
+		}
+		b.WriteString(fmt.Sprintf("        $sig%d = \"%s\" ascii nocase\n", i, sig))
+	}
+	b.WriteString("    condition:\n")
+	b.WriteString("        any of ($proc*) or any of ($sig*)\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func buildSIEMSuricata(det SIEMDetection) string {
+	if len(det.Processes) == 0 {
+		return ""
+	}
+	var rules []string
+	sid := 3000000 // base SID for proxywatch-generated rules
+	for i, proc := range det.Processes {
+		if i >= 5 {
+			break
+		}
+		rule := fmt.Sprintf(
+			"alert tcp $HOME_NET any -> $EXTERNAL_NET any "+
+				"(msg:\"PROXYWATCH %s - %s\"; "+
+				"content:\"%s\"; nocase; "+
+				"classtype:trojan-activity; "+
+				"sid:%d; rev:1;"+
+				")",
+			det.Role, escapeSIEMQuery(proc),
+			escapeSIEMQuery(proc),
+			sid+i,
+		)
+		if len(det.Techniques) > 0 {
+			rule = strings.TrimSuffix(rule, ")")
+			rule += fmt.Sprintf(" metadata:mitre_technique %s;)", strings.Join(det.Techniques, ","))
+		}
+		rules = append(rules, rule)
+	}
+	return strings.Join(rules, "\n")
+}
+
 func escapeSIEMQuery(v string) string {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -843,68 +1023,74 @@ func topMapCounts(src map[string]int, limit int) []map[string]any {
 
 func renderSIEMReportLines(bundle SIEMBundle) []string {
 	lines := make([]string, 0, 200)
-	lines = append(lines, "# Proxywatch SIEM Detection Report")
-	lines = append(lines, "")
-	lines = append(lines, "Generated: "+bundle.GeneratedAt.Format(time.RFC3339))
-	lines = append(lines, "Mode: "+bundle.Mode)
-	lines = append(lines, "Provider/Model: "+bundle.Provider+" / "+bundle.Model)
-	lines = append(lines, "Source calibration report: "+bundle.Source.CalibrationReport)
-	lines = append(lines, "Source calibration dataset: "+bundle.Source.CalibrationDataset)
-	lines = append(lines, fmt.Sprintf("Scope: %s | Duration: %s | Candidates: %d", nonEmpty(bundle.Source.Scope, "recommended"), bundle.Source.Duration, bundle.Source.CandidateCount))
-	lines = append(lines, "")
-	lines = append(lines, "## Summary")
-	lines = append(lines, bundle.Summary)
-	lines = append(lines, "")
+
+	// ── Header ──────────────────────────────────────────────────
+	lines = append(lines, fmt.Sprintf("%d detections  |  %d candidates  |  %s  |  %s / %s",
+		len(bundle.Detections), bundle.Source.CandidateCount,
+		bundle.Source.Duration, bundle.Provider, bundle.Model))
+
+	// ── Summary + Highlights ────────────────────────────────────
+	if strings.TrimSpace(bundle.Summary) != "" {
+		lines = append(lines, "")
+		lines = append(lines, bundle.Summary)
+	}
 	if len(bundle.Highlights) > 0 {
-		lines = append(lines, "## Highlights")
 		for _, h := range bundle.Highlights {
-			lines = append(lines, "- "+h)
+			lines = append(lines, "  - "+h)
 		}
+	}
+
+	// ── Detections ──────────────────────────────────────────────
+	if len(bundle.Detections) > 0 {
 		lines = append(lines, "")
-	}
-	lines = append(lines, "## Detection Coverage")
-	roles := []string{"session", "beacon", "tunnel", "listener", "outbound", "other"}
-	for _, role := range roles {
-		count := bundle.RoleCounts[role]
-		if count > 0 {
-			lines = append(lines, fmt.Sprintf("- %s: %d", role, count))
+		lines = append(lines, "Detections")
+
+		for i, det := range bundle.Detections {
+			if i > 0 {
+				lines = append(lines, "")
+			}
+			sevTag := strings.ToUpper(det.Severity)
+			lines = append(lines, fmt.Sprintf("  [%s] %s", sevTag, det.Title))
+			lines = append(lines, fmt.Sprintf("         Role: %s  |  Processes: %s", det.Role, strings.Join(det.Processes, ", ")))
+			if len(det.Techniques) > 0 {
+				lines = append(lines, "         MITRE: "+strings.Join(det.Techniques, ", "))
+			}
+			if len(det.Reasons) > 0 {
+				lines = append(lines, "         "+strings.Join(det.Reasons, " | "))
+			}
+
+			// Queries — compact, one per line.
+			queries := []struct {
+				name, value string
+			}{
+				{"Splunk", strings.TrimSpace(det.Queries.Splunk)},
+				{"KQL", strings.TrimSpace(det.Queries.KQL)},
+				{"ESQL", strings.TrimSpace(det.Queries.Elastic)},
+			}
+			for _, q := range queries {
+				if q.value == "" {
+					continue
+				}
+				lines = append(lines, fmt.Sprintf("         %s: %s", q.name, q.value))
+			}
+			if strings.TrimSpace(det.Queries.Suricata) != "" {
+				lines = append(lines, fmt.Sprintf("         Suricata: %s", strings.TrimSpace(det.Queries.Suricata)))
+			}
+			if strings.TrimSpace(det.Queries.YARA) != "" {
+				lines = append(lines, fmt.Sprintf("         YARA: %s", strings.TrimSpace(det.Queries.YARA)))
+			}
 		}
 	}
-	lines = append(lines, "")
-	lines = append(lines, "## Detections")
-	for i, det := range bundle.Detections {
-		lines = append(lines, fmt.Sprintf("### %d. %s [%s]", i+1, det.Title, strings.ToUpper(det.Severity)))
-		lines = append(lines, "Role: "+det.Role)
-		lines = append(lines, "Description: "+det.Description)
-		if len(det.Processes) > 0 {
-			lines = append(lines, "Processes: "+strings.Join(det.Processes, ", "))
-		}
-		if len(det.Signals) > 0 {
-			lines = append(lines, "Signals: "+strings.Join(det.Signals, ", "))
-		}
-		if len(det.Reasons) > 0 {
-			lines = append(lines, "Reasons: "+strings.Join(det.Reasons, " | "))
-		}
-		lines = append(lines, "Splunk query:")
-		lines = append(lines, "```")
-		lines = append(lines, det.Queries.Splunk)
-		lines = append(lines, "```")
-		lines = append(lines, "KQL query:")
-		lines = append(lines, "```")
-		lines = append(lines, det.Queries.KQL)
-		lines = append(lines, "```")
-		lines = append(lines, "Elastic ESQL query:")
-		lines = append(lines, "```")
-		lines = append(lines, det.Queries.Elastic)
-		lines = append(lines, "```")
-		lines = append(lines, "")
-	}
+
+	// ── Defender Notes ──────────────────────────────────────────
 	if len(bundle.Recommendations) > 0 {
-		lines = append(lines, "## Defender Notes")
+		lines = append(lines, "")
+		lines = append(lines, "Notes")
 		for _, note := range bundle.Recommendations {
-			lines = append(lines, "- "+note)
+			lines = append(lines, "  - "+note)
 		}
 	}
+
 	return lines
 }
 
@@ -956,12 +1142,12 @@ func normalizeSIEMOutputPath(path, fallback, ext string) string {
 	if path == "" {
 		path = fallback
 	}
-	path = expandHomePath(path)
+	path = safeio.ExpandHomePath(path)
 	if filepath.IsAbs(path) {
 		path = filepath.Clean(path)
 	} else {
-		rel := sanitizeRelativeOutputPath(path, filepath.Base(fallback))
-		home := userHomeDir()
+		rel := safeio.SanitizeRelativePath(path, filepath.Base(fallback))
+		home := safeio.UserHomeDir()
 		if home == "" {
 			path = filepath.Join(".proxywatch", "siem", rel)
 		} else {
@@ -980,11 +1166,11 @@ func normalizeSIEMDatasetPath(reportPath, datasetPath string) string {
 	if datasetPath == "" {
 		return calibration.DatasetPathForReport(reportPath)
 	}
-	datasetPath = expandHomePath(datasetPath)
+	datasetPath = safeio.ExpandHomePath(datasetPath)
 	if filepath.IsAbs(datasetPath) {
 		return filepath.Clean(datasetPath)
 	}
-	rel := sanitizeRelativeOutputPath(datasetPath, filepath.Base(calibration.DatasetPathForReport(reportPath)))
+	rel := safeio.SanitizeRelativePath(datasetPath, filepath.Base(calibration.DatasetPathForReport(reportPath)))
 	baseDir := filepath.Dir(reportPath)
 	if baseDir == "" || baseDir == "." {
 		baseDir = siemCalibrationRoot()
@@ -993,7 +1179,7 @@ func normalizeSIEMDatasetPath(reportPath, datasetPath string) string {
 }
 
 func buildSIEMRowsFromReport(report calibration.Report) []siemDatasetRow {
-	rows := make([]siemDatasetRow, 0, maxInt(1, len(report.TopProcesses)))
+	rows := make([]siemDatasetRow, 0, max(1, len(report.TopProcesses)))
 	for _, proc := range report.TopProcesses {
 		rows = append(rows, siemDatasetRow{
 			Timestamp: report.GeneratedAt,
@@ -1087,7 +1273,7 @@ func limitStrings(values []string, limit int) []string {
 	if len(values) == 0 || limit <= 0 {
 		return nil
 	}
-	out := make([]string, 0, minInt(limit, len(values)))
+	out := make([]string, 0, min(limit, len(values)))
 	for _, value := range values {
 		clean := strings.TrimSpace(value)
 		if clean == "" {
@@ -1102,7 +1288,7 @@ func limitStrings(values []string, limit int) []string {
 }
 
 func sanitizeRecommendations(values []string) []string {
-	out := make([]string, 0, minInt(6, len(values)))
+	out := make([]string, 0, min(6, len(values)))
 	for _, value := range values {
 		clean := strings.TrimSpace(value)
 		if clean == "" {
@@ -1167,11 +1353,11 @@ func normalizeOutputPath(path string) string {
 	if path == "" {
 		path = "~/.proxywatch/calibration/latest.json"
 	}
-	path = expandHomePath(path)
+	path = safeio.ExpandHomePath(path)
 	if filepath.IsAbs(path) {
 		path = filepath.Clean(path)
 	} else {
-		path = filepath.Join(siemCalibrationRoot(), sanitizeRelativeOutputPath(path, "latest.json"))
+		path = filepath.Join(siemCalibrationRoot(), safeio.SanitizeRelativePath(path, "latest.json"))
 	}
 	if !strings.HasSuffix(strings.ToLower(path), ".json") {
 		path += ".json"
@@ -1179,84 +1365,11 @@ func normalizeOutputPath(path string) string {
 	return path
 }
 
-func sanitizeRelativeOutputPath(path, fallback string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return fallback
-	}
-	path = filepath.Clean(path)
-	if path == "." || path == "" {
-		return fallback
-	}
-	for strings.HasPrefix(path, "."+string(filepath.Separator)) {
-		path = strings.TrimPrefix(path, "."+string(filepath.Separator))
-	}
-	path = strings.TrimLeft(path, string(filepath.Separator))
-	parentPrefix := ".." + string(filepath.Separator)
-	for path == ".." || strings.HasPrefix(path, parentPrefix) {
-		if path == ".." {
-			return fallback
-		}
-		path = strings.TrimPrefix(path, parentPrefix)
-	}
-	if path == "" || path == "." {
-		return fallback
-	}
-	return path
-}
-
-func expandHomePath(path string) string {
-	if path == "" || path[0] != '~' {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return path
-	}
-	if path == "~" {
-		return home
-	}
-	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
-		return filepath.Join(home, path[2:])
-	}
-	return path
-}
-
 func siemCalibrationRoot() string {
-	home := userHomeDir()
+	home := safeio.UserHomeDir()
 	if home == "" {
 		return filepath.Join(".proxywatch", "calibration")
 	}
 	return filepath.Join(home, ".proxywatch", "calibration")
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func userHomeDir() string {
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		return strings.TrimSpace(home)
-	}
-	for _, key := range []string{"HOME", "USERPROFILE"} {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			return value
-		}
-	}
-	drive := strings.TrimSpace(os.Getenv("HOMEDRIVE"))
-	path := strings.TrimSpace(os.Getenv("HOMEPATH"))
-	if drive != "" && path != "" {
-		return drive + path
-	}
-	return ""
-}

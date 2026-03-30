@@ -19,7 +19,7 @@ type Whitelist struct {
 }
 
 func DefaultWhitelistPath() string {
-	return filepath.Join(proxywatchDataRoot(), "whitelist.json")
+	return filepath.Join(safeio.ProxywatchDataRoot(), "whitelist.json")
 }
 
 func legacyWhitelistPath() string {
@@ -35,12 +35,12 @@ func normalizeWhitelistPath(path string) string {
 	if path == "" {
 		path = DefaultWhitelistPath()
 	}
-	path = expandHomePathForWhitelist(path)
+	path = safeio.ExpandHomePath(path)
 	if filepath.IsAbs(path) {
 		return path
 	}
-	rel := sanitizeRelativePath(path, "whitelist.json")
-	return filepath.Join(proxywatchDataRoot(), rel)
+	rel := safeio.SanitizeRelativePath(path, "whitelist.json")
+	return filepath.Join(safeio.ProxywatchDataRoot(), rel)
 }
 
 func LoadWhitelist(path string) (*Whitelist, error) {
@@ -220,77 +220,6 @@ func whitelistKey(c Candidate) string {
 func normalizePath(p string) string {
 	p = filepath.Clean(p)
 	return strings.ToLower(p)
-}
-
-func proxywatchDataRoot() string {
-	home := userHomeDir()
-	if home == "" {
-		return ".proxywatch"
-	}
-	return filepath.Join(home, ".proxywatch")
-}
-
-func userHomeDir() string {
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		return strings.TrimSpace(home)
-	}
-	for _, key := range []string{"HOME", "USERPROFILE"} {
-		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
-			return val
-		}
-	}
-	drive := strings.TrimSpace(os.Getenv("HOMEDRIVE"))
-	path := strings.TrimSpace(os.Getenv("HOMEPATH"))
-	if drive != "" && path != "" {
-		return drive + path
-	}
-	return ""
-}
-
-func expandHomePathForWhitelist(path string) string {
-	if path == "" || path[0] != '~' {
-		return path
-	}
-	home := userHomeDir()
-	if home == "" {
-		return path
-	}
-	if path == "~" {
-		return home
-	}
-	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
-		return filepath.Join(home, path[2:])
-	}
-	return path
-}
-
-func sanitizeRelativePath(path, fallback string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return fallback
-	}
-	path = filepath.Clean(path)
-	if path == "." || path == "" {
-		return fallback
-	}
-	if strings.HasPrefix(path, ".proxywatch"+string(filepath.Separator)) {
-		path = strings.TrimPrefix(path, ".proxywatch"+string(filepath.Separator))
-	}
-	for strings.HasPrefix(path, "."+string(filepath.Separator)) {
-		path = strings.TrimPrefix(path, "."+string(filepath.Separator))
-	}
-	path = strings.TrimLeft(path, string(filepath.Separator))
-	parentPrefix := ".." + string(filepath.Separator)
-	for path == ".." || strings.HasPrefix(path, parentPrefix) {
-		if path == ".." {
-			return fallback
-		}
-		path = strings.TrimPrefix(path, parentPrefix)
-	}
-	if path == "" || path == "." {
-		return fallback
-	}
-	return path
 }
 
 func decodeWhitelistEntries(data []byte) ([]string, error) {

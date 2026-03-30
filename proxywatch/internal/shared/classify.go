@@ -1,6 +1,10 @@
 package shared
 
-import "time"
+import (
+	"net"
+	"strings"
+	"time"
+)
 
 type ClassifyOptions struct {
 	MinScore    int
@@ -67,6 +71,18 @@ type PendingControlHistory struct {
 	Observations int       `json:"observations"`
 }
 
+// SYNCycleHistory tracks SYN_SENT appearance/disappearance cycles to detect
+// beacon-like callback patterns even when the C2 server is down and
+// connections never reach ESTABLISHED state.
+type SYNCycleHistory struct {
+	Target      string      `json:"target"`
+	Cycles      int         `json:"cycles"`       // number of present→absent→present transitions
+	LastPresent bool        `json:"last_present"`  // was SYN_SENT present in previous sample
+	LastSeen    time.Time   `json:"last_seen"`
+	FirstSeen   time.Time   `json:"first_seen"`
+	Intervals   []float64   `json:"intervals"`     // seconds between cycle starts (rolling window)
+}
+
 const (
 	SuspicionControl = 1
 	SuspicionProxy   = 2
@@ -108,6 +124,7 @@ var (
 	ParentChildFreq           = make(map[string]int)
 	RareTupleCount            = make(map[string]int)
 	PendingControlByPID       = make(map[int]*PendingControlHistory)
+	SYNCycleByPID             = make(map[int]*SYNCycleHistory)
 	ActiveWindow              = 10 * time.Second
 	SuspicionWindow           = 5 * time.Minute
 	HistoryTTL                = 5 * time.Minute
@@ -119,7 +136,7 @@ var (
 	MinInternalPortsForRev    = 2
 	OutboundOnlyExternalCap   = 30
 	ShapeDeltaThreshold       = 0.35 // 35% shift triggers shape anomaly
-	BeaconJitterCoVMax        = 1.5  // tolerate broad jitter for callback cadence
+	BeaconJitterCoVMax        = 0.8  // tighter jitter tolerance for callback cadence
 	// How far to demote traffic that matches verified destinations without strong evidence in the UI ranking.
 	TrafficVerifiedPenalty = 80
 	// Minimum external target prefix diversity to treat traffic as verified on benign ports.
@@ -134,31 +151,17 @@ var (
 
 func RolePriority(role string) int {
 	switch role {
-	case "reverse-transport":
+	case "tunnel":
 		return 100
-	case "reverse-proxy":
-		return 96
 	case "smb-pipe":
 		return 95
-	case "susp-tun":
-		return 94
-	case "reverse-tunnel":
-		return 92
-	case "reverse-control":
+	case "session":
 		return 90
-	case "susp-session":
-		return 88
-	case "susp-beacon":
+	case "beacon":
 		return 86
-	case "proxy-listener":
+	case "listen":
 		return 60
-	case "listener-with-clients":
-		return 55
-	case "listener-with-outbound":
-		return 50
-	case "listener-only":
-		return 45
-	case "outbound-only":
+	case "outbound":
 		return 20
 	default:
 		return 0
@@ -167,24 +170,54 @@ func RolePriority(role string) int {
 
 func RoleFamily(role string) string {
 	switch role {
-	case "smb-pipe", "reverse-transport", "reverse-proxy", "reverse-tunnel", "susp-tun":
-		return "tunnel"
-	case "reverse-control", "susp-session":
-		return "session"
-	case "susp-beacon":
-		return "beacon"
-	case "proxy-listener", "listener-with-clients", "listener-with-outbound", "listener-only":
-		return "listener"
-	case "outbound-only":
-		return "outbound"
+	case "session", "beacon", "tunnel", "smb-pipe", "listen", "outbound":
+		return role
 	default:
 		return "other"
 	}
 }
 
+// MITRETechniques returns the ATT&CK technique IDs associated with a role.
+func MITRETechniques(role string) []string {
+	switch role {
+	case "session":
+		return []string{"T1071", "T1090", "T1573"}
+	case "beacon":
+		return []string{"T1071", "T1571", "T1008"}
+	case "tunnel":
+		return []string{"T1572", "T1090", "T1573"}
+	case "smb-pipe":
+		return []string{"T1572", "T1021.002", "T1570"}
+	case "listen":
+		return []string{"T1090", "T1571"}
+	case "outbound":
+		return []string{"T1071"}
+	default:
+		return nil
+	}
+}
+
+// MITRETactics returns the ATT&CK tactic names associated with a role family.
+func MITRETactics(role string) []string {
+	switch role {
+	case "tunnel", "smb-pipe":
+		return []string{"Command and Control", "Lateral Movement"}
+	case "session":
+		return []string{"Command and Control"}
+	case "beacon":
+		return []string{"Command and Control"}
+	case "listen":
+		return []string{"Command and Control", "Persistence"}
+	case "outbound":
+		return []string{"Command and Control"}
+	default:
+		return nil
+	}
+}
+
 func IsControlChannelRole(role string) bool {
 	switch role {
-	case "reverse-control", "reverse-transport", "smb-pipe", "susp-tun", "susp-session", "susp-beacon":
+	case "session", "beacon", "tunnel", "smb-pipe":
 		return true
 	default:
 		return false
@@ -220,12 +253,14 @@ func CandidateLess(a, b Candidate) bool {
 }
 
 func roleFamilyPriority(role string) int {
-	switch RoleFamily(role) {
-	case "tunnel":
-		return 4
+	switch role {
+	case "tunnel", "smb-pipe":
+		return 5
 	case "session":
-		return 3
+		return 4
 	case "beacon":
+		return 3
+	case "listen":
 		return 2
 	default:
 		return 1
@@ -238,4 +273,128 @@ func candidatePriority(c Candidate) int {
 		pri -= TrafficVerifiedPenalty
 	}
 	return pri
+}
+
+// --- role filters (merged from role_filters.go) ---
+
+func ParseRoleFilter(s string) map[string]bool {
+	allRoles := []string{
+		"session",
+		"beacon",
+		"tunnel",
+		"smb-pipe",
+		"listen",
+		"outbound",
+	}
+
+	roleGroups := map[string][]string{
+		"recommended": {"session", "beacon", "tunnel", "smb-pipe"},
+		"all":         allRoles,
+		"session":     {"session"},
+		"beacon":      {"beacon"},
+		"tunnel":      {"tunnel", "smb-pipe"},
+		"listen":      {"listen"},
+		"outbound":    {"outbound"},
+		// Legacy aliases.
+		"control":  {"session", "beacon", "tunnel", "smb-pipe"},
+		"command":  {"session", "beacon"},
+		"network":  {"listen", "outbound"},
+		"listener": {"listen"},
+		"reverse":  {"session", "tunnel"},
+	}
+
+	out := make(map[string]bool)
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return out
+	}
+	for _, r := range strings.Split(s, ",") {
+		r = strings.TrimSpace(r)
+		if r != "" {
+			if expanded, ok := roleGroups[strings.ToLower(r)]; ok {
+				for _, er := range expanded {
+					out[er] = true
+				}
+				continue
+			}
+			out[r] = true
+		}
+	}
+	return out
+}
+
+func RoleMatchesFilter(role string, roleFilter map[string]bool) bool {
+	if len(roleFilter) == 0 {
+		return true
+	}
+	if roleFilter[role] {
+		return true
+	}
+	return roleFilter[RoleFamily(role)]
+}
+
+// --- network scope (merged from network_scope.go) ---
+
+func IsInternalIP(ip string) bool {
+	netIP := parseIP(ip)
+	if netIP == nil {
+		return false
+	}
+	if netIP.IsLoopback() || netIP.IsPrivate() {
+		return true
+	}
+	if netIP.IsLinkLocalUnicast() || netIP.IsLinkLocalMulticast() {
+		return true
+	}
+	return netIP.IsInterfaceLocalMulticast()
+}
+
+func IsLoopbackIP(ip string) bool {
+	parsed := parseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	return parsed.IsLoopback()
+}
+
+func IsWildcardIP(ip string) bool {
+	return ip == "0.0.0.0" || ip == "::"
+}
+
+func UDPScopeCounts(list []UDPListenerInfo) (internal, external, loopback int) {
+	for _, u := range list {
+		switch {
+		case IsLoopbackIP(u.LocalAddress):
+			loopback++
+		case IsInternalIP(u.LocalAddress):
+			internal++
+		default:
+			external++
+		}
+	}
+	return
+}
+
+func ScopeLabelForLocalAddress(addr string) string {
+	switch {
+	case IsWildcardIP(addr):
+		return "any"
+	case IsLoopbackIP(addr):
+		return "loopback"
+	case IsInternalIP(addr):
+		return "internal"
+	default:
+		return "external"
+	}
+}
+
+func parseIP(raw string) net.IP {
+	ip := strings.TrimSpace(raw)
+	if ip == "" {
+		return nil
+	}
+	if zone := strings.IndexByte(ip, '%'); zone > 0 {
+		ip = ip[:zone]
+	}
+	return net.ParseIP(ip)
 }

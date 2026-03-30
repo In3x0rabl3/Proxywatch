@@ -194,7 +194,7 @@ func bestDelegatedBroker(
 		if used[i] {
 			continue
 		}
-		delta := absDuration(firstSeen.Sub(b.firstSeen))
+		delta := firstSeen.Sub(b.firstSeen).Abs()
 		if delta > delegatedPairWindow {
 			continue
 		}
@@ -250,7 +250,7 @@ func isDelegatedClientCandidate(pid int, proc *shared.ProcessInfo, now time.Time
 	if proc == nil || shared.IsLikelyBenignControlClient(proc) {
 		return false
 	}
-	if isKernelThreadLike(proc.Name) {
+	if isKernelThreadLike(proc) {
 		return false
 	}
 	firstSeen, ok := procFirstSeenByPID[pid]
@@ -267,7 +267,7 @@ func isDelegatedClientCandidate(pid int, proc *shared.ProcessInfo, now time.Time
 		return false
 	}
 
-	path := normalizeDelegatedPath(proc.ExePath)
+	path := shared.NormalizeExePath(proc.ExePath)
 	if path == "" {
 		return false
 	}
@@ -304,11 +304,6 @@ func sweepDelegatedTracking(now time.Time) {
 	}
 }
 
-func normalizeDelegatedPath(path string) string {
-	path = strings.ToLower(strings.TrimSpace(path))
-	return strings.ReplaceAll(path, "\\", "/")
-}
-
 func normalizedUser(user string) string {
 	user = strings.ToLower(strings.TrimSpace(user))
 	if user == "" || user == "(unknown)" {
@@ -334,31 +329,15 @@ func isLikelyUserWritablePath(path string) bool {
 		strings.Contains(path, "/var/tmp/")
 }
 
-func isKernelThreadLike(name string) bool {
-	n := strings.ToLower(strings.TrimSpace(name))
-	if n == "" {
+// isKernelThreadLike detects kernel threads behaviorally: they have no
+// executable on disk and descend from the kernel thread daemon (PID <= 2).
+// No process names are hardcoded.
+func isKernelThreadLike(proc *shared.ProcessInfo) bool {
+	if proc == nil {
 		return false
 	}
-	prefixes := []string{
-		"kworker",
-		"ksoftirqd",
-		"migration/",
-		"rcu_",
-		"watchdog/",
-		"cpuhp/",
-		"idle_inject/",
-	}
-	for _, p := range prefixes {
-		if strings.HasPrefix(n, p) {
-			return true
-		}
-	}
-	return false
+	// Kernel threads have no executable path and are spawned by init (1) or
+	// kthreadd (2).
+	return strings.TrimSpace(proc.ExePath) == "" && proc.ParentPid >= 0 && proc.ParentPid <= 2
 }
 
-func absDuration(v time.Duration) time.Duration {
-	if v < 0 {
-		return -v
-	}
-	return v
-}
