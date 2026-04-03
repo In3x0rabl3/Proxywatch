@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"proxywatch/internal/keystore"
+	detmodel "proxywatch/internal/model"
 	"proxywatch/internal/safeio"
 	"proxywatch/internal/shared"
 )
@@ -25,7 +26,7 @@ const (
 
 var (
 	providerLabels  = []string{"OpenAI", "Anthropic", "Local"}
-	durationOptions = []string{"10s", "30s", "1m", "5m", "15m", "30m"}
+	durationOptions = []string{"30s", "1m", "5m"}
 )
 
 type ProviderAccess struct {
@@ -101,7 +102,18 @@ type Report struct {
 	SimilarPast           []SimilarCalibration  `json:"similar_past,omitempty"`
 	ContourHintsApplied   int                   `json:"contour_hints_applied,omitempty"`
 	EnvFingerprint        string                `json:"env_fingerprint,omitempty"`
-	ReportLines           []string              `json:"report_lines,omitempty"`
+
+	// AI intelligence analysis (from enhanced reasoning engine).
+	NewSignals      []AISignal      `json:"new_signals,omitempty"`
+	Correlations    []AICorrelation `json:"correlations,omitempty"`
+	AILearningNotes []string        `json:"ai_learning_notes,omitempty"`
+	AIHeuristics    []string        `json:"ai_heuristics,omitempty"`
+	CounterEvasion  []string        `json:"counter_evasion,omitempty"`
+	InnovationIdeas []string        `json:"innovation_ideas,omitempty"`
+	ConfidenceNotes []string        `json:"confidence_notes,omitempty"`
+	FeedbackGaps    []string        `json:"feedback_gaps,omitempty"`
+
+	ReportLines []string `json:"report_lines,omitempty"`
 }
 
 type Profile struct {
@@ -137,6 +149,7 @@ type RunInput struct {
 	Samples      []shared.Candidate
 	ContourHints []shared.ContourHint
 	OnProgress   func(lines []string)
+	HostScope    ModelScope
 }
 
 type RunResult struct {
@@ -152,6 +165,31 @@ type aiCalibrationResult struct {
 	Risks           []string       `json:"risks"`
 	Reasoning       []string       `json:"reasoning"`
 	Settings        TuningSettings `json:"settings"`
+
+	// Intelligence sections from enhanced AI reasoning.
+	NewSignals      []AISignal      `json:"new_signals,omitempty"`
+	Correlations    []AICorrelation `json:"correlations,omitempty"`
+	LearningNotes   []string        `json:"learning_guidance,omitempty"`
+	Heuristics      []string        `json:"fast_heuristics,omitempty"`
+	CounterEvasion  []string        `json:"counter_evasion,omitempty"`
+	InnovationIdeas []string        `json:"innovation_ideas,omitempty"`
+	ConfidenceNotes []string        `json:"confidence_logic,omitempty"`
+	FeedbackGaps    []string        `json:"feedback_gaps,omitempty"`
+}
+
+// AISignal is a new detection signal proposed by the AI reasoning engine.
+type AISignal struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Weight      string `json:"weight"` // "low", "medium", "high"
+}
+
+// AICorrelation is a multi-signal combination the AI suggests.
+type AICorrelation struct {
+	Name     string   `json:"name"`
+	Signals  []string `json:"signals"`
+	Meaning  string   `json:"meaning"`
+	Severity string   `json:"severity"` // "watch", "strong", "active"
 }
 
 type processFeature struct {
@@ -251,7 +289,7 @@ func ProviderReady(provider string, access ProviderAccess) (bool, string) {
 	return true, ""
 }
 
-func CurrentSettings() TuningSettings {
+func currentSettings() TuningSettings {
 	return TuningSettings{
 		ReverseControlMinDuration: shared.ReverseControlMinDuration.String(),
 		LongLivedOutboundMinAge:   shared.LongLivedOutboundMinAge.String(),
@@ -277,7 +315,7 @@ func (s TuningSettings) Apply() error {
 	if err := validateTuningSettings(s); err != nil {
 		return err
 	}
-	cur := CurrentSettings()
+	cur := currentSettings()
 
 	reverseControl, err := parseDurationOrDefault(s.ReverseControlMinDuration, cur.ReverseControlMinDuration)
 	if err != nil {
@@ -327,7 +365,7 @@ func (s TuningSettings) Apply() error {
 }
 
 func validateTuningSettings(s TuningSettings) error {
-	cur := CurrentSettings()
+	cur := currentSettings()
 	reverseControl, err := parseDurationOrDefault(s.ReverseControlMinDuration, cur.ReverseControlMinDuration)
 	if err != nil {
 		return fmt.Errorf("reverse control min duration: %w", err)
@@ -428,14 +466,18 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 	sort.Strings(fpParts)
 	envFingerprint := fmt.Sprintf("%s|%v", strings.Join(fpParts, ","), roleCounts)
 
-	current := CurrentSettings()
+	current := currentSettings()
 	emit("[*] Loading learning model...")
 	stepPause()
-	learningModel, learningErr := loadLearningModel()
+	if err := migrateLegacyModelIfNeeded(input.HostScope); err != nil {
+		emit(fmt.Sprintf("[*] Migration note: %s", trimCalibrationError(err.Error(), 120)))
+	}
+	modelPath := ResolveLearningModelPath(input.HostScope)
+	learningModel, learningErr := loadLearningModelFromPath(modelPath)
 	if learningErr != nil {
 		learningModel = defaultLearningModel()
 	}
-	learningCtx := buildLearningContext(learningModel, uniqueSamples)
+	learningCtx := buildLearningContext(learningModel, modelPath, uniqueSamples)
 	learningNotes := make([]string, 0, 4)
 	if learningErr != nil {
 		learningNotes = append(learningNotes, "Learning model load failed: "+trimCalibrationError(learningErr.Error(), 220))
@@ -480,23 +522,25 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 	if summary == "" {
 		if analysisMode == "ai" {
 			summary = fmt.Sprintf(
-				"AI calibration analyzed %d unique processes in %s (session=%d beacon=%d tunnel=%d listen=%d outbound=%d).",
+				"AI calibration analyzed %d unique processes in %s (session=%d beacon=%d pivot=%d tunnel=%d listen=%d outbound=%d).",
 				len(uniqueSamples),
 				input.Duration.Round(time.Second),
-				roleCounts["session"],
-				roleCounts["beacon"],
-				roleCounts["tunnel"],
+				roleCounts["control-session"],
+				roleCounts["control-beacon"],
+				roleCounts["control-pivot"],
+				roleCounts["control-tunnel"],
 				roleCounts["listen"],
 				roleCounts["outbound"],
 			)
 		} else {
 			summary = fmt.Sprintf(
-				"Fallback calibration analyzed %d unique processes in %s (session=%d beacon=%d tunnel=%d listen=%d outbound=%d).",
+				"Fallback calibration analyzed %d unique processes in %s (session=%d beacon=%d pivot=%d tunnel=%d listen=%d outbound=%d).",
 				len(uniqueSamples),
 				input.Duration.Round(time.Second),
-				roleCounts["session"],
-				roleCounts["beacon"],
-				roleCounts["tunnel"],
+				roleCounts["control-session"],
+				roleCounts["control-beacon"],
+				roleCounts["control-pivot"],
+				roleCounts["control-tunnel"],
 				roleCounts["listen"],
 				roleCounts["outbound"],
 			)
@@ -531,14 +575,40 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 		RecommendationSource: recommendationSource,
 		ContourHintsApplied:  contourHintsApplied,
 		EnvFingerprint:       envFingerprint,
+		NewSignals:           aiResult.NewSignals,
+		Correlations:         aiResult.Correlations,
+		AILearningNotes:      sanitizeRecommendations(aiResult.LearningNotes),
+		AIHeuristics:         sanitizeRecommendations(aiResult.Heuristics),
+		CounterEvasion:       sanitizeRecommendations(aiResult.CounterEvasion),
+		InnovationIdeas:      sanitizeRecommendations(aiResult.InnovationIdeas),
+		ConfidenceNotes:      sanitizeRecommendations(aiResult.ConfidenceNotes),
+		FeedbackGaps:         sanitizeRecommendations(aiResult.FeedbackGaps),
+	}
+
+	// Check if the detection model has egress intelligence from contour.
+	dm := detmodel.Get()
+	if dm == nil || len(dm.EgressPaths) == 0 {
+		emit("[!] No contour egress data available — run contour scan to strengthen the model")
+		report.Recommendations = append(report.Recommendations, "Run a contour scan to discover network egress paths (tunneling/exfil capabilities). This data feeds the detection model and improves role accuracy.")
+	} else {
+		emit(fmt.Sprintf("[+] Model has %d contour-discovered egress paths", len(dm.EgressPaths)))
 	}
 
 	emit("[*] Updating learning model...")
-	learningModel = updateLearningModel(learningModel, scopedSamples, now)
-	if err := saveLearningModel(learningModel); err != nil {
+	hostFilteredSamples := filterSamplesByHostScope(scopedSamples, input.HostScope)
+	learningModel = updateLearningModel(learningModel, hostFilteredSamples, now)
+	learningModel.Scope = input.HostScope
+	detmodel.IngestCalibrationRun(uniqueSamples)
+	// Sync learning model aggregate stats into the detection model.
+	detmodel.SyncCalibrationStats(
+		learningModel.Runs,
+		learningModel.WeightedSamples,
+		int(learningContaminationRatio(learningModel)*100),
+	)
+	if err := saveLearningModelToPath(learningModel, modelPath); err != nil {
 		learningNotes = append(learningNotes, "Learning model save failed: "+trimCalibrationError(err.Error(), 220))
 	}
-	learningAfter := buildLearningContext(learningModel, uniqueSamples)
+	learningAfter := buildLearningContext(learningModel, modelPath, uniqueSamples)
 	report.LearningModelPath = learningAfter.ModelPath
 	report.LearningRuns = learningAfter.Runs
 	report.LearningSamples = learningAfter.WeightedSamples
@@ -550,7 +620,7 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 	}
 
 	emit("[*] Running validation (baseline vs tuned)...")
-	if err := BuildReportArtifacts(&report, current, uniqueSamples, input.SampleEvery); err != nil {
+	if err := buildReportArtifacts(&report, current, uniqueSamples, input.SampleEvery); err != nil {
 		return RunResult{}, err
 	}
 	verdict := "neutral"
@@ -599,18 +669,30 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 }
 
 func ListProfiles() ([]string, error) {
-	entries, err := os.ReadDir(profilesPath())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+	seen := make(map[string]bool)
+	var out []string
+
+	// Check vault for profiles stored in memory.
+	vaultPrefix := "calibration/profiles/"
+	for _, key := range keystore.ListFiles() {
+		if !strings.HasPrefix(key, vaultPrefix) {
+			continue
 		}
-		return nil, err
+		name := strings.TrimPrefix(key, vaultPrefix)
+		if name == "" || !strings.HasSuffix(strings.ToLower(name), ".json") {
+			continue
+		}
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
 	}
-	type profileFile struct {
-		name    string
-		modTime time.Time
+
+	// Also check filesystem.
+	entries, err := os.ReadDir(profilesPath())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return out, nil // return vault profiles even if disk fails
 	}
-	files := make([]profileFile, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -619,19 +701,13 @@ func ListProfiles() ([]string, error) {
 		if !strings.HasSuffix(strings.ToLower(name), ".json") {
 			continue
 		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
 		}
-		files = append(files, profileFile{name: name, modTime: info.ModTime()})
 	}
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].modTime.After(files[j].modTime)
-	})
-	out := make([]string, 0, len(files))
-	for _, file := range files {
-		out = append(out, file.name)
-	}
+
+	sort.Strings(out)
 	return out, nil
 }
 
@@ -711,9 +787,13 @@ func LoadProfile(name string) (Profile, error) {
 		return Profile{}, fmt.Errorf("profile name must not include directories")
 	}
 	path := filepath.Join(profilesPath(), name)
-	data, err := safeio.ReadFile(path)
+	vaultKey := vaultKeyFromPath(path)
+	data, err := keystore.VaultRead(vaultKey, path)
 	if err != nil {
 		return Profile{}, err
+	}
+	if len(data) == 0 {
+		return Profile{}, fmt.Errorf("profile %q is empty or not found", name)
 	}
 	var p Profile
 	if err := json.Unmarshal(data, &p); err != nil {
@@ -744,18 +824,22 @@ func ApplyProfile(name string) (Profile, error) {
 	if err := writeJSONFile(activeConfigPath(), cfg); err != nil {
 		return Profile{}, err
 	}
-	_ = MarkReportApplied(profile.SourceReport)
+	_ = markReportApplied(profile.SourceReport)
 	return profile, nil
 }
 
 func LoadActiveConfig() (ActiveConfig, error) {
 	path := activeConfigPath()
-	data, err := safeio.ReadFile(path)
+	vaultKey := vaultKeyFromPath(path)
+	data, err := keystore.VaultRead(vaultKey, path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return ActiveConfig{}, nil
 		}
 		return ActiveConfig{}, err
+	}
+	if len(data) == 0 {
+		return ActiveConfig{}, nil
 	}
 	var cfg ActiveConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -780,9 +864,13 @@ func LoadAndApplyActiveProfile() (ActiveConfig, error) {
 
 func LoadReport(path string) (Report, error) {
 	normalized := normalizeOutputPath(path)
-	data, err := safeio.ReadFile(normalized)
+	vaultKey := vaultKeyFromPath(normalized)
+	data, err := keystore.VaultRead(vaultKey, normalized)
 	if err != nil {
 		return Report{}, err
+	}
+	if len(data) == 0 {
+		return Report{}, os.ErrNotExist
 	}
 	var report Report
 	if err := json.Unmarshal(data, &report); err != nil {
@@ -819,40 +907,53 @@ func calibrationRoot() string {
 	return safeio.ExpandHomePath(defaultCalibrationDir)
 }
 
+func filterSamplesByHostScope(samples []shared.Candidate, scope ModelScope) []shared.Candidate {
+	if scope.Kind == "environment" || scope.Kind == "" || len(scope.Hosts) == 0 {
+		return samples
+	}
+	hostSet := make(map[string]bool, len(scope.Hosts))
+	for _, h := range scope.Hosts {
+		hostSet[strings.ToLower(strings.TrimSpace(h))] = true
+	}
+	out := make([]shared.Candidate, 0, len(samples))
+	for _, s := range samples {
+		h := strings.ToLower(strings.TrimSpace(s.Host))
+		if h == "" {
+			h = "local"
+		}
+		if hostSet[h] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func writeJSONFile(path string, value any) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return fmt.Errorf("path is required")
 	}
-	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	// Derive a vault key from the path (e.g., "calibration/latest").
+	vaultKey := vaultKeyFromPath(path)
+	return keystore.VaultWrite(vaultKey, data, path)
+}
+
+// vaultKeyFromPath converts a file path to a vault key name.
+func vaultKeyFromPath(path string) string {
+	path = strings.TrimSpace(path)
+	// Extract relative path under .proxywatch/
+	if idx := strings.Index(path, ".proxywatch/"); idx >= 0 {
+		return path[idx+len(".proxywatch/"):]
+	}
+	return filepath.Base(path)
 }
 
 func normalizeOutputPath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		path = defaultOutputPath
-	}
-	path = safeio.ExpandHomePath(path)
-	if filepath.IsAbs(path) {
-		path = filepath.Clean(path)
-	} else {
-		rel := safeio.SanitizeRelativePath(path, "latest.json")
-		path = filepath.Join(calibrationRoot(), rel)
-	}
-	if !strings.HasSuffix(strings.ToLower(path), ".json") {
-		path += ".json"
-	}
-	return path
+	return safeio.NormalizeJSONOutputPath(path, defaultOutputPath, calibrationRoot())
 }
 
 func analyzeSamples(samples []shared.Candidate) ([]shared.Candidate, map[string]int, map[string]int, []ProcessSummary) {
@@ -885,12 +986,13 @@ func analyzeSamples(samples []shared.Candidate) ([]shared.Candidate, map[string]
 	})
 
 	roleCounts := map[string]int{
-		"session":  0,
-		"beacon":   0,
-		"tunnel":   0,
-		"listen":   0,
-		"outbound": 0,
-		"other":    0,
+		"control-session": 0,
+		"control-beacon":  0,
+		"control-pivot":   0,
+		"control-tunnel":  0,
+		"listen":          0,
+		"outbound":        0,
+		"other":           0,
 	}
 	stateCounts := map[string]int{
 		"watch":  0,
@@ -1022,7 +1124,7 @@ func appendUniqueString(items []string, value string) []string {
 	return append(items, value)
 }
 
-func recommendTuning(current TuningSettings, roles, states map[string]int, total int, duration time.Duration, learning LearningContext) (TuningSettings, []string, string) {
+func recommendTuning(current TuningSettings, roles, states map[string]int, total int, duration time.Duration, learning learningContext) (TuningSettings, []string, string) {
 	tuned := current
 	recommendations := make([]string, 0, 4)
 
@@ -1035,49 +1137,46 @@ func recommendTuning(current TuningSettings, roles, states map[string]int, total
 		return tuned, recommendations, summary
 	}
 
-	suspicious := roles["session"] + roles["beacon"] + roles["tunnel"]
+	suspicious := roles["control-session"] + roles["control-beacon"] + roles["control-tunnel"] + roles["control-pivot"]
 	outbound := roles["listen"] + roles["outbound"]
 	ratio := float64(suspicious) / float64(maxInt(total, 1))
 	baselineSusp := learning.SuspiciousRatio
 
+	// Calibration is a HARDENING tool — it only tightens detection thresholds,
+	// never loosens them. This prevents contaminated environments from weakening
+	// detection and ensures calibration is always net-positive for security.
+
 	if ratio < 0.20 && outbound >= suspicious {
-		tuned.ReverseControlMinDuration = adjustDuration(tuned.ReverseControlMinDuration, 5*time.Second, 5*time.Second, 5*time.Minute)
-		tuned.LongLivedOutboundMinAge = adjustDuration(tuned.LongLivedOutboundMinAge, 20*time.Second, 20*time.Second, 15*time.Minute)
-		tuned.BeaconSleepThreshold = adjustDuration(tuned.BeaconSleepThreshold, 15*time.Second, 20*time.Second, 15*time.Minute)
-		tuned.OutboundOnlyExternalCap = clampInt(tuned.OutboundOnlyExternalCap+10, 10, 500)
-		tuned.ShapeDeltaThreshold = clampFloat(tuned.ShapeDeltaThreshold+0.02, 0.05, 1.5)
-		tuned.BeaconJitterCoVMax = clampFloat(tuned.BeaconJitterCoVMax+0.10, 0.2, 5.0)
-		recommendations = append(recommendations, "Environment appears outbound-heavy; raise outbound/control timing thresholds to reduce noisy promotion.")
+		// Low suspicious ratio — environment looks clean. Do NOT loosen thresholds.
+		// Instead, report the clean state and recommend maintaining current settings.
+		recommendations = append(recommendations, "Environment appears mostly benign; maintaining current detection thresholds (calibration does not loosen detection).")
 	}
 
-	if ratio > 0.45 || roles["tunnel"] >= 3 {
+	if ratio > 0.25 || roles["control-tunnel"]+roles["control-pivot"] >= 2 {
+		// Elevated suspicious activity — tighten thresholds to detect faster.
 		tuned.ReverseControlMinDuration = adjustDuration(tuned.ReverseControlMinDuration, -3*time.Second, 5*time.Second, 5*time.Minute)
 		tuned.LongLivedOutboundMinAge = adjustDuration(tuned.LongLivedOutboundMinAge, -15*time.Second, 20*time.Second, 15*time.Minute)
 		tuned.BeaconSleepThreshold = adjustDuration(tuned.BeaconSleepThreshold, -10*time.Second, 20*time.Second, 15*time.Minute)
 		tuned.BeaconMinIntervals = maxInt(1, tuned.BeaconMinIntervals-1)
 		tuned.ShapeDeltaThreshold = clampFloat(tuned.ShapeDeltaThreshold-0.02, 0.05, 1.5)
 		tuned.BeaconJitterCoVMax = clampFloat(tuned.BeaconJitterCoVMax-0.10, 0.2, 5.0)
-		recommendations = append(recommendations, "Suspicious role density is high; tighten timing thresholds so control/tunnel traits are surfaced earlier.")
+		recommendations = append(recommendations, fmt.Sprintf("Suspicious role density is %.0f%%; tightening timing thresholds for faster detection.", ratio*100))
 	}
 
-	if learning.Runs >= 2 {
-		switch {
-		case ratio > baselineSusp+0.15:
-			tuned.ReverseControlMinDuration = adjustDuration(tuned.ReverseControlMinDuration, -2*time.Second, 5*time.Second, 5*time.Minute)
-			tuned.ShapeDeltaThreshold = clampFloat(tuned.ShapeDeltaThreshold-0.01, 0.05, 1.5)
-			recommendations = append(recommendations, fmt.Sprintf("Current suspicious mix (%.0f%%) is above learned baseline (%.0f%%); slightly tightening control thresholds.", ratio*100, baselineSusp*100))
-		case ratio+0.20 < baselineSusp && learning.ContaminationPct >= 35:
-			recommendations = append(recommendations, fmt.Sprintf("Learned baseline indicates elevated contamination (%d%%); avoiding aggressive loosening despite low current suspicious mix.", learning.ContaminationPct))
-		case ratio+0.15 < baselineSusp:
-			tuned.ReverseControlMinDuration = adjustDuration(tuned.ReverseControlMinDuration, 2*time.Second, 5*time.Second, 5*time.Minute)
-			tuned.OutboundOnlyExternalCap = clampInt(tuned.OutboundOnlyExternalCap+4, 10, 500)
-			recommendations = append(recommendations, fmt.Sprintf("Current suspicious mix (%.0f%%) is below learned baseline (%.0f%%); slightly relaxing to reduce false positives.", ratio*100, baselineSusp*100))
-		}
+	if learning.Runs >= 2 && ratio > baselineSusp+0.10 {
+		// Current run is more suspicious than learned baseline — tighten further.
+		tuned.ReverseControlMinDuration = adjustDuration(tuned.ReverseControlMinDuration, -2*time.Second, 5*time.Second, 5*time.Minute)
+		tuned.ShapeDeltaThreshold = clampFloat(tuned.ShapeDeltaThreshold-0.01, 0.05, 1.5)
+		recommendations = append(recommendations, fmt.Sprintf("Current suspicious mix (%.0f%%) exceeds learned baseline (%.0f%%); further tightening control thresholds.", ratio*100, baselineSusp*100))
+	}
+
+	if learning.ContaminationPct >= 20 {
+		recommendations = append(recommendations, fmt.Sprintf("Warning: learned baseline shows %d%% contamination. Review flagged processes and consider resetting the learning model if compromise is confirmed.", learning.ContaminationPct))
 	}
 
 	if states["active"] > 0 {
-		recommendations = append(recommendations, "Active proxy behavior observed; keep reverse sticky score elevated to preserve operator visibility.")
 		tuned.ReverseStickyScore = clampInt(tuned.ReverseStickyScore+5, 10, 250)
+		recommendations = append(recommendations, "Active proxy behavior observed; elevating sticky score for persistent visibility.")
 	}
 
 	if len(recommendations) == 0 {
@@ -1085,12 +1184,13 @@ func recommendTuning(current TuningSettings, roles, states map[string]int, total
 	}
 
 	summary := fmt.Sprintf(
-		"Observed %d unique processes in %s (session=%d beacon=%d tunnel=%d outbound=%d).",
+		"Observed %d unique processes in %s (session=%d beacon=%d pivot=%d tunnel=%d outbound=%d).",
 		total,
 		duration.Round(time.Second),
-		roles["session"],
-		roles["beacon"],
-		roles["tunnel"],
+		roles["control-session"],
+		roles["control-beacon"],
+		roles["control-pivot"],
+		roles["control-tunnel"],
 		roles["outbound"],
 	)
 	return tuned, recommendations, summary

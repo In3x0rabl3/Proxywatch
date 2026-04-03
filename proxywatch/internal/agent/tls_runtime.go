@@ -422,4 +422,3 @@ func expandHome(path string) (string, error) {
 	}
 	return path, nil
 }
-

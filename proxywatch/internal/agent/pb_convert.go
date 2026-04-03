@@ -34,9 +34,11 @@ func ToPBCandidate(c shared.Candidate) *pb.Candidate {
 		Reasons:                append([]string(nil), c.Reasons...),
 		Signals:                append([]string(nil), c.Signals...),
 		Role:                   c.Role,
+		ControlSubtype:         c.ControlSubtype,
 		ActiveProxying:         c.ActiveProxying,
 		ControlChannel:         ToPBConn(c.ControlChannel),
 		ControlDurationSeconds: clampInt32(c.ControlDurationSeconds),
+		SeenSeconds:            clampInt32(c.SeenSeconds),
 		OutTotal:               clampInt32(c.OutTotal),
 		OutExternal:            clampInt32(c.OutExternal),
 		OutInternal:            clampInt32(c.OutInternal),
@@ -46,6 +48,11 @@ func ToPBCandidate(c shared.Candidate) *pb.Candidate {
 		InboundTotal:           clampInt32(c.InboundTotal),
 		TrafficVerified:        c.TrafficVerified,
 		StrongEvidence:         c.StrongEvidence,
+		DelegatedEgress:        c.DelegatedEgress,
+		DelegatedStrong:        c.DelegatedStrong,
+		DelegatedOwnerPID:      clampInt32(c.DelegatedOwnerPID),
+		DelegatedOwner:         c.DelegatedOwner,
+		RawSocket:              c.RawSocket,
 	}
 	for _, l := range c.Listeners {
 		out.Listeners = append(out.Listeners, ToPBListener(l))
@@ -55,6 +62,9 @@ func ToPBCandidate(c shared.Candidate) *pb.Candidate {
 	}
 	for _, ul := range c.UDPListeners {
 		out.UDPListeners = append(out.UDPListeners, ToPBUDP(ul))
+	}
+	for _, rc := range c.RawConns {
+		out.RawConns = append(out.RawConns, ToPBRawConn(rc))
 	}
 	return out
 }
@@ -75,9 +85,11 @@ func FromPBCandidate(p *pb.Candidate, host string) shared.Candidate {
 		Reasons:                append([]string(nil), p.Reasons...),
 		Signals:                append([]string(nil), p.Signals...),
 		Role:                   p.Role,
+		ControlSubtype:         p.ControlSubtype,
 		ActiveProxying:         p.ActiveProxying,
 		ControlChannel:         FromPBConn(p.ControlChannel),
 		ControlDurationSeconds: int(p.ControlDurationSeconds),
+		SeenSeconds:            int(p.SeenSeconds),
 		OutTotal:               int(p.OutTotal),
 		OutExternal:            int(p.OutExternal),
 		OutInternal:            int(p.OutInternal),
@@ -87,6 +99,11 @@ func FromPBCandidate(p *pb.Candidate, host string) shared.Candidate {
 		InboundTotal:           int(p.InboundTotal),
 		TrafficVerified:        p.TrafficVerified,
 		StrongEvidence:         p.StrongEvidence,
+		DelegatedEgress:        p.DelegatedEgress,
+		DelegatedStrong:        p.DelegatedStrong,
+		DelegatedOwnerPID:      int(p.DelegatedOwnerPID),
+		DelegatedOwner:         p.DelegatedOwner,
+		RawSocket:              p.RawSocket,
 	}
 	for _, l := range p.Listeners {
 		if l == nil {
@@ -108,6 +125,12 @@ func FromPBCandidate(p *pb.Candidate, host string) shared.Candidate {
 		}
 		out.UDPListeners = append(out.UDPListeners, FromPBUDP(ul))
 	}
+	for _, rc := range p.RawConns {
+		if rc == nil {
+			continue
+		}
+		out.RawConns = append(out.RawConns, FromPBRawConn(rc))
+	}
 	return out
 }
 
@@ -115,34 +138,43 @@ func ToPBProcess(p *shared.ProcessInfo) *pb.ProcessInfo {
 	if p == nil {
 		return nil
 	}
+	var startUnix int64
+	if !p.StartTime.IsZero() {
+		startUnix = p.StartTime.Unix()
+	}
 	return &pb.ProcessInfo{
-		Pid:          clampInt32(p.Pid),
-		ParentPid:    clampInt32(p.ParentPid),
-		Name:         p.Name,
-		SessionId:    p.SessionID,
-		SessionName:  p.SessionName,
-		MemUsage:     p.MemUsage,
-		Status:       p.Status,
-		UserName:     p.UserName,
-		ExePath:      p.ExePath,
-		Company:      p.Company,
-		Integrity:    p.Integrity,
-		IOReadBytes:  p.IOReadBytes,
-		IOWriteBytes: p.IOWriteBytes,
-		IOOtherBytes: p.IOOtherBytes,
-		IOReadBps:    p.IOReadBps,
-		IOWriteBps:   p.IOWriteBps,
-		IOOtherBps:   p.IOOtherBps,
-		CpuTimeNanos: int64(p.CpuTime),
-		WindowTitle:  p.WindowTitle,
-		CmdLine:      p.CmdLine,
-		LoadedLibs:   append([]string(nil), p.LoadedLibs...),
+		Pid:           clampInt32(p.Pid),
+		ParentPid:     clampInt32(p.ParentPid),
+		Name:          p.Name,
+		SessionId:     p.SessionID,
+		SessionName:   p.SessionName,
+		MemUsage:      p.MemUsage,
+		Status:        p.Status,
+		UserName:      p.UserName,
+		ExePath:       p.ExePath,
+		Company:       p.Company,
+		Integrity:     p.Integrity,
+		IOReadBytes:   p.IOReadBytes,
+		IOWriteBytes:  p.IOWriteBytes,
+		IOOtherBytes:  p.IOOtherBytes,
+		IOReadBps:     p.IOReadBps,
+		IOWriteBps:    p.IOWriteBps,
+		IOOtherBps:    p.IOOtherBps,
+		CpuTimeNanos:  int64(p.CpuTime),
+		StartTimeUnix: startUnix,
+		WindowTitle:   p.WindowTitle,
+		CmdLine:       p.CmdLine,
+		LoadedLibs:    append([]string(nil), p.LoadedLibs...),
 	}
 }
 
 func FromPBProcess(p *pb.ProcessInfo) *shared.ProcessInfo {
 	if p == nil {
 		return nil
+	}
+	var startTime time.Time
+	if p.StartTimeUnix > 0 {
+		startTime = time.Unix(p.StartTimeUnix, 0)
 	}
 	return &shared.ProcessInfo{
 		Pid:          int(p.Pid),
@@ -163,6 +195,7 @@ func FromPBProcess(p *pb.ProcessInfo) *shared.ProcessInfo {
 		IOWriteBps:   p.IOWriteBps,
 		IOOtherBps:   p.IOOtherBps,
 		CpuTime:      time.Duration(p.CpuTimeNanos),
+		StartTime:    startTime,
 		WindowTitle:  p.WindowTitle,
 		CmdLine:      p.CmdLine,
 		LoadedLibs:   append([]string(nil), p.LoadedLibs...),
@@ -228,6 +261,26 @@ func FromPBUDP(u *pb.UDPListenerInfo) shared.UDPListenerInfo {
 		Pid:          int(u.Pid),
 		LocalAddress: u.LocalAddress,
 		LocalPort:    int(u.LocalPort),
+	}
+}
+
+func ToPBRawConn(rc shared.RawSocketConn) *pb.RawSocketConn {
+	return &pb.RawSocketConn{
+		Pid:    clampInt32(rc.Pid),
+		Local:  rc.Local,
+		Remote: rc.Remote,
+		State:  rc.State,
+		Proto:  rc.Proto,
+	}
+}
+
+func FromPBRawConn(rc *pb.RawSocketConn) shared.RawSocketConn {
+	return shared.RawSocketConn{
+		Pid:    int(rc.Pid),
+		Local:  rc.Local,
+		Remote: rc.Remote,
+		State:  rc.State,
+		Proto:  rc.Proto,
 	}
 }
 

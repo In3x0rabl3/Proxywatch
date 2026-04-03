@@ -363,13 +363,111 @@ func Collect() (*shared.Snapshot, error) {
 
 	udpListeners, _ := GetUDPTable()
 
+	rawPIDs := GetRawSocketPIDs()
+	rawConns := GetRawSocketConns()
+
+	// Enumerate named pipes every 10 seconds (expensive).
+	var pipes []shared.NamedPipeInfo
+	now := time.Now()
+	if now.Sub(lastPipeEnumTime) >= 10*time.Second {
+		pipes = EnumerateNamedPipes()
+		lastPipeEnumTime = now
+		lastPipeResult = pipes
+	} else {
+		pipes = lastPipeResult
+	}
+
 	return &shared.Snapshot{
-		Timestamp:    time.Now().UTC(),
-		Processes:    procs,
-		Listeners:    listeners,
-		Connections:  conns,
-		UDPListeners: udpListeners,
+		Timestamp:     time.Now().UTC(),
+		Processes:     procs,
+		Listeners:     listeners,
+		Connections:   conns,
+		UDPListeners:  udpListeners,
+		RawSocketPIDs: rawPIDs,
+		RawConns:      rawConns,
+		NamedPipes:    pipes,
 	}, nil
+}
+
+// GetRawSocketPIDs detects processes with raw socket activity on Windows.
+// Windows lacks /proc/net/raw so we use heuristics from the TCP table:
+//   - 3+ SYN_SENT connections (scanning handshake flood)
+//   - Connections to 10+ distinct remote ports (port scan pattern)
+func GetRawSocketPIDs() map[int]bool {
+	pids := make(map[int]bool)
+	synSentByPID := make(map[int]int)
+	type pidPortSet map[int]map[int]bool
+	distinctPortsByPID := make(pidPortSet)
+
+	for _, family := range []uint32{platform.AF_INET, platform.AF_INET6} {
+		_, conns, err := getTCPTableForFamily(family)
+		if err != nil {
+			continue
+		}
+		for _, c := range conns {
+			if c.State == "SYN_SENT" {
+				synSentByPID[c.Pid]++
+			}
+			// Track distinct remote ports per PID for scan detection.
+			if c.State == "SYN_SENT" || c.State == "ESTABLISHED" || c.State == "TIME_WAIT" {
+				if distinctPortsByPID[c.Pid] == nil {
+					distinctPortsByPID[c.Pid] = make(map[int]bool)
+				}
+				distinctPortsByPID[c.Pid][c.RemotePort] = true
+			}
+		}
+	}
+	for pid, count := range synSentByPID {
+		if count >= 3 {
+			pids[pid] = true
+		}
+	}
+	// Flag processes connecting to many distinct remote ports as likely scanners.
+	for pid, ports := range distinctPortsByPID {
+		if len(ports) >= 10 && !pids[pid] {
+			pids[pid] = true
+		}
+	}
+	if len(pids) == 0 {
+		return nil
+	}
+	return pids
+}
+
+// GetRawSocketConns returns synthetic connection entries for processes
+// detected as using raw sockets on Windows.
+func GetRawSocketConns() []shared.RawSocketConn {
+	pids := GetRawSocketPIDs()
+	if len(pids) == 0 {
+		return nil
+	}
+
+	var out []shared.RawSocketConn
+
+	// For PIDs with raw sockets, collect their SYN_SENT connections as
+	// evidence of scanning activity.
+	for _, family := range []uint32{platform.AF_INET, platform.AF_INET6} {
+		_, conns, err := getTCPTableForFamily(family)
+		if err != nil {
+			continue
+		}
+		for _, c := range conns {
+			if !pids[c.Pid] {
+				continue
+			}
+			if c.State == "SYN_SENT" {
+				out = append(out, shared.RawSocketConn{
+					Pid:    c.Pid,
+					Local:  fmt.Sprintf("%s:%d", c.LocalAddress, c.LocalPort),
+					Remote: fmt.Sprintf("%s:%d", c.RemoteAddress, c.RemotePort),
+					State:  "SYN_SENT",
+					Proto:  "raw",
+				})
+			}
+		}
+	}
+
+	return out
 }
 
 // KillProcess terminates the process with the given PID.
@@ -388,5 +486,126 @@ func KillProcess(pid int) error {
 		return fmt.Errorf("terminate process: %w", err)
 	}
 
+	return nil
+}
+
+var (
+	lastPipeEnumTime time.Time
+	lastPipeResult   []shared.NamedPipeInfo
+)
+
+// EnumerateNamedPipes discovers named pipe handles across all processes using
+// NtQuerySystemInformation. Returns pipe name → owning PID mappings.
+// Expensive — only called every 10 seconds.
+func EnumerateNamedPipes() []shared.NamedPipeInfo {
+	const systemHandleInformation = 16
+	const objectNameInformation = 1
+
+	bufSize := uint32(1024 * 1024)
+	for attempts := 0; attempts < 3; attempts++ {
+		buf := make([]byte, bufSize)
+		var retLen uint32
+		status, _, _ := platform.ProcNtQuerySystemInformation.Call(
+			uintptr(systemHandleInformation),
+			uintptr(unsafe.Pointer(&buf[0])),
+			uintptr(bufSize),
+			uintptr(unsafe.Pointer(&retLen)),
+		)
+		if status == 0xC0000004 { // STATUS_INFO_LENGTH_MISMATCH
+			bufSize = retLen + 4096
+			continue
+		}
+		if status != 0 {
+			return nil
+		}
+
+		if len(buf) < 8 {
+			return nil
+		}
+		count := *(*uint32)(unsafe.Pointer(&buf[0]))
+		if count == 0 || count > 500000 {
+			return nil
+		}
+
+		entrySize := unsafe.Sizeof(platform.SystemHandleEntry{})
+		offset := uintptr(8) // skip count + padding
+
+		var pipes []shared.NamedPipeInfo
+		lookups := 0
+		maxLookups := 200
+		seen := make(map[string]bool)
+
+		for i := uint32(0); i < count && lookups < maxLookups; i++ {
+			entryOffset := offset + uintptr(i)*entrySize
+			if entryOffset+entrySize > uintptr(len(buf)) {
+				break
+			}
+			entry := (*platform.SystemHandleEntry)(unsafe.Pointer(&buf[entryOffset]))
+			pid := int(entry.OwnerPID)
+			if pid <= 4 {
+				continue
+			}
+
+			procH, err := windows.OpenProcess(windows.PROCESS_DUP_HANDLE, false, uint32(pid))
+			if err != nil {
+				continue
+			}
+
+			var dupH windows.Handle
+			err = windows.DuplicateHandle(
+				procH, windows.Handle(entry.Handle),
+				windows.CurrentProcess(), &dupH,
+				0, false, windows.DUPLICATE_SAME_ACCESS,
+			)
+			windows.CloseHandle(procH)
+			if err != nil || dupH == 0 {
+				continue
+			}
+
+			lookups++
+			nameBuf := make([]byte, 1024)
+			var nameRetLen uint32
+			nameStatus, _, _ := platform.ProcNtQueryObject.Call(
+				uintptr(dupH), uintptr(objectNameInformation),
+				uintptr(unsafe.Pointer(&nameBuf[0])),
+				uintptr(len(nameBuf)),
+				uintptr(unsafe.Pointer(&nameRetLen)),
+			)
+			windows.CloseHandle(dupH)
+
+			if nameStatus != 0 || nameRetLen < 8 {
+				continue
+			}
+
+			nameLen := *(*uint16)(unsafe.Pointer(&nameBuf[0]))
+			if nameLen == 0 || nameLen > 512 {
+				continue
+			}
+			headerSize := uintptr(unsafe.Sizeof(uintptr(0))) + 4
+			if headerSize > uintptr(len(nameBuf)) || uintptr(nameLen)+headerSize > uintptr(len(nameBuf)) {
+				continue
+			}
+			name := windows.UTF16ToString((*[256]uint16)(unsafe.Pointer(&nameBuf[headerSize]))[:nameLen/2])
+
+			if len(name) == 0 {
+				continue
+			}
+			isNamedPipe := false
+			if len(name) > 18 && (name[:19] == `\Device\NamedPipe\` || name[:18] == `\Device\NamedPipe`) {
+				isNamedPipe = true
+			}
+			if !isNamedPipe {
+				continue
+			}
+
+			key := fmt.Sprintf("%d|%s", pid, name)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			pipes = append(pipes, shared.NamedPipeInfo{Pid: pid, PipeName: name})
+		}
+		return pipes
+	}
 	return nil
 }

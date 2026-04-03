@@ -3,8 +3,15 @@ package contour
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"io"
+	"math/big"
 	"net"
 	"strconv"
 	"strings"
@@ -54,6 +61,87 @@ func runProbeListenerSocks5Handshake(conn net.Conn, timeout time.Duration) bool 
 	return true
 }
 
+// selfSignedTLSCfg is a lazily initialised TLS configuration backed by a
+// self-signed ECDSA P-256 certificate valid for one day. It is used by the
+// probe listener to terminate TLS connections from scanning peers.
+var (
+	selfSignedTLSCfg     *tls.Config
+	selfSignedTLSCfgOnce sync.Once
+)
+
+func selfSignedTLSConfig() *tls.Config {
+	selfSignedTLSCfgOnce.Do(func() {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return
+		}
+		template := &x509.Certificate{
+			SerialNumber: big.NewInt(1),
+			Subject:      pkix.Name{Organization: []string{"Proxywatch Probe"}},
+			NotBefore:    time.Now(),
+			NotAfter:     time.Now().Add(24 * time.Hour),
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}
+		certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+		if err != nil {
+			return
+		}
+		selfSignedTLSCfg = &tls.Config{
+			Certificates: []tls.Certificate{{
+				Certificate: [][]byte{certDER},
+				PrivateKey:  key,
+			}},
+		}
+	})
+	return selfSignedTLSCfg
+}
+
+// prefixConn wraps a net.Conn but prepends already-read bytes to the Read
+// stream. This lets us peek at the first byte(s) of a connection and then
+// replay them transparently for the next reader.
+type prefixConn struct {
+	net.Conn
+	prefix []byte
+	pos    int
+}
+
+func newPrefixConn(c net.Conn, prefix []byte) *prefixConn {
+	return &prefixConn{Conn: c, prefix: prefix}
+}
+
+func (pc *prefixConn) Read(b []byte) (int, error) {
+	if pc.pos < len(pc.prefix) {
+		n := copy(b, pc.prefix[pc.pos:])
+		pc.pos += n
+		return n, nil
+	}
+	return pc.Conn.Read(b)
+}
+
+// tlsMethodName maps a plain-text method detected inside a TLS stream to its
+// TLS variant. If there is no specific TLS name the original is returned.
+func tlsMethodName(method string) string {
+	switch method {
+	case "http":
+		return "https"
+	case "ws":
+		return "wss"
+	case "smtp":
+		return "smtps"
+	case "imap":
+		return "imaps"
+	case "pop3":
+		return "pop3s"
+	case "ftp":
+		return "ftps"
+	case "ldap":
+		return "ldaps"
+	default:
+		return method
+	}
+}
+
 func startTCPEchoServerOn(bindHost string, port int, exchangeCounter *uint64, recorder *probeListenerRecorder) (net.Listener, error) {
 	ln, err := net.Listen("tcp", net.JoinHostPort(bindHost, strconv.Itoa(port)))
 	if err != nil {
@@ -68,7 +156,33 @@ func startTCPEchoServerOn(bindHost string, port int, exchangeCounter *uint64, re
 			go func(c net.Conn) {
 				defer c.Close()
 				_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-				request, err := readProbeTCPRequest(c, 64*1024, 4*time.Second)
+
+				// Peek at the first byte to detect a TLS ClientHello.
+				firstByte := make([]byte, 1)
+				if _, err := io.ReadFull(c, firstByte); err != nil {
+					return
+				}
+
+				var readConn net.Conn
+				isTLS := false
+
+				if firstByte[0] == 0x16 { // TLS record type — ClientHello
+					cfg := selfSignedTLSConfig()
+					if cfg == nil {
+						return
+					}
+					tlsConn := tls.Server(newPrefixConn(c, firstByte), cfg)
+					if err := tlsConn.Handshake(); err != nil {
+						return
+					}
+					defer tlsConn.Close()
+					readConn = tlsConn
+					isTLS = true
+				} else {
+					readConn = newPrefixConn(c, firstByte)
+				}
+
+				request, err := readProbeTCPRequest(readConn, 64*1024, 4*time.Second)
 				if err != nil || len(request) == 0 {
 					return
 				}
@@ -77,24 +191,31 @@ func startTCPEchoServerOn(bindHost string, port int, exchangeCounter *uint64, re
 					if !ok {
 						return
 					}
-					if _, err := c.Write(response); err != nil {
+					if _, err := readConn.Write(response); err != nil {
 						return
 					}
 					if exchangeCounter != nil {
 						atomic.AddUint64(exchangeCounter, 1)
 					}
-					recordProbeListenerCheck(recorder, request, "tcp", port, c.RemoteAddr())
+					transport := "tcp"
+					if isTLS {
+						transport = "tls"
+					}
+					recordProbeListenerCheck(recorder, request, transport, port, c.RemoteAddr())
 					return
 				}
 				method, exfil, ok := detectProbeRawMethod(request)
 				if !ok {
 					return
 				}
+				if isTLS {
+					method = tlsMethodName(method)
+				}
 				response := buildProbeMethodResponseBody(method, request)
 				if len(response) == 0 {
 					return
 				}
-				if _, err := c.Write(response); err != nil {
+				if _, err := readConn.Write(response); err != nil {
 					return
 				}
 				kind := "tunnel"
@@ -102,14 +223,18 @@ func startTCPEchoServerOn(bindHost string, port int, exchangeCounter *uint64, re
 					kind = "exfil"
 				}
 				if !exfil && methodUsesSocksCarrierTunnel(method) {
-					if !runProbeListenerSocks5Handshake(c, 4*time.Second) {
+					if !runProbeListenerSocks5Handshake(readConn, 4*time.Second) {
 						return
 					}
 				}
 				if exchangeCounter != nil {
 					atomic.AddUint64(exchangeCounter, 1)
 				}
-				recordProbeListenerCheckWithKind(recorder, kind, method, "tcp", port, c.RemoteAddr())
+				transport := "tcp"
+				if isTLS {
+					transport = "tls"
+				}
+				recordProbeListenerCheckWithKind(recorder, kind, method, transport, port, c.RemoteAddr())
 			}(conn)
 		}
 	}()

@@ -15,6 +15,7 @@ import (
 	"proxywatch/internal/contour"
 	"proxywatch/internal/detection"
 	"proxywatch/internal/keystore"
+	"proxywatch/internal/model"
 	"proxywatch/internal/shared"
 	"proxywatch/internal/telemetry"
 	"proxywatch/internal/ui"
@@ -27,7 +28,7 @@ func defaultUIRoleFilter() map[string]bool {
 }
 
 const (
-	defaultUIRefreshInterval    = 250 * time.Millisecond
+	defaultUIRefreshInterval    = 500 * time.Millisecond
 	defaultAgentSendInterval    = 250 * time.Millisecond
 	defaultRemoteHostStaleAfter = 0 * time.Second
 )
@@ -131,8 +132,16 @@ func main() {
 	if memoryLoadErr != nil && errors.Is(memoryLoadErr, os.ErrNotExist) {
 		memoryLoadErr = nil
 	}
+	// Only load the detection model in standalone/ingest modes, not agent mode.
+	isAgentMode := targetAddr != ""
+	if !isAgentMode {
+		_ = model.Load()
+	}
 	defer func() {
 		_ = shared.SaveClassifierMemory("")
+		if !isAgentMode {
+			_ = model.Save()
+		}
 	}()
 
 	minScore := 15

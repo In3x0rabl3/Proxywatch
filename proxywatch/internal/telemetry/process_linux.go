@@ -73,6 +73,7 @@ func readProcess(pid int) *shared.ProcessInfo {
 		IOWriteBytes: ioWrite,
 		IOOtherBytes: ioOther,
 		CpuTime:      cpuTime,
+		StartTime:    readStartTime(fields),
 		CmdLine:      readCmdLine(pid),
 		LoadedLibs:   readNotableLibs(pid),
 	}
@@ -134,6 +135,34 @@ func readIO(pid int) (uint64, uint64, uint64) {
 		}
 	}
 	return r, w, o
+}
+
+// readStartTime extracts the process creation time from /proc/[pid]/stat.
+// Field 21 (0-indexed) is starttime in clock ticks since boot.
+func readStartTime(statFields []string) time.Time {
+	if len(statFields) < 22 {
+		return time.Time{}
+	}
+	startTicks, err := strconv.ParseInt(statFields[21], 10, 64)
+	if err != nil || startTicks <= 0 {
+		return time.Time{}
+	}
+	const clk int64 = 100 // USER_HZ
+	uptimeData, err := safeio.ReadFile("/proc/uptime")
+	if err != nil {
+		return time.Time{}
+	}
+	uptimeFields := strings.Fields(string(uptimeData))
+	if len(uptimeFields) == 0 {
+		return time.Time{}
+	}
+	uptimeSecs, err := strconv.ParseFloat(uptimeFields[0], 64)
+	if err != nil || uptimeSecs <= 0 {
+		return time.Time{}
+	}
+	bootTime := time.Now().Add(-time.Duration(uptimeSecs * float64(time.Second)))
+	procStart := bootTime.Add(time.Duration(startTicks * int64(time.Second) / clk))
+	return procStart
 }
 
 func readCPUTime(statFields []string) time.Duration {

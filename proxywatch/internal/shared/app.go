@@ -115,30 +115,36 @@ type AppState struct {
 	CollectResultInternal   int
 	CollectResultListeners  int
 	CollectResultDuration   string
-	CollectShowHelp        bool
-	CollectHelpIndex       int
-	CollectProgressLines   []string
+	CollectShowHelp         bool
+	CollectHelpIndex        int
+	CollectProgressLines    []string
 
-	CalibrateDuration  string
-	CalibrateProvider  string
-	CalibrateModel     string
-	CalibrateProfile   string
-	CalibrateOutput    string
-	CalibrateField     int
-	CalibrateEditing   bool
-	CalibrateEditCursor int
-	CalibrateActive    bool
-	CalibrateAnalyzing bool
-	CalibrateCancel    func()
-	CalibrateStartedAt time.Time
-	CalibrateUntil     time.Time
-	CalibrateSamples         []Candidate
-	CalibrateProgressLines   []string
+	CalibrateDuration      string
+	CalibrateProvider      string
+	CalibrateModel         string
+	CalibrateProfile       string
+	CalibrateOutput        string
+	CalibrateField         int
+	CalibrateEditing       bool
+	CalibrateEditCursor    int
+	CalibrateActive        bool
+	CalibrateAnalyzing     bool
+	CalibrateCancel        func()
+	CalibrateStartedAt     time.Time
+	CalibrateUntil         time.Time
+	CalibrateSamples       []Candidate
+	CalibrateProgressLines []string
 
-	CalibrateStatusText        string
-	CalibrateStatusUntil       time.Time
-	CalibrateStatusError       bool
-	CalibrateDecryptAttempted  bool
+	CalibrateStatusText       string
+	CalibrateStatusUntil      time.Time
+	CalibrateStatusError      bool
+	CalibrateDecryptAttempted bool
+
+	CalibrateHostScope      string
+	CalibrateHostScopeOpts  []string
+	CalibrateHostScopeIndex int
+	CalibrateResetConfirm   bool
+	CalibrateResetDeadline  time.Time
 
 	CalibrateProfiles        []string
 	CalibrateProfileIndex    int
@@ -148,6 +154,7 @@ type AppState struct {
 	CalibrateReportTime      time.Time
 	CalibrateRecommendations []string
 	CalibrateReportLines     []string
+	CalibrateProfilePreview  []string // temporary preview when selecting a profile
 	CalibrateReportScroll    int
 	CalibrateReportMaxScroll int
 	CalibrateSampleEvery     time.Duration
@@ -161,59 +168,82 @@ type AppState struct {
 	CalibrateMenuOptions []string
 	CalibrateMenuIndex   int
 
-	ContourDuration        string
-	ContourOutput          string
-	ContourProbeEndpoint   string
-	ContourProbeMode       string
-	ContourProbeRole       string
-	ContourField           int
-	ContourEditing         bool
-	ContourActive          bool
-	ContourAnalyzing       bool
-	ContourCancel          func()
-	ContourStartedAt       time.Time
-	ContourUntil           time.Time
-	ContourSource          string
-	ContourSourceIndex     int
-	ContourSourceOpts      []string
-	ContourSampleEvery     time.Duration
-	ContourLastSample      time.Time
-	ContourSamples         []Candidate
-	ContourShowMenu        bool
-	ContourShowHelp        bool
-	ContourHelpIndex       int
-	ContourMenuKind        string
-	ContourMenuTitle       string
-	ContourMenuOptions     []string
-	ContourMenuIndex       int
-	ContourStatusText      string
-	ContourStatusUntil     time.Time
-	ContourStatusError     bool
-	ContourProgressLines       []string
-	ContourPartialReportLines  []string
-	ContourPartialProbe        any // *contour.ProbeSummary during scan, nil otherwise
-	ContourReport              any // *contour.Report after scan completes, nil otherwise
-	ContourReportLines         []string
-	ContourReportPath      string
-	ContourReportTime      time.Time
-	ContourReportScroll    int
-	ContourReportMaxScroll int
-	ContourHints           []ContourHint
+	ContourDashMode         int              // 0 = Scan, 1 = Contour
+	ContourNewRole          string           // Contour mode: "Server" or "Client"
+	ContourNewMethod        string           // Contour mode: selected protocol method
+	ContourNewMode          string           // Contour mode: "Tunnel" or "Listen"
+	ContourNewField         int              // Contour mode: selected field index
+	ContourNewPort          int              // Selected port (0 = auto)
+	ContourNewDirection     string           // Tunnel mode: "Forward" or "Reverse"
+	ContourNewListenPort    int              // Tunnel mode: local SOCKS listen port (0 = random)
+	ContourNewEditing       bool             // Contour mode: editing text field
+	ContourNewMethods       []string         // Available methods from scan results
+	ContourNewMethodPorts   map[string][]int // Protocol → available ports
+	ContourNewActive        bool             // Contour mode: operation running
+	ContourNewCancel        func()           // Cancel running operation
+	ContourNewDone          chan struct{}    // Closed when the goroutine exits
+	ContourNewService       string           // Selected service name (e.g., "Slack", "Discord")
+	ContourNewServiceMethod string           // "Route Through" or "Domain Front"
+	ContourNewServices      []string         // Available services from scan (reachable only)
+	ContourNewShowMenu      bool
+	ContourNewMenuTitle     string
+	ContourNewMenuOptions   []string
+	ContourNewMenuIndex     int
+	ContourNewMenuKind      string
 
-	KeystorePath        string
-	KeystoreValues      map[string]string
-	KeystoreField       int
-	KeystoreEditing     bool
-	KeystoreUnlocked    bool
-	KeystoreMethod      string // "local", "gpg", "yubikey"
-	KeystoreEntries     []string // list of keystore names
-	KeystoreSelected    int      // selected keystore index
-	KeystoreActiveEntry string   // currently active keystore name
-	KeystoreSecure      bool     // whether active keystore is hardware-key secured
-	KeystorePanel       int      // 0=setup, 1=keystores, 2=fields
-	KeystoreStatusText  string
-	KeystoreStatusUntil time.Time
-	KeystoreStatusError bool
+	ContourDuration           string
+	ContourOutput             string
+	ContourProbeEndpoint      string
+	ContourProbeMode          string
+	ContourProbeRole          string
+	ContourField              int
+	ContourEditing            bool
+	ContourActive             bool
+	ContourAnalyzing          bool
+	ContourCancel             func()
+	ContourStartedAt          time.Time
+	ContourUntil              time.Time
+	ContourSource             string
+	ContourSourceIndex        int
+	ContourSourceOpts         []string
+	ContourSampleEvery        time.Duration
+	ContourLastSample         time.Time
+	ContourSamples            []Candidate
+	ContourShowMenu           bool
+	ContourShowHelp           bool
+	ContourHelpIndex          int
+	ContourMenuKind           string
+	ContourMenuTitle          string
+	ContourMenuOptions        []string
+	ContourMenuIndex          int
+	ContourStatusText         string
+	ContourStatusUntil        time.Time
+	ContourStatusError        bool
+	ContourProgressLines      []string
+	ContourPartialReportLines []string
+	ContourPartialProbe       any // *contour.ProbeSummary during scan, nil otherwise
+	ContourReport             any // *contour.Report after scan completes, nil otherwise
+	ContourReportLines        []string
+	ContourReportPath         string
+	ContourReportTime         time.Time
+	ContourReportScroll       int
+	ContourReportMaxScroll    int
+	ContourHints              []ContourHint
+
+	KeystorePath           string
+	KeystoreValues         map[string]string
+	KeystoreField          int
+	KeystoreEditing        bool
+	KeystoreUnlocked       bool
+	KeystoreMethod         string   // "local", "gpg", "yubikey"
+	KeystoreEntries        []string // list of keystore names
+	KeystoreSelected       int      // selected keystore index
+	KeystoreActiveEntry    string   // currently active keystore name
+	KeystoreSecure         bool     // whether active keystore is hardware-key secured
+	KeystorePanel          int      // 0=setup, 1=keystores, 2=fields
+	KeystoreStatusText     string
+	KeystoreStatusUntil    time.Time
+	KeystoreStatusError    bool
 	KeystoreShowHelp       bool
 	KeystoreHelpIndex      int
 	KeystoreCreateMenuOpen bool
@@ -222,41 +252,49 @@ type AppState struct {
 	KeystoreDeleteConfirm  bool   // true = waiting for second 'd' press
 	KeystoreDeleteTarget   string // name of keystore pending delete
 	KeystoreWizardOpen     bool
-	KeystoreWizardField    int    // 0=name, 1=encryption, 2=slot, 3=create
+	KeystoreWizardField    int // 0=name, 1=encryption, 2=slot/password, 3=confirm/create
 	KeystoreWizardName     string
 	KeystoreWizardSecure   bool
+	KeystoreWizardMethod   string // "local", "password", "yubikey"
 	KeystoreWizardSlot     string
+	KeystoreWizardPassword string // password for password-protected keystore
+	KeystoreWizardConfirm  string // password confirmation
 	KeystoreWizardEditing  bool
 
-	SIEMDebugLogPath    string
-	SIEMRulesJSONPath   string
-	SIEMSourceReport    string
-	SIEMSourceReports   []string
-	SIEMSourceIndex     int
-	SIEMProvider        string
-	SIEMModel           string
-	SIEMReportPath      string
-	SIEMExportPath      string
-	SIEMReportLines     []string
-	SIEMReportScroll    int
-	SIEMReportMaxScroll int
-	SIEMField           int
-	SIEMEditing         bool
-	SIEMShowMenu        bool
-	SIEMShowHelp        bool
-	SIEMHelpIndex       int
-	SIEMMenuKind        string
-	SIEMMenuTitle       string
-	SIEMMenuOptions     []string
-	SIEMMenuIndex       int
-	SIEMProgressLines   []string
-	SIEMGenerating      bool
-	SIEMStartedAt       time.Time
-	SIEMStatusText      string
-	SIEMStatusUntil     time.Time
-	SIEMStatusError        bool
-	SIEMDecryptAttempted   bool
-	StartSIEMGeneration func(sourceReport, provider, model, outputReport, outputJSON string)
+	// Password prompt for unlocking/saving password-protected keystores.
+	KeystorePasswordPrompt bool   // show password prompt overlay
+	KeystorePasswordInput  string // password being typed
+	KeystorePasswordSave   bool   // true=saving, false=unlocking
+
+	SIEMDebugLogPath     string
+	SIEMRulesJSONPath    string
+	SIEMSourceReport     string
+	SIEMSourceReports    []string
+	SIEMSourceIndex      int
+	SIEMProvider         string
+	SIEMModel            string
+	SIEMReportPath       string
+	SIEMExportPath       string
+	SIEMReportLines      []string
+	SIEMReportScroll     int
+	SIEMReportMaxScroll  int
+	SIEMField            int
+	SIEMEditing          bool
+	SIEMShowMenu         bool
+	SIEMShowHelp         bool
+	SIEMHelpIndex        int
+	SIEMMenuKind         string
+	SIEMMenuTitle        string
+	SIEMMenuOptions      []string
+	SIEMMenuIndex        int
+	SIEMProgressLines    []string
+	SIEMGenerating       bool
+	SIEMStartedAt        time.Time
+	SIEMStatusText       string
+	SIEMStatusUntil      time.Time
+	SIEMStatusError      bool
+	SIEMDecryptAttempted bool
+	StartSIEMGeneration  func(sourceReport, provider, model, outputReport, outputJSON string)
 
 	AutoCalibrateInterval time.Duration
 	AutoCalibrateLastRun  time.Time

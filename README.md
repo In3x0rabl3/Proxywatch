@@ -2,7 +2,7 @@
 
 ProxyWatch is a real-time process and network behavior monitor for detecting proxy activity, tunnels, C2 sessions, beacons, and lateral movement. It classifies processes into threat-focused role families using live host telemetry, behavioral heuristics, and persisted learning data.
 
-**Current version: v1.0.4**
+**Current version: v1.0.5**
 
 ## Features
 
@@ -12,7 +12,7 @@ ProxyWatch is a real-time process and network behavior monitor for detecting pro
 - **Contour** network probe suite: tunnel/exfil matrix, service reachability, TLS inspection, domain fronting, DNS exfiltration, HTTP method detection.
 - **Calibration** with AI-driven threshold tuning via OpenAI, Anthropic, or local LLM providers.
 - **SIEM** detection pack generation: Splunk, KQL, ESQL, Suricata, and YARA output from calibration data.
-- **BloodHound** collection and graph export with optional API upload.
+- **ProxyHound** collection and graph export with optional BloodHound CE API upload.
 - **Encrypted keystore** with YubiKey HMAC support, multiple keystores, auto-relock after use.
 - **Multi-host** ingest mode with gRPC agent streaming and remote process kill.
 - **Whitelist** manager for suppressing known-good processes.
@@ -44,9 +44,9 @@ sudo ./build/proxywatch-linux-amd64 -listen 0.0.0.0:50051
 
 ## Navigation
 
-Use Left/Right arrow keys to switch between dashboards:
+Use Left/Right arrow keys or number keys to switch between dashboards:
 
-**Whitelist** - **Dashboard** - **Calibration** - **SIEM** - **BloodHound** - **Contour** - **Keystore**
+**Dashboard** → **1 Calibration** → **2 Contour** → **3 ProxyHound** → **4 SIEM** → **5 Whitelist** → **6 Keystore** → (cycles back)
 
 Press `?` in any dashboard for context-specific help.
 

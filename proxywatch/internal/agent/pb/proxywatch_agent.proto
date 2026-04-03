@@ -24,6 +24,9 @@ message ProcessInfo {
   uint64 io_other_bps = 17;
   int64 cpu_time_nanos = 18;
   string window_title = 19;
+  string cmd_line = 20;
+  repeated string loaded_libs = 21;
+  int64 start_time_unix = 22;
 }
 
 message ListenerInfo {
@@ -48,6 +51,14 @@ message UDPListenerInfo {
   int32 local_port = 3;
 }
 
+message RawSocketConn {
+  int32 pid = 1;
+  string local = 2;
+  string remote = 3;
+  string state = 4;
+  string proto = 5;
+}
+
 message Candidate {
   string host = 1;
   ProcessInfo proc = 2;
@@ -69,6 +80,16 @@ message Candidate {
   int32 out_long_lived = 18;
   int32 out_short_lived = 19;
   int32 inbound_total = 20;
+  bool traffic_verified = 21;
+  bool strong_evidence = 22;
+  string control_subtype = 23;
+  int32 seen_seconds = 24;
+  bool delegated_egress = 25;
+  bool delegated_strong = 26;
+  int32 delegated_owner_pid = 27;
+  string delegated_owner = 28;
+  bool raw_socket = 29;
+  repeated RawSocketConn raw_conns = 30;
 }
 
 message CandidateEnvelope {

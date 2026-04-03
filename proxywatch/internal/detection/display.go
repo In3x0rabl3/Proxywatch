@@ -18,7 +18,7 @@ func shouldDisplayCandidate(c *shared.Candidate, now time.Time) bool {
 	}
 
 	hist := getHistory(historyPIDForCandidate(c), now)
-	if c.Role == "session" && shouldDelayWeakSession(c) {
+	if (c.Role == "control-session" || c.Role == "control-beacon") && shouldDelayWeakSession(c) {
 		if !hist.LastDisplayEval.IsZero() && now.Sub(hist.LastDisplayEval) > stableDisplayResetGap {
 			hist.DisplayStreak = 0
 		}
@@ -26,7 +26,7 @@ func shouldDisplayCandidate(c *shared.Candidate, now time.Time) bool {
 		hist.DisplayStreak++
 		return hist.DisplayStreak >= stableDisplayMinScans
 	}
-	if shared.IsControlChannelRole(c.Role) {
+	if shared.IsControlRole(c.Role) {
 		hist.DisplayStreak = 0
 		hist.LastDisplayEval = now
 		return true
@@ -96,4 +96,3 @@ func shouldShowImmediateUserEgress(c *shared.Candidate) bool {
 	}
 	return false
 }
-

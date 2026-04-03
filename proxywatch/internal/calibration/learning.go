@@ -10,18 +10,27 @@ import (
 	"strings"
 	"time"
 
+	"proxywatch/internal/keystore"
 	"proxywatch/internal/safeio"
 	"proxywatch/internal/shared"
 )
 
 const (
-	learningModelVersion = 1
+	learningModelVersion = 2
 	learningDecayFactor  = 0.92
 )
+
+// ModelScope describes which host(s) a learning model covers.
+type ModelScope struct {
+	Kind  string   `json:"kind"`  // "host", "group", "environment"
+	Hosts []string `json:"hosts"` // host identifiers this model covers
+	Label string   `json:"label"` // user-friendly name
+}
 
 type learningModel struct {
 	Version            int                       `json:"version"`
 	UpdatedAt          time.Time                 `json:"updated_at"`
+	Scope              ModelScope                `json:"model_scope,omitempty"`
 	Runs               int                       `json:"runs"`
 	WeightedSamples    float64                   `json:"weighted_samples"`
 	SuspiciousWeighted float64                   `json:"suspicious_weighted"`
@@ -47,7 +56,7 @@ type learnedProcess struct {
 	LastSeen         time.Time `json:"last_seen"`
 }
 
-type LearningContext struct {
+type learningContext struct {
 	ModelPath          string
 	Runs               int
 	WeightedSamples    float64
@@ -63,14 +72,58 @@ func learningModelPath() string {
 	return filepath.Join(calibrationRoot(), "training", "environment-model.json")
 }
 
-func loadLearningModel() (*learningModel, error) {
-	path := learningModelPath()
-	raw, err := safeio.ReadFile(path)
+func hostLearningModelPath(hostID string) string {
+	return filepath.Join(calibrationRoot(), "training", "host-"+sanitizeHostForFilename(hostID)+"-model.json")
+}
+
+func groupLearningModelPath(label string) string {
+	return filepath.Join(calibrationRoot(), "training", "group-"+sanitizeHostForFilename(label)+"-model.json")
+}
+
+func sanitizeHostForFilename(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, name)
+	if name == "" {
+		name = "unknown"
+	}
+	return name
+}
+
+// ResolveLearningModelPath returns the file path for a learning model
+// based on the given scope.
+func ResolveLearningModelPath(scope ModelScope) string {
+	switch scope.Kind {
+	case "host":
+		if len(scope.Hosts) == 1 {
+			return hostLearningModelPath(scope.Hosts[0])
+		}
+		return learningModelPath()
+	case "group":
+		if scope.Label != "" {
+			return groupLearningModelPath(scope.Label)
+		}
+		return learningModelPath()
+	default:
+		return learningModelPath()
+	}
+}
+
+func loadLearningModelFromPath(path string) (*learningModel, error) {
+	vaultKey := vaultKeyFromPath(path)
+	raw, err := keystore.VaultRead(vaultKey, path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return defaultLearningModel(), nil
 		}
 		return nil, err
+	}
+	if len(raw) == 0 {
+		return defaultLearningModel(), nil
 	}
 	var model learningModel
 	if err := json.Unmarshal(raw, &model); err != nil {
@@ -79,20 +132,38 @@ func loadLearningModel() (*learningModel, error) {
 	return ensureLearningModel(&model), nil
 }
 
-func saveLearningModel(model *learningModel) error {
+func saveLearningModelToPath(model *learningModel, path string) error {
 	model = ensureLearningModel(model)
-	path := learningModelPath()
-	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-	}
 	data, err := json.MarshalIndent(model, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	vaultKey := vaultKeyFromPath(path)
+	return keystore.VaultWrite(vaultKey, data, path)
+}
+
+// migrateLegacyModelIfNeeded copies the legacy environment-wide model to a
+// per-host or per-group path when no scoped model exists yet.
+func migrateLegacyModelIfNeeded(scope ModelScope) error {
+	if scope.Kind == "environment" || scope.Kind == "" {
+		return nil
+	}
+	targetPath := ResolveLearningModelPath(scope)
+	if _, err := os.Stat(targetPath); err == nil {
+		return nil // target already exists
+	}
+	legacyPath := learningModelPath()
+	raw, err := safeio.ReadFile(legacyPath)
+	if err != nil {
+		return nil // no legacy model or unreadable, start fresh
+	}
+	var legacy learningModel
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		return nil // corrupted, start fresh
+	}
+	legacy.Version = learningModelVersion
+	legacy.Scope = scope
+	return saveLearningModelToPath(&legacy, targetPath)
 }
 
 func defaultLearningModel() *learningModel {
@@ -109,6 +180,11 @@ func ensureLearningModel(model *learningModel) *learningModel {
 		return defaultLearningModel()
 	}
 	if model.Version <= 0 {
+		model.Version = learningModelVersion
+	}
+	// Migrate v1 → v2: legacy models have no scope, treat as environment-wide.
+	if model.Version < 2 && model.Scope.Kind == "" {
+		model.Scope = ModelScope{Kind: "environment", Label: "all"}
 		model.Version = learningModelVersion
 	}
 	if model.RoleWeighted == nil {
@@ -200,10 +276,13 @@ func updateLearningModel(model *learningModel, samples []shared.Candidate, now t
 	return model
 }
 
-func buildLearningContext(model *learningModel, currentSamples ...[]shared.Candidate) LearningContext {
+func buildLearningContext(model *learningModel, modelPath string, currentSamples ...[]shared.Candidate) learningContext {
 	model = ensureLearningModel(model)
-	ctx := LearningContext{
-		ModelPath:       learningModelPath(),
+	if modelPath == "" {
+		modelPath = learningModelPath()
+	}
+	ctx := learningContext{
+		ModelPath:       modelPath,
 		Runs:            model.Runs,
 		WeightedSamples: round1(model.WeightedSamples),
 		RoleRatios:      make(map[string]float64),
@@ -388,7 +467,7 @@ func sampleState(sample shared.Candidate) string {
 func learningSampleWeight(sample shared.Candidate, family string) float64 {
 	weight := 1.0
 	switch family {
-	case "session", "beacon", "tunnel", "smb-pipe":
+	case "control-session", "control-beacon", "control-tunnel", "control-pivot":
 		weight = 0.20
 	case "other":
 		weight = 0.5
@@ -409,7 +488,7 @@ func learningSampleWeight(sample shared.Candidate, family string) float64 {
 // or lateral movement.
 func isSuspiciousFamily(family string) bool {
 	switch family {
-	case "session", "beacon", "tunnel", "smb-pipe":
+	case "control-session", "control-beacon", "control-tunnel", "control-pivot":
 		return true
 	default:
 		return false
@@ -488,11 +567,12 @@ func hasSuspiciousLearningSignals(signals []string) bool {
 			strings.Contains(s, "susp-") ||
 			strings.Contains(s, "control-channel") ||
 			strings.Contains(s, "control-session") ||
-			strings.Contains(s, "beacon") ||
+			strings.Contains(s, "control-tunnel") ||
+			strings.Contains(s, "control-pivot") ||
 			strings.Contains(s, "tunnel") ||
 			strings.Contains(s, "internal-lateral") ||
 			strings.Contains(s, "proxy") ||
-			strings.Contains(s, "smb-pipe") {
+			strings.Contains(s, "smb-pivot") {
 			return true
 		}
 	}

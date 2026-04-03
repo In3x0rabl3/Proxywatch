@@ -2,18 +2,16 @@ package siem
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"proxywatch/internal/calibration"
+	"proxywatch/internal/keystore"
 	"proxywatch/internal/safeio"
-	"proxywatch/internal/shared"
 )
 
 const (
@@ -56,7 +54,7 @@ type SIEMBundle struct {
 	StateCounts     map[string]int  `json:"state_counts"`
 	Detections      []SIEMDetection `json:"detections"`
 	Recommendations []string        `json:"recommendations,omitempty"`
-	ReportLines     []string        `json:"report_lines,omitempty"`
+	ReportLines     []string        `json:"-"`
 }
 
 type SIEMSourceMeta struct {
@@ -69,14 +67,14 @@ type SIEMSourceMeta struct {
 }
 
 type SIEMDetection struct {
-	ID          string      `json:"id"`
-	Title       string      `json:"title"`
-	Role        string      `json:"role"`
-	Severity    string      `json:"severity"`
-	Description string      `json:"description"`
-	Processes   []string    `json:"processes,omitempty"`
-	Signals     []string    `json:"signals,omitempty"`
-	Reasons     []string    `json:"reasons,omitempty"`
+	ID                 string              `json:"id"`
+	Title              string              `json:"title"`
+	Role               string              `json:"role"`
+	Severity           string              `json:"severity"`
+	Description        string              `json:"description"`
+	Processes          []string            `json:"processes,omitempty"`
+	Signals            []string            `json:"signals,omitempty"`
+	Reasons            []string            `json:"reasons,omitempty"`
 	Techniques         []string            `json:"mitre_techniques,omitempty"`
 	Tactics            []string            `json:"mitre_tactics,omitempty"`
 	Queries            SIEMQueries         `json:"queries"`
@@ -94,12 +92,12 @@ type SIEMCalibrationCtx struct {
 }
 
 type SIEMQueries struct {
-	Splunk    string         `json:"splunk"`
-	KQL       string         `json:"kql"`
-	Elastic   string         `json:"elastic_esql"`
-	Sigma     map[string]any `json:"sigma_like"`
-	YARA      string         `json:"yara,omitempty"`
-	Suricata  string         `json:"suricata,omitempty"`
+	Splunk   string         `json:"splunk"`
+	KQL      string         `json:"kql"`
+	Elastic  string         `json:"elastic_esql"`
+	Sigma    map[string]any `json:"sigma_like"`
+	YARA     string         `json:"yara,omitempty"`
+	Suricata string         `json:"suricata,omitempty"`
 }
 
 type siemRoleStats struct {
@@ -420,329 +418,6 @@ func buildSIEMRoleStats(rows []siemDatasetRow) map[string]*siemRoleStats {
 	return stats
 }
 
-func generateSIEMWithAI(provider, model string, report calibration.Report, roleStats map[string]*siemRoleStats, rows []siemDatasetRow) (aiSIEMResult, error) {
-	roleView := make(map[string]map[string]any)
-	for role, st := range roleStats {
-		roleView[role] = map[string]any{
-			"count":         st.Count,
-			"top_processes": topMapCounts(st.Processes, 8),
-			"top_signals":   topMapCounts(st.Signals, 8),
-			"top_reasons":   topMapCounts(st.Reasons, 6),
-			"states":        topMapCounts(st.States, 3),
-		}
-	}
-	rowSamples := make([]map[string]any, 0, min(32, len(rows)))
-	for i := 0; i < len(rows) && i < 32; i++ {
-		row := rows[i]
-		rowSamples = append(rowSamples, map[string]any{
-			"host":     strings.TrimSpace(row.Host),
-			"process":  strings.TrimSpace(row.Process),
-			"role":     normalizeSIEMRole(row.Role),
-			"state":    strings.TrimSpace(row.State),
-			"age_sec":  row.AgeSec,
-			"inbound":  row.Inbound,
-			"outbound": row.Outbound,
-			"signals":  limitStrings(row.Signals, 4),
-			"reasons":  limitStrings(row.Reasons, 3),
-		})
-	}
-
-	payload := map[string]any{
-		"schema": "proxywatch-siem-v1",
-		"calibration": map[string]any{
-			"provider":        strings.TrimSpace(report.Provider),
-			"model":           strings.TrimSpace(report.Model),
-			"scope":           strings.TrimSpace(report.Scope),
-			"duration":        strings.TrimSpace(report.Duration),
-			"candidate_count": report.CandidateCount,
-			"role_counts":     cloneIntMap(report.RoleCounts),
-			"state_counts":    cloneIntMap(report.StateCounts),
-			"summary":         strings.TrimSpace(report.Summary),
-			"recommendations": limitStrings(report.Recommendations, 8),
-		},
-		"role_stats":   roleView,
-		"row_examples": rowSamples,
-	}
-	rawPayload, err := json.Marshal(payload)
-	if err != nil {
-		return aiSIEMResult{}, err
-	}
-
-	system := strings.TrimSpace(`
-You are generating SIEM detection content from Proxywatch calibration telemetry.
-Return ONLY valid JSON with this exact shape:
-{
-  "summary": "short paragraph",
-  "highlights": ["item 1", "item 2", "item 3"],
-  "detections": [
-    {
-      "title": "detection title",
-      "role": "session|beacon|tunnel|listener|outbound|other",
-      "severity": "low|medium|high|critical",
-      "description": "what to detect and why",
-      "processes": ["proc1", "proc2"],
-      "signals": ["signal1", "signal2"],
-      "reasons": ["reason1", "reason2"]
-    }
-  ]
-}
-Rules:
-- Keep detections aligned with observed roles and traffic behavior.
-- Prefer precision and explainability over volume.
-- Do not invent unsupported telemetry fields.
-- No markdown.
-`)
-	user := "Proxywatch calibration telemetry JSON:\n" + string(rawPayload)
-	response, err := calibration.RequestSIEMAI(context.Background(), provider, model, system, user)
-	if err != nil {
-		return aiSIEMResult{}, err
-	}
-	return parseAISIEMResult(response)
-}
-
-func parseAISIEMResult(raw string) (aiSIEMResult, error) {
-	text := strings.TrimSpace(raw)
-	if text == "" {
-		return aiSIEMResult{}, fmt.Errorf("empty response")
-	}
-	text = strings.TrimPrefix(text, "```json")
-	text = strings.TrimPrefix(text, "```")
-	text = strings.TrimSuffix(text, "```")
-	text = strings.TrimSpace(text)
-
-	var out aiSIEMResult
-	if err := json.Unmarshal([]byte(text), &out); err == nil {
-		return out, nil
-	}
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end <= start {
-		return aiSIEMResult{}, fmt.Errorf("response did not contain JSON object")
-	}
-	if err := json.Unmarshal([]byte(text[start:end+1]), &out); err != nil {
-		return aiSIEMResult{}, err
-	}
-	return out, nil
-}
-
-func buildSIEMDetections(report calibration.Report, roleStats map[string]*siemRoleStats, aiDetections []aiSIEMDetection) []SIEMDetection {
-	out := make([]SIEMDetection, 0, 12)
-	if len(aiDetections) > 0 {
-		for _, det := range aiDetections {
-			role := normalizeSIEMRole(det.Role)
-			st := roleStats[role]
-			procNames := sanitizeAndFallbackList(det.Processes, st, "process")
-			signals := sanitizeAndFallbackSignals(det.Signals, st)
-			reasons := sanitizeAndFallbackReasons(det.Reasons, st)
-			severity := normalizeSeverity(det.Severity, role)
-			title := strings.TrimSpace(det.Title)
-			if title == "" {
-				title = defaultSIEMDetectionTitle(role)
-			}
-			desc := strings.TrimSpace(det.Description)
-			if desc == "" {
-				desc = fallbackSIEMDescription(role, st, procNames)
-			}
-			out = append(out, makeSIEMDetection(role, severity, title, desc, procNames, signals, reasons))
-		}
-	}
-
-	if len(out) == 0 {
-		roles := orderedRoleFamiliesFromReport(report, roleStats)
-		for _, role := range roles {
-			st := roleStats[role]
-			procNames := topMapKeys(st.Processes, 5)
-			signals := topMapKeys(st.Signals, 8)
-			reasons := topMapKeys(st.Reasons, 5)
-			out = append(out, makeSIEMDetection(
-				role,
-				normalizeSeverity("", role),
-				defaultSIEMDetectionTitle(role),
-				fallbackSIEMDescription(role, st, procNames),
-				procNames,
-				signals,
-				reasons,
-			))
-		}
-	}
-
-	if len(out) == 0 {
-		out = append(out, makeSIEMDetection(
-			"other",
-			"low",
-			"Proxywatch behavioral outlier",
-			"Alert on process network behavior that deviates from calibrated baseline.",
-			nil,
-			nil,
-			nil,
-		))
-	}
-
-	// Attach calibrated thresholds from the report so downstream SIEM
-	// consumers can reference the tuned values in alert logic.
-	ctx := calibrationContextFromReport(report)
-
-	seen := make(map[string]bool, len(out))
-	filtered := make([]SIEMDetection, 0, len(out))
-	for _, det := range out {
-		if seen[det.ID] {
-			continue
-		}
-		seen[det.ID] = true
-		det.CalibrationContext = ctx
-		filtered = append(filtered, det)
-	}
-	return filtered
-}
-
-func calibrationContextFromReport(report calibration.Report) *SIEMCalibrationCtx {
-	s := report.Settings
-	if s.BeaconSleepThreshold == "" && s.BeaconJitterCoVMax == 0 && s.ShapeDeltaThreshold == 0 && s.ReverseStickyScore == 0 {
-		return nil
-	}
-	return &SIEMCalibrationCtx{
-		BeaconSleepThreshold: s.BeaconSleepThreshold,
-		BeaconJitterCoVMax:   fmt.Sprintf("%.2f", s.BeaconJitterCoVMax),
-		ShapeDeltaThreshold:  fmt.Sprintf("%.2f", s.ShapeDeltaThreshold),
-		ReverseStickyScore:   s.ReverseStickyScore,
-		Confidence:           report.Confidence,
-	}
-}
-
-func makeSIEMDetection(role, severity, title, description string, processes, signals, reasons []string) SIEMDetection {
-	role = normalizeSIEMRole(role)
-	if role == "" {
-		role = "other"
-	}
-	processes = sanitizeStringList(processes, 6)
-	signals = sanitizeStringList(signals, 10)
-	reasons = sanitizeStringList(reasons, 8)
-	id := strings.ToLower(strings.ReplaceAll(role+"-"+title, " ", "-"))
-	id = sanitizeDetectionID(id)
-	det := SIEMDetection{
-		ID:          id,
-		Title:       strings.TrimSpace(title),
-		Role:        role,
-		Severity:    normalizeSeverity(severity, role),
-		Description: strings.TrimSpace(description),
-		Processes:   processes,
-		Signals:     signals,
-		Reasons:     reasons,
-		Techniques:  shared.MITRETechniques(role),
-		Tactics:     shared.MITRETactics(role),
-	}
-	det.Queries = SIEMQueries{
-		Splunk:   buildSIEMSplunkQuery(det),
-		KQL:      buildSIEMKQLQuery(det),
-		Elastic:  buildSIEMElasticQuery(det),
-		Sigma:    buildSIEMSigma(det),
-		YARA:     buildSIEMYARA(det),
-		Suricata: buildSIEMSuricata(det),
-	}
-	return det
-}
-
-func sanitizeDetectionID(id string) string {
-	id = strings.TrimSpace(strings.ToLower(id))
-	if id == "" {
-		return "proxywatch-detection"
-	}
-	var b strings.Builder
-	for _, r := range id {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('-')
-		}
-	}
-	out := strings.Trim(b.String(), "-")
-	if out == "" {
-		return "proxywatch-detection"
-	}
-	return out
-}
-
-func normalizeSIEMRole(role string) string {
-	s := strings.ToLower(strings.TrimSpace(role))
-	switch s {
-	case "session":
-		return "session"
-	case "beacon":
-		return "beacon"
-	case "tunnel", "smb-pipe":
-		return "tunnel"
-	case "listen", "listener":
-		return "listener"
-	case "outbound":
-		return "outbound"
-	default:
-		return "other"
-	}
-}
-
-func normalizeSeverity(raw, role string) string {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	switch s {
-	case "low", "medium", "high", "critical":
-		return s
-	}
-	switch normalizeSIEMRole(role) {
-	case "session", "beacon", "tunnel":
-		return "high"
-	case "listener":
-		return "medium"
-	case "outbound":
-		return "low"
-	default:
-		return "low"
-	}
-}
-
-func defaultSIEMDetectionTitle(role string) string {
-	switch normalizeSIEMRole(role) {
-	case "session":
-		return "Persistent control-session behavior"
-	case "beacon":
-		return "Beacon-like callback pattern"
-	case "tunnel":
-		return "Tunnel or pivot traffic pattern"
-	case "listener":
-		return "Unexpected listener exposure"
-	case "outbound":
-		return "Anomalous outbound pattern"
-	default:
-		return "Behavioral outlier"
-	}
-}
-
-func fallbackSIEMDescription(role string, st *siemRoleStats, processes []string) string {
-	count := 0
-	if st != nil {
-		count = st.Count
-	}
-	procText := ""
-	if len(processes) > 0 {
-		procText = " Top processes: " + strings.Join(processes, ", ") + "."
-	}
-	switch normalizeSIEMRole(role) {
-	case "session":
-		return fmt.Sprintf("Detected %d calibration samples with stable control-session characteristics.%s", count, procText)
-	case "beacon":
-		return fmt.Sprintf("Detected %d calibration samples with recurring beacon-like timing.%s", count, procText)
-	case "tunnel":
-		return fmt.Sprintf("Detected %d calibration samples consistent with tunnel/pivot traffic.%s", count, procText)
-	case "listener":
-		return fmt.Sprintf("Detected %d calibration samples with listener behavior.%s", count, procText)
-	case "outbound":
-		return fmt.Sprintf("Detected %d calibration samples with sustained outbound traffic.%s", count, procText)
-	default:
-		return fmt.Sprintf("Detected %d calibration samples with behavior deviations.%s", count, procText)
-	}
-}
-
 func fallbackSIEMSummary(report calibration.Report, detections int) string {
 	return fmt.Sprintf(
 		"Generated %d SIEM-ready detections from calibration report %s (scope=%s, candidates=%d).",
@@ -755,7 +430,7 @@ func fallbackSIEMSummary(report calibration.Report, detections int) string {
 
 func fallbackSIEMHighlights(report calibration.Report, roleStats map[string]*siemRoleStats) []string {
 	out := []string{
-		fmt.Sprintf("Calibration source role mix: session=%d, beacon=%d, tunnel=%d, listen=%d, outbound=%d.", report.RoleCounts["session"], report.RoleCounts["beacon"], report.RoleCounts["tunnel"], report.RoleCounts["listen"], report.RoleCounts["outbound"]),
+		fmt.Sprintf("Calibration source role mix: session=%d, beacon=%d, pivot=%d, tunnel=%d, listen=%d, outbound=%d.", report.RoleCounts["control-session"], report.RoleCounts["control-beacon"], report.RoleCounts["control-pivot"], report.RoleCounts["control-tunnel"], report.RoleCounts["listen"], report.RoleCounts["outbound"]),
 	}
 	roles := orderedRoleFamiliesFromReport(report, roleStats)
 	if len(roles) > 0 {
@@ -768,7 +443,7 @@ func fallbackSIEMHighlights(report calibration.Report, roleStats map[string]*sie
 }
 
 func orderedRoleFamiliesFromReport(report calibration.Report, roleStats map[string]*siemRoleStats) []string {
-	preferred := []string{"session", "beacon", "tunnel", "listener", "outbound", "other"}
+	preferred := []string{"control-session", "control-beacon", "control-pivot", "control-tunnel", "listener", "outbound", "other"}
 	out := make([]string, 0, len(preferred))
 	for _, role := range preferred {
 		if report.RoleCounts[role] > 0 {
@@ -806,212 +481,6 @@ func sanitizeStringList(values []string, limit int) []string {
 	return out
 }
 
-func sanitizeAndFallbackList(values []string, st *siemRoleStats, kind string) []string {
-	clean := sanitizeStringList(values, 6)
-	if len(clean) > 0 {
-		return clean
-	}
-	if st == nil {
-		return nil
-	}
-	switch kind {
-	case "process":
-		return topMapKeys(st.Processes, 6)
-	default:
-		return nil
-	}
-}
-
-func sanitizeAndFallbackSignals(values []string, st *siemRoleStats) []string {
-	clean := sanitizeStringList(values, 10)
-	if len(clean) > 0 {
-		return clean
-	}
-	if st == nil {
-		return nil
-	}
-	return topMapKeys(st.Signals, 10)
-}
-
-func sanitizeAndFallbackReasons(values []string, st *siemRoleStats) []string {
-	clean := sanitizeStringList(values, 8)
-	if len(clean) > 0 {
-		return clean
-	}
-	if st == nil {
-		return nil
-	}
-	return topMapKeys(st.Reasons, 8)
-}
-
-func buildSIEMSplunkQuery(det SIEMDetection) string {
-	parts := []string{`index=<endpoint_index>`, `sourcetype=<endpoint_network_or_edr>`}
-	clauses := make([]string, 0, 3)
-	clauses = append(clauses, `proxywatch_role="`+escapeSIEMQuery(det.Role)+`"`)
-	if len(det.Processes) > 0 {
-		procVals := make([]string, 0, len(det.Processes))
-		for _, p := range det.Processes {
-			procVals = append(procVals, `"`+escapeSIEMQuery(p)+`"`)
-		}
-		clauses = append(clauses, "process_name IN ("+strings.Join(procVals, ",")+")")
-	}
-	if len(det.Signals) > 0 {
-		sigVals := make([]string, 0, len(det.Signals))
-		for _, s := range det.Signals {
-			sigVals = append(sigVals, `"`+escapeSIEMQuery(s)+`"`)
-		}
-		clauses = append(clauses, "signal IN ("+strings.Join(sigVals, ",")+")")
-	}
-	parts = append(parts, "("+strings.Join(clauses, " OR ")+")")
-	parts = append(parts, `| stats count min(_time) as first_seen max(_time) as last_seen by host process_name dest_ip dest_port signal`)
-	return strings.Join(parts, " ")
-}
-
-func buildSIEMKQLQuery(det SIEMDetection) string {
-	lines := []string{
-		"DeviceNetworkEvents",
-		`| where tostring(AdditionalFields.ProxywatchRole) =~ "` + escapeSIEMQuery(det.Role) + `"`,
-	}
-	if len(det.Processes) > 0 {
-		vals := make([]string, 0, len(det.Processes))
-		for _, p := range det.Processes {
-			vals = append(vals, `"`+escapeSIEMQuery(p)+`"`)
-		}
-		lines = append(lines, "| where InitiatingProcessFileName in~ ("+strings.Join(vals, ", ")+")")
-	}
-	if len(det.Signals) > 0 {
-		vals := make([]string, 0, len(det.Signals))
-		for _, s := range det.Signals {
-			vals = append(vals, `"`+escapeSIEMQuery(s)+`"`)
-		}
-		lines = append(lines, "| where tostring(AdditionalFields.ProxywatchSignal) in~ ("+strings.Join(vals, ", ")+")")
-	}
-	lines = append(lines, "| summarize hits=count(), first_seen=min(Timestamp), last_seen=max(Timestamp) by DeviceName, InitiatingProcessFileName, RemoteIP, RemotePort")
-	return strings.Join(lines, "\n")
-}
-
-func buildSIEMElasticQuery(det SIEMDetection) string {
-	lines := []string{"from logs-endpoint.events.network*"}
-	lines = append(lines, `| where proxywatch.role == "`+escapeSIEMQuery(det.Role)+`"`)
-	if len(det.Processes) > 0 {
-		vals := make([]string, 0, len(det.Processes))
-		for _, p := range det.Processes {
-			vals = append(vals, `"`+escapeSIEMQuery(p)+`"`)
-		}
-		lines = append(lines, "| where process.name in ("+strings.Join(vals, ", ")+")")
-	}
-	if len(det.Signals) > 0 {
-		vals := make([]string, 0, len(det.Signals))
-		for _, s := range det.Signals {
-			vals = append(vals, `"`+escapeSIEMQuery(s)+`"`)
-		}
-		lines = append(lines, "| where proxywatch.signal in ("+strings.Join(vals, ", ")+")")
-	}
-	lines = append(lines, "| stats hits = count(*) by host.name, process.name, destination.ip, destination.port")
-	return strings.Join(lines, "\n")
-}
-
-func buildSIEMSigma(det SIEMDetection) map[string]any {
-	selection := map[string]any{
-		"ProxywatchRole": det.Role,
-	}
-	if len(det.Processes) > 0 {
-		selection["ProcessName|contains"] = det.Processes
-	}
-	if len(det.Signals) > 0 {
-		selection["ProxywatchSignal|contains"] = det.Signals
-	}
-	return map[string]any{
-		"title":       det.Title,
-		"id":          det.ID,
-		"status":      "experimental",
-		"description": det.Description,
-		"logsource": map[string]any{
-			"category": "network_connection",
-			"product":  "windows",
-		},
-		"detection": map[string]any{
-			"selection": selection,
-			"condition": "selection",
-		},
-		"level": det.Severity,
-	}
-}
-
-func buildSIEMYARA(det SIEMDetection) string {
-	if len(det.Processes) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	ruleName := strings.ReplaceAll(det.ID, "-", "_")
-	b.WriteString(fmt.Sprintf("rule %s {\n", ruleName))
-	b.WriteString("    meta:\n")
-	b.WriteString(fmt.Sprintf("        description = \"%s\"\n", escapeSIEMQuery(det.Title)))
-	b.WriteString(fmt.Sprintf("        severity = \"%s\"\n", det.Severity))
-	if len(det.Techniques) > 0 {
-		b.WriteString(fmt.Sprintf("        mitre = \"%s\"\n", strings.Join(det.Techniques, ",")))
-	}
-	b.WriteString(fmt.Sprintf("        role = \"%s\"\n", det.Role))
-	b.WriteString("    strings:\n")
-	for i, proc := range det.Processes {
-		if i >= 10 {
-			break
-		}
-		escaped := strings.ReplaceAll(proc, "\\", "\\\\")
-		b.WriteString(fmt.Sprintf("        $proc%d = \"%s\" ascii nocase\n", i, escaped))
-	}
-	for i, sig := range det.Signals {
-		if i >= 5 {
-			break
-		}
-		b.WriteString(fmt.Sprintf("        $sig%d = \"%s\" ascii nocase\n", i, sig))
-	}
-	b.WriteString("    condition:\n")
-	b.WriteString("        any of ($proc*) or any of ($sig*)\n")
-	b.WriteString("}\n")
-	return b.String()
-}
-
-func buildSIEMSuricata(det SIEMDetection) string {
-	if len(det.Processes) == 0 {
-		return ""
-	}
-	var rules []string
-	sid := 3000000 // base SID for proxywatch-generated rules
-	for i, proc := range det.Processes {
-		if i >= 5 {
-			break
-		}
-		rule := fmt.Sprintf(
-			"alert tcp $HOME_NET any -> $EXTERNAL_NET any "+
-				"(msg:\"PROXYWATCH %s - %s\"; "+
-				"content:\"%s\"; nocase; "+
-				"classtype:trojan-activity; "+
-				"sid:%d; rev:1;"+
-				")",
-			det.Role, escapeSIEMQuery(proc),
-			escapeSIEMQuery(proc),
-			sid+i,
-		)
-		if len(det.Techniques) > 0 {
-			rule = strings.TrimSuffix(rule, ")")
-			rule += fmt.Sprintf(" metadata:mitre_technique %s;)", strings.Join(det.Techniques, ","))
-		}
-		rules = append(rules, rule)
-	}
-	return strings.Join(rules, "\n")
-}
-
-func escapeSIEMQuery(v string) string {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return ""
-	}
-	v = strings.ReplaceAll(v, "\\", "\\\\")
-	v = strings.ReplaceAll(v, `"`, `\\"`)
-	return v
-}
-
 func topMapCounts(src map[string]int, limit int) []map[string]any {
 	keys := topMapKeys(src, limit)
 	out := make([]map[string]any, 0, len(keys))
@@ -1021,99 +490,361 @@ func topMapCounts(src map[string]int, limit int) []map[string]any {
 	return out
 }
 
-func renderSIEMReportLines(bundle SIEMBundle) []string {
-	lines := make([]string, 0, 200)
+// severityIcon returns a Unicode icon for the given severity level.
+func severityIcon(sev string) string {
+	switch strings.ToUpper(strings.TrimSpace(sev)) {
+	case "CRITICAL":
+		return "\u25b2" // ▲
+	case "HIGH":
+		return "\u25cf" // ●
+	case "MEDIUM":
+		return "\u25c6" // ◆
+	case "LOW":
+		return "\u25cb" // ○
+	default:
+		return "\u25cb"
+	}
+}
 
-	// ── Header ──────────────────────────────────────────────────
-	lines = append(lines, fmt.Sprintf("%d detections  |  %d candidates  |  %s  |  %s / %s",
+// truncateQuery shortens a query string to maxLen characters, appending "..."
+// if truncation is needed.
+func truncateQuery(q string, maxLen int) string {
+	q = strings.TrimSpace(q)
+	if maxLen <= 0 || len(q) <= maxLen {
+		return q
+	}
+	if maxLen <= 3 {
+		return q[:maxLen]
+	}
+	return q[:maxLen-3] + "..."
+}
+
+// sigmaTitle extracts the title field from a sigma_like map, returning a
+// fallback if not present.
+func sigmaTitle(sigma map[string]any, fallback string) string {
+	if sigma == nil {
+		return ""
+	}
+	if t, ok := sigma["title"]; ok {
+		if s, ok := t.(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return fallback
+}
+
+func renderSIEMReportLines(bundle SIEMBundle) []string {
+	lines := make([]string, 0, 300)
+
+	// ── Header block ──────────────────────────────────────
+	lines = append(lines, "╔══════════════════════════════════════════════════════════════════════════════╗")
+	lines = append(lines, "║                         SIEM DETECTION REPORT                              ║")
+	lines = append(lines, fmt.Sprintf("║  %d detections  │  %d candidates  │  %s  │  %s / %s",
 		len(bundle.Detections), bundle.Source.CandidateCount,
 		bundle.Source.Duration, bundle.Provider, bundle.Model))
+	lines = append(lines, "╚══════════════════════════════════════════════════════════════════════════════╝")
 
-	// ── Summary + Highlights ────────────────────────────────────
+	// ── Summary ───────────────────────────────────────────
 	if strings.TrimSpace(bundle.Summary) != "" {
 		lines = append(lines, "")
-		lines = append(lines, bundle.Summary)
+		lines = append(lines, "  SUMMARY")
+		lines = append(lines, "  ────────────────────────────────────────────────────────────────")
+		for _, line := range wrapText(bundle.Summary, 72) {
+			lines = append(lines, "  "+line)
+		}
 	}
+
+	// ── Key Findings ──────────────────────────────────────
 	if len(bundle.Highlights) > 0 {
-		for _, h := range bundle.Highlights {
-			lines = append(lines, "  - "+h)
-		}
-	}
-
-	// ── Detections ──────────────────────────────────────────────
-	if len(bundle.Detections) > 0 {
 		lines = append(lines, "")
-		lines = append(lines, "Detections")
-
-		for i, det := range bundle.Detections {
-			if i > 0 {
-				lines = append(lines, "")
-			}
-			sevTag := strings.ToUpper(det.Severity)
-			lines = append(lines, fmt.Sprintf("  [%s] %s", sevTag, det.Title))
-			lines = append(lines, fmt.Sprintf("         Role: %s  |  Processes: %s", det.Role, strings.Join(det.Processes, ", ")))
-			if len(det.Techniques) > 0 {
-				lines = append(lines, "         MITRE: "+strings.Join(det.Techniques, ", "))
-			}
-			if len(det.Reasons) > 0 {
-				lines = append(lines, "         "+strings.Join(det.Reasons, " | "))
-			}
-
-			// Queries — compact, one per line.
-			queries := []struct {
-				name, value string
-			}{
-				{"Splunk", strings.TrimSpace(det.Queries.Splunk)},
-				{"KQL", strings.TrimSpace(det.Queries.KQL)},
-				{"ESQL", strings.TrimSpace(det.Queries.Elastic)},
-			}
-			for _, q := range queries {
-				if q.value == "" {
-					continue
-				}
-				lines = append(lines, fmt.Sprintf("         %s: %s", q.name, q.value))
-			}
-			if strings.TrimSpace(det.Queries.Suricata) != "" {
-				lines = append(lines, fmt.Sprintf("         Suricata: %s", strings.TrimSpace(det.Queries.Suricata)))
-			}
-			if strings.TrimSpace(det.Queries.YARA) != "" {
-				lines = append(lines, fmt.Sprintf("         YARA: %s", strings.TrimSpace(det.Queries.YARA)))
-			}
+		lines = append(lines, "  KEY FINDINGS")
+		lines = append(lines, "  ────────────────────────────────────────────────────────────────")
+		for _, h := range bundle.Highlights {
+			lines = append(lines, "  • "+h)
 		}
 	}
 
-	// ── Defender Notes ──────────────────────────────────────────
+	// ── Detection cards ───────────────────────────────────
+	for i, det := range bundle.Detections {
+		lines = append(lines, "")
+		sevUpper := strings.ToUpper(strings.TrimSpace(det.Severity))
+		icon := severityIcon(sevUpper)
+		conf := siemDetectionConfidence(det.Severity, len(det.Signals))
+
+		// Card header with severity bar
+		lines = append(lines, "  ┌──────────────────────────────────────────────────────────────────────┐")
+		lines = append(lines, fmt.Sprintf("  │  %s %s  %s", icon, sevUpper, det.Title))
+		lines = append(lines, fmt.Sprintf("  │  Detection %d/%d  │  Confidence: %d%%  │  %d signals  │  %d queries",
+			i+1, len(bundle.Detections), conf, len(det.Signals), siemQueryCount(det.Queries)))
+		lines = append(lines, "  ├──────────────────────────────────────────────────────────────────────┤")
+
+		// Metadata fields
+		lines = append(lines, fmt.Sprintf("  │  Role:       %s", det.Role))
+		lines = append(lines, fmt.Sprintf("  │  Severity:   %s", strings.ToLower(sevUpper)))
+		if len(det.Processes) > 0 {
+			lines = append(lines, fmt.Sprintf("  │  Processes:  %s", strings.Join(det.Processes, ", ")))
+		}
+		if len(det.Techniques) > 0 {
+			lines = append(lines, fmt.Sprintf("  │  MITRE:      %s", strings.Join(det.Techniques, "  ")))
+		}
+		if len(det.Tactics) > 0 {
+			lines = append(lines, fmt.Sprintf("  │  Tactics:    %s", strings.Join(det.Tactics, ", ")))
+		}
+
+		// Description
+		if desc := strings.TrimSpace(det.Description); desc != "" {
+			lines = append(lines, "  │")
+			lines = append(lines, "  │  Description:")
+			for _, dl := range wrapText(desc, 68) {
+				lines = append(lines, "  │    "+dl)
+			}
+		}
+
+		// Signals
+		if len(det.Signals) > 0 {
+			lines = append(lines, "  │")
+			lines = append(lines, "  │  Signals:")
+			for _, sig := range det.Signals {
+				lines = append(lines, "  │    • "+sig)
+			}
+		}
+
+		// Reasons
+		if len(det.Reasons) > 0 {
+			lines = append(lines, "  │")
+			lines = append(lines, "  │  Analysis:")
+			for _, r := range det.Reasons {
+				lines = append(lines, "  │    ▸ "+r)
+			}
+		}
+
+		// Queries
+		type queryEntry struct {
+			label, value string
+			last         bool
+		}
+		qEntries := make([]queryEntry, 0, 6)
+		if v := strings.TrimSpace(det.Queries.Splunk); v != "" {
+			qEntries = append(qEntries, queryEntry{label: "Splunk", value: truncateQuery(v, 100)})
+		}
+		if v := strings.TrimSpace(det.Queries.KQL); v != "" {
+			qEntries = append(qEntries, queryEntry{label: "KQL", value: truncateQuery(v, 100)})
+		}
+		if v := strings.TrimSpace(det.Queries.Elastic); v != "" {
+			qEntries = append(qEntries, queryEntry{label: "ESQL", value: truncateQuery(v, 100)})
+		}
+		if v := strings.TrimSpace(det.Queries.Suricata); v != "" {
+			qEntries = append(qEntries, queryEntry{label: "Suricata", value: truncateQuery(v, 100)})
+		}
+		if v := strings.TrimSpace(det.Queries.YARA); v != "" {
+			qEntries = append(qEntries, queryEntry{label: "YARA", value: truncateQuery(v, 100)})
+		}
+		if st := sigmaTitle(det.Queries.Sigma, ""); st != "" {
+			qEntries = append(qEntries, queryEntry{label: "Sigma", value: truncateQuery("title: "+st, 100)})
+		}
+		if len(qEntries) > 0 {
+			qEntries[len(qEntries)-1].last = true
+			lines = append(lines, "  │")
+			lines = append(lines, "  │  Queries:")
+			for _, qe := range qEntries {
+				branch := "├─"
+				if qe.last {
+					branch = "└─"
+				}
+				lines = append(lines, fmt.Sprintf("  │    %s %s: %s", branch, qe.label, qe.value))
+			}
+		}
+
+		lines = append(lines, "  └──────────────────────────────────────────────────────────────────────┘")
+	}
+
+	// ── Defender Notes ────────────────────────────────────
 	if len(bundle.Recommendations) > 0 {
 		lines = append(lines, "")
-		lines = append(lines, "Notes")
-		for _, note := range bundle.Recommendations {
-			lines = append(lines, "  - "+note)
+		lines = append(lines, "  DEFENDER NOTES")
+		lines = append(lines, "  ────────────────────────────────────────────────────────────────")
+		for i, note := range bundle.Recommendations {
+			for j, wl := range wrapText(note, 70) {
+				if j == 0 {
+					lines = append(lines, fmt.Sprintf("  %d. %s", i+1, wl))
+				} else {
+					lines = append(lines, "     "+wl)
+				}
+			}
 		}
 	}
 
+	lines = append(lines, "")
 	return lines
 }
+
+// wrapText breaks text into lines of at most maxW characters at word boundaries.
+func wrapText(text string, maxW int) []string {
+	if maxW <= 0 {
+		return []string{text}
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return nil
+	}
+	var lines []string
+	cur := words[0]
+	for _, w := range words[1:] {
+		if len(cur)+1+len(w) > maxW {
+			lines = append(lines, cur)
+			cur = w
+		} else {
+			cur += " " + w
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
+// siemDetectionConfidence computes a 0-100 confidence percentage from severity
+// and signal count.
+func siemDetectionConfidence(sev string, signalCount int) int {
+	base := 0
+	switch strings.ToUpper(strings.TrimSpace(sev)) {
+	case "CRITICAL":
+		base = 85
+	case "HIGH":
+		base = 70
+	case "MEDIUM":
+		base = 50
+	case "LOW":
+		base = 30
+	default:
+		base = 20
+	}
+	bonus := signalCount * 3
+	if bonus > 15 {
+		bonus = 15
+	}
+	total := base + bonus
+	if total > 100 {
+		total = 100
+	}
+	return total
+}
+
+// siemDetectionPriority assigns a 1-based priority rank to detections sorted
+// by severity then process count descending.
+func siemDetectionPriority(detections []SIEMDetection) []int {
+	type ranked struct {
+		idx      int
+		sevRank  int
+		procLen  int
+		sigCount int
+	}
+	sevOrd := func(s string) int {
+		switch strings.ToUpper(strings.TrimSpace(s)) {
+		case "CRITICAL":
+			return 4
+		case "HIGH":
+			return 3
+		case "MEDIUM":
+			return 2
+		case "LOW":
+			return 1
+		default:
+			return 0
+		}
+	}
+	items := make([]ranked, len(detections))
+	for i, d := range detections {
+		items[i] = ranked{idx: i, sevRank: sevOrd(d.Severity), procLen: len(d.Processes), sigCount: len(d.Signals)}
+	}
+	sort.Slice(items, func(a, b int) bool {
+		if items[a].sevRank != items[b].sevRank {
+			return items[a].sevRank > items[b].sevRank
+		}
+		if items[a].procLen != items[b].procLen {
+			return items[a].procLen > items[b].procLen
+		}
+		return items[a].sigCount > items[b].sigCount
+	})
+	priorities := make([]int, len(detections))
+	for rank, item := range items {
+		priorities[item.idx] = rank + 1
+	}
+	return priorities
+}
+
+// siemQueryCoverage returns a map of platform->bool indicating which SIEM
+// platforms have queries for a detection.
+func siemQueryCoverage(q SIEMQueries) map[string]bool {
+	cov := make(map[string]bool, 6)
+	cov["splunk"] = strings.TrimSpace(q.Splunk) != ""
+	cov["kql"] = strings.TrimSpace(q.KQL) != ""
+	cov["esql"] = strings.TrimSpace(q.Elastic) != ""
+	cov["sigma"] = len(q.Sigma) > 0
+	cov["yara"] = strings.TrimSpace(q.YARA) != ""
+	cov["suricata"] = strings.TrimSpace(q.Suricata) != ""
+	return cov
+}
+
+// siemQueryCount counts the number of non-empty query platforms for a detection.
+func siemQueryCount(q SIEMQueries) int {
+	count := 0
+	for _, has := range siemQueryCoverage(q) {
+		if has {
+			count++
+		}
+	}
+	return count
+}
+
+// siemJSONEnriched is a wrapper around SIEMBundle that adds per-detection
+// enrichment fields for downstream consumers without modifying the core types.
+type siemJSONEnriched struct {
+	SIEMBundle
+	GeneratedBy        string                     `json:"generated_by"`
+	EnrichedDetections []siemJSONDetectionWrapper `json:"enriched_detections,omitempty"`
+}
+
+type siemJSONDetectionWrapper struct {
+	SIEMDetection
+	Confidence int             `json:"confidence"`
+	Priority   int             `json:"priority"`
+	QueryCount int             `json:"query_count"`
+	Coverage   map[string]bool `json:"coverage"`
+}
+
+const proxyWatchVersion = "proxywatch"
 
 func writeSIEMJSON(path string, bundle SIEMBundle) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return fmt.Errorf("siem json path is required")
 	}
-	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
+	priorities := siemDetectionPriority(bundle.Detections)
+	enriched := siemJSONEnriched{
+		SIEMBundle:  bundle,
+		GeneratedBy: proxyWatchVersion,
+	}
+	enriched.EnrichedDetections = make([]siemJSONDetectionWrapper, len(bundle.Detections))
+	for i, det := range bundle.Detections {
+		prio := 0
+		if i < len(priorities) {
+			prio = priorities[i]
+		}
+		enriched.EnrichedDetections[i] = siemJSONDetectionWrapper{
+			SIEMDetection: det,
+			Confidence:    siemDetectionConfidence(det.Severity, len(det.Signals)),
+			Priority:      prio,
+			QueryCount:    siemQueryCount(det.Queries),
+			Coverage:      siemQueryCoverage(det.Queries),
 		}
 	}
-	f, closeFile, err := safeio.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	data, err := json.MarshalIndent(enriched, "", "  ")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = closeFile() }()
-
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	return enc.Encode(bundle)
+	vaultKey := vaultKeyFromPath(path)
+	return keystore.VaultWrite(vaultKey, data, path)
 }
 
 func writeSIEMReport(path string, bundle SIEMBundle) error {
@@ -1121,20 +852,17 @@ func writeSIEMReport(path string, bundle SIEMBundle) error {
 	if path == "" {
 		return fmt.Errorf("siem report path is required")
 	}
-	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-	}
 	text := strings.Join(bundle.ReportLines, "\n") + "\n"
-	f, closeFile, err := safeio.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
+	vaultKey := vaultKeyFromPath(path)
+	return keystore.VaultWrite(vaultKey, []byte(text), path)
+}
+
+func vaultKeyFromPath(path string) string {
+	path = strings.TrimSpace(path)
+	if idx := strings.Index(path, ".proxywatch/"); idx >= 0 {
+		return path[idx+len(".proxywatch/"):]
 	}
-	defer func() { _ = closeFile() }()
-	_, err = f.WriteString(text)
-	return err
+	return filepath.Base(path)
 }
 
 func normalizeSIEMOutputPath(path, fallback, ext string) string {
@@ -1196,7 +924,7 @@ func buildSIEMRowsFromReport(report calibration.Report) []siemDatasetRow {
 	if len(rows) > 0 {
 		return rows
 	}
-	roles := []string{"session", "beacon", "tunnel", "listener", "outbound", "other"}
+	roles := []string{"control-session", "control-beacon", "control-pivot", "control-tunnel", "listener", "outbound", "other"}
 	for _, role := range roles {
 		count := report.RoleCounts[role]
 		if count <= 0 {
@@ -1349,20 +1077,7 @@ func normalizeProvider(provider string) string {
 }
 
 func normalizeOutputPath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		path = "~/.proxywatch/calibration/latest.json"
-	}
-	path = safeio.ExpandHomePath(path)
-	if filepath.IsAbs(path) {
-		path = filepath.Clean(path)
-	} else {
-		path = filepath.Join(siemCalibrationRoot(), safeio.SanitizeRelativePath(path, "latest.json"))
-	}
-	if !strings.HasSuffix(strings.ToLower(path), ".json") {
-		path += ".json"
-	}
-	return path
+	return safeio.NormalizeJSONOutputPath(path, "~/.proxywatch/calibration/latest.json", siemCalibrationRoot())
 }
 
 func siemCalibrationRoot() string {
@@ -1372,4 +1087,3 @@ func siemCalibrationRoot() string {
 	}
 	return filepath.Join(home, ".proxywatch", "calibration")
 }
-

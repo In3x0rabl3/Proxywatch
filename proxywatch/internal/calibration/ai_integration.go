@@ -28,7 +28,7 @@ func calibrateWithAI(
 	roleCounts map[string]int,
 	stateCounts map[string]int,
 	topProcesses []ProcessSummary,
-	learning LearningContext,
+	learning learningContext,
 ) (aiCalibrationResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -62,14 +62,27 @@ func calibrateWithAI(
 	)
 
 	system := strings.TrimSpace(`
-You are calibrating Proxywatch detection thresholds for the current environment.
-The telemetry payload may be summarized and truncated for context fit; infer carefully from available aggregates and examples.
+You are the intelligence and decision engine for Proxywatch, an advanced security telemetry analysis system.
+Your role is to calibrate detection thresholds AND continuously improve how detections are formed and how decisions are made under uncertainty.
+
+You receive normalized telemetry: process context, network metadata, behavior patterns, timing data, signal lists, and environmental observations.
+
+Your mission has two goals:
+1. Calibrate detection settings for this specific environment
+2. Propose new detection intelligence — signals, correlations, and reasoning improvements
+
+Threat areas: C2 sessions, beaconing, malicious tunnels, SOCKS/covert proxying, TCP pivots, SMB/named pipe pivots, lateral movement, stealthy exfiltration, protocol abuse, OPSEC-aware malware, adversaries blending into normal activity.
+
+Think like a detection engineer, threat hunter, malware analyst, and adversary operator simultaneously.
+Focus on behavior, sequence, relationships, timing, and context — not IOCs.
+Assume attackers adapt quickly and the environment contains noise and false positives.
+
 Return ONLY JSON with this exact shape:
 {
-  "summary": "short paragraph",
-  "recommendations": ["bullet 1", "bullet 2", "bullet 3"],
-  "risks": ["risk 1", "risk 2"],
-  "reasoning": ["reason 1", "reason 2"],
+  "summary": "paragraph analyzing this environment's threat posture",
+  "recommendations": ["actionable recommendation 1", "..."],
+  "risks": ["risk this environment faces 1", "..."],
+  "reasoning": ["why these settings were chosen 1", "..."],
   "settings": {
     "reverse_control_min_duration": "duration",
     "long_lived_outbound_min_age": "duration",
@@ -88,14 +101,29 @@ Return ONLY JSON with this exact shape:
     "verified_external_min_prefixes": number,
     "shape_delta_threshold": number,
     "beacon_jitter_cov_max": number
-  }
+  },
+  "new_signals": [
+    {"name": "signal-name", "description": "what to detect and why", "weight": "low|medium|high"}
+  ],
+  "correlations": [
+    {"name": "recipe-name", "signals": ["signal-a", "signal-b"], "meaning": "what this combination proves", "severity": "watch|strong|active"}
+  ],
+  "learning_guidance": ["what the model should learn from this telemetry"],
+  "fast_heuristics": ["quick decision rules for real-time scoring"],
+  "counter_evasion": ["how attackers may adapt and how to counter"],
+  "innovation_ideas": ["novel detection concepts beyond static rules"],
+  "confidence_logic": ["how to score weak evidence, when to hold vs decide"],
+  "feedback_gaps": ["what additional telemetry would improve future decisions"]
 }
 Rules:
-- Keep settings realistic and conservative for this environment.
-- Durations must be valid Go durations like "10s", "2m", "5m".
+- Settings must be realistic and conservative for THIS environment's telemetry.
+- Durations are valid Go durations like "10s", "2m", "5m".
 - Numeric integer values must be positive integers.
 - shape_delta_threshold and beacon_jitter_cov_max are floats.
-- Prefer minimizing false positives while preserving session/tunnel/beacon detection quality.
+- Minimize false positives while preserving session/tunnel/beacon detection.
+- New signals should be behavioral, not IOC-based. Prefer signals that survive attacker modification.
+- Correlations should combine weak signals into strong judgments.
+- Be creative and specific to what you observe in the telemetry data.
 - Do not include markdown or extra fields.
 `)
 	user := "Calibration telemetry JSON:\n" + string(promptBytes)
@@ -169,7 +197,7 @@ func buildCalibrationPromptPayload(
 	processNameCounts map[string]int,
 	remotePortCounts map[string]int,
 	roleExamples []processFeature,
-	learning LearningContext,
+	learning learningContext,
 	forceCompact bool,
 ) ([]byte, map[string]string) {
 	mode := "normal"
@@ -321,7 +349,7 @@ func buildCalibrationPromptPayload(
 	return raw, meta
 }
 
-func buildPromptLearningView(learning LearningContext, topLimit, noteLimit int, includeNotes bool) map[string]any {
+func buildPromptLearningView(learning learningContext, topLimit, noteLimit int, includeNotes bool) map[string]any {
 	view := map[string]any{
 		"runs":                 learning.Runs,
 		"weighted_samples":     fmt.Sprintf("%.1f", learning.WeightedSamples),
@@ -494,11 +522,9 @@ func samplePromptPriority(sample shared.Candidate) int {
 		priority += 450
 	}
 	switch sample.Role {
-	case "session":
+	case "control-session", "control-beacon":
 		priority += 320
-	case "beacon":
-		priority += 300
-	case "tunnel", "smb-pipe":
+	case "control-tunnel", "control-pivot":
 		priority += 280
 	case "outbound":
 		priority += 140
@@ -850,7 +876,7 @@ func calibrationHTTPTimeout() time.Duration {
 			return parsed
 		}
 	}
-	return 45 * time.Second
+	return 2 * time.Minute
 }
 
 func sleepWithContext(ctx context.Context, d time.Duration) bool {

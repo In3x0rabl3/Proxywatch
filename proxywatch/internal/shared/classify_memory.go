@@ -362,6 +362,18 @@ func pruneClassifierRuntimeMemory(now time.Time) {
 	if len(ProcessBehaviorByKey) > classifierBehaviorMaxItems {
 		trimProcessBehaviorMap(ProcessBehaviorByKey, classifierBehaviorMaxItems)
 	}
+
+	// Prune advanced behavioral trackers.
+	for pid, tracker := range IOBurstHistory {
+		if tracker == nil || tracker.LastUpdate.Before(cutoff) {
+			delete(IOBurstHistory, pid)
+		}
+	}
+	for pid, tracker := range ConnCountHistory {
+		if tracker == nil || tracker.LastUpdate.Before(cutoff) {
+			delete(ConnCountHistory, pid)
+		}
+	}
 }
 
 func dropPIDMemory(pid int) {
@@ -379,6 +391,8 @@ func dropPIDMemory(pid int) {
 	delete(InboundBurstCount, pid)
 	delete(BeaconSeen, pid)
 	delete(LocalTransportLast, pid)
+	delete(IOBurstHistory, pid)
+	delete(ConnCountHistory, pid)
 	for key := range ConnFirstSeen {
 		if key.Pid == pid {
 			delete(ConnFirstSeen, key)
@@ -591,4 +605,3 @@ func trimProcessBehaviorMap(in map[string]*ProcessBehavior, maxItems int) {
 		}
 	}
 }
-

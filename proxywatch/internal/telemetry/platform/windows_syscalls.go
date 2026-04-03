@@ -12,13 +12,17 @@ var (
 	ProcProcessIdToSessionId = ModKernel32.NewProc("ProcessIdToSessionId")
 	ModPsapi                 = windows.NewLazySystemDLL("psapi.dll")
 	ProcGetProcessMemoryInfo = ModPsapi.NewProc("GetProcessMemoryInfo")
+	ProcEnumProcessModules   = ModPsapi.NewProc("EnumProcessModules")
+	ProcGetModuleFileNameExW = ModPsapi.NewProc("GetModuleFileNameExW")
 
 	IPHlpapi           = windows.NewLazySystemDLL("iphlpapi.dll")
 	ProcGetExtendedTcp = IPHlpapi.NewProc("GetExtendedTcpTable")
 	ProcGetExtendedUdp = IPHlpapi.NewProc("GetExtendedUdpTable")
 
-	ModNtdll                       = windows.NewLazySystemDLL("ntdll.dll")
-	ProcNtQueryInformationProcess  = ModNtdll.NewProc("NtQueryInformationProcess")
+	ModNtdll                      = windows.NewLazySystemDLL("ntdll.dll")
+	ProcNtQueryInformationProcess = ModNtdll.NewProc("NtQueryInformationProcess")
+	ProcNtQuerySystemInformation  = ModNtdll.NewProc("NtQuerySystemInformation")
+	ProcNtQueryObject             = ModNtdll.NewProc("NtQueryObject")
 
 	ModVersion                 = windows.NewLazySystemDLL("version.dll")
 	ProcGetFileVersionInfoSize = ModVersion.NewProc("GetFileVersionInfoSizeW")
@@ -35,6 +39,15 @@ const (
 	// NtQueryInformationProcess info classes
 	ProcessBasicInformation = 0
 	ProcessCommandLineInfo  = 60
+
+	// NtQuerySystemInformation classes
+	SystemHandleInformation = 16
+
+	// NtQueryObject classes
+	ObjectTypeInformation = 2
+
+	// TCP states for SYN_SENT detection
+	MIB_TCP_STATE_SYN_SENT = 3
 )
 
 // UnicodeString matches the Windows UNICODE_STRING structure.
@@ -80,4 +93,15 @@ type MIBUDP6OwnerPID struct {
 	LocalScopeId uint32
 	LocalPort    uint32
 	OwningPID    uint32
+}
+
+// SystemHandleEntry is a single handle row from NtQuerySystemInformation.
+type SystemHandleEntry struct {
+	OwnerPID       uint16
+	CreatorBackRef uint16
+	HandleType     uint8
+	Flags          uint8
+	Handle         uint16
+	Object         uintptr
+	GrantedAccess  uint32
 }

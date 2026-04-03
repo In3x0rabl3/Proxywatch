@@ -642,7 +642,7 @@ func mergeProbeEndpoints(a, b []ProbeEndpoint) []ProbeEndpoint {
 	out := make([]ProbeEndpoint, 0, len(a)+len(b))
 	seen := make(map[string]struct{}, len(a)+len(b))
 	for _, item := range append(a, b...) {
-		key := item.Endpoint + "|" + item.Source
+		key := item.Endpoint
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -700,10 +700,6 @@ func testProxyEndpointReachabilityWithTarget(ctx context.Context, endpoints []Pr
 		pivotTarget = defaultProbePivotTarget
 	}
 	return testProxyEndpointReachabilityTo(ctx, endpoints, timeout, pivotTarget)
-}
-
-func testProxyEndpointReachability(ctx context.Context, endpoints []ProbeEndpoint, timeout time.Duration) ([]ProbeEndpoint, int, int) {
-	return testProxyEndpointReachabilityTo(ctx, endpoints, timeout, defaultProbePivotTarget)
 }
 
 func testProxyEndpointReachabilityTo(ctx context.Context, endpoints []ProbeEndpoint, timeout time.Duration, pivotTarget string) ([]ProbeEndpoint, int, int) {
@@ -1374,4 +1370,30 @@ func defaultEndpointPortForScheme(scheme string) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// discoverLocalhostProxyEndpoints actively probes common proxy ports on
+// localhost to find running proxies that might not be in the candidate list.
+func discoverLocalhostProxyEndpoints(ctx context.Context) []ProbeEndpoint {
+	proxyPorts := []int{1080, 3128, 8080, 8118, 8443, 8888, 9050, 9080, 9090, 9443}
+	var endpoints []ProbeEndpoint
+	for _, port := range proxyPorts {
+		select {
+		case <-ctx.Done():
+			return endpoints
+		default:
+		}
+		addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err != nil {
+			continue
+		}
+		conn.Close()
+		endpoints = append(endpoints, ProbeEndpoint{
+			Endpoint:  "tcp://" + addr,
+			Source:    "localhost-scan",
+			Reachable: true,
+		})
+	}
+	return endpoints
 }

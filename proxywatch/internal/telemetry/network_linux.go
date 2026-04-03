@@ -266,7 +266,8 @@ func GetRawSocketPIDs() map[int]bool {
 			continue
 		}
 		sc := bufio.NewScanner(bytes.NewReader(raw))
-		if sc.Scan() {} // skip header
+		if sc.Scan() {
+		} // skip header
 		for sc.Scan() {
 			fields := strings.Fields(sc.Text())
 			if len(fields) >= 10 && fields[9] != "0" {
@@ -277,7 +278,8 @@ func GetRawSocketPIDs() map[int]bool {
 	// /proc/net/packet: inode at field 8.
 	if raw, err := safeio.ReadFile("/proc/net/packet"); err == nil {
 		sc := bufio.NewScanner(bytes.NewReader(raw))
-		if sc.Scan() {} // skip header
+		if sc.Scan() {
+		} // skip header
 		for sc.Scan() {
 			fields := strings.Fields(sc.Text())
 			if len(fields) >= 9 && fields[8] != "0" {
@@ -349,7 +351,8 @@ func GetRawSocketConns() []shared.RawSocketConn {
 			continue
 		}
 		sc := bufio.NewScanner(bytes.NewReader(raw))
-		if sc.Scan() {} // skip header
+		if sc.Scan() {
+		} // skip header
 		for sc.Scan() {
 			fields := strings.Fields(sc.Text())
 			if len(fields) < 10 {
@@ -379,7 +382,8 @@ func GetRawSocketConns() []shared.RawSocketConn {
 	// /proc/net/packet: different format, no remote addr.
 	if raw, err := safeio.ReadFile("/proc/net/packet"); err == nil {
 		sc := bufio.NewScanner(bytes.NewReader(raw))
-		if sc.Scan() {} // skip header
+		if sc.Scan() {
+		} // skip header
 		for sc.Scan() {
 			fields := strings.Fields(sc.Text())
 			if len(fields) < 9 {

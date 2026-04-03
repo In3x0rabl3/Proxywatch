@@ -637,7 +637,7 @@ func flaggedCandidates(scored []shared.Candidate, minScore int) []shared.Candida
 	}
 	out := make([]shared.Candidate, 0, len(scored))
 	for _, c := range scored {
-		if c.Score >= minScore || shared.IsControlChannelRole(c.Role) {
+		if c.Score >= minScore || shared.IsControlRole(c.Role) {
 			out = append(out, c)
 		}
 	}

@@ -32,6 +32,7 @@ var (
 	asnLookupActive = make(map[string]bool)
 	asnCacheTTL     = 6 * time.Hour
 	asnDNSTimeout   = 2 * time.Second
+	asnLookupSem    = make(chan struct{}, 20) // max 20 concurrent DNS lookups
 )
 
 // ResolveExternalASNOrgs resolves ASN org names for external remote IPs observed in conns.
@@ -257,7 +258,16 @@ func getOrQueueASNRecord(ip string) (asnLookupRecord, asnLookupStatus) {
 	}
 	if !asnLookupActive[ip] {
 		asnLookupActive[ip] = true
-		go resolveASNInBackground(ip)
+		select {
+		case asnLookupSem <- struct{}{}:
+			go func() {
+				defer func() { <-asnLookupSem }()
+				resolveASNInBackground(ip)
+			}()
+		default:
+			// Too many concurrent lookups, skip this one
+			delete(asnLookupActive, ip)
+		}
 	}
 	asnCacheMu.Unlock()
 
@@ -407,6 +417,23 @@ func splitPipeFields(s string) []string {
 		}
 	}
 	return out
+}
+
+// IsCDNOrg returns true if the ASN organization name matches a known CDN provider.
+func IsCDNOrg(org string) bool {
+	org = strings.ToLower(strings.TrimSpace(org))
+	cdnKeywords := []string{
+		"cloudflare", "cloudfront", "fastly", "akamai", "edgecast",
+		"limelight", "stackpath", "keycdn", "bunny", "cdn77",
+		"azure front door", "azureedge", "google cloud cdn",
+		"amazon cloudfront",
+	}
+	for _, kw := range cdnKeywords {
+		if strings.Contains(org, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseASNs(field string) []string {

@@ -1,27 +1,28 @@
 package pb
 
 type ProcessInfo struct {
-	Pid          int32  `json:"pid"`
-	ParentPid    int32  `json:"parent_pid"`
-	Name         string `json:"name"`
-	SessionId    uint32 `json:"session_id"`
-	SessionName  string `json:"session_name"`
-	MemUsage     uint64 `json:"mem_usage"`
-	Status       string `json:"status"`
-	UserName     string `json:"user_name"`
-	ExePath      string `json:"exe_path"`
-	Company      string `json:"company"`
-	Integrity    string `json:"integrity"`
-	IOReadBytes  uint64 `json:"io_read_bytes"`
-	IOWriteBytes uint64 `json:"io_write_bytes"`
-	IOOtherBytes uint64 `json:"io_other_bytes"`
-	IOReadBps    uint64 `json:"io_read_bps"`
-	IOWriteBps   uint64 `json:"io_write_bps"`
-	IOOtherBps   uint64 `json:"io_other_bps"`
-	CpuTimeNanos int64    `json:"cpu_time_nanos"`
-	WindowTitle  string   `json:"window_title"`
-	CmdLine      string   `json:"cmd_line,omitempty"`
-	LoadedLibs   []string `json:"loaded_libs,omitempty"`
+	Pid           int32    `json:"pid"`
+	ParentPid     int32    `json:"parent_pid"`
+	Name          string   `json:"name"`
+	SessionId     uint32   `json:"session_id"`
+	SessionName   string   `json:"session_name"`
+	MemUsage      uint64   `json:"mem_usage"`
+	Status        string   `json:"status"`
+	UserName      string   `json:"user_name"`
+	ExePath       string   `json:"exe_path"`
+	Company       string   `json:"company"`
+	Integrity     string   `json:"integrity"`
+	IOReadBytes   uint64   `json:"io_read_bytes"`
+	IOWriteBytes  uint64   `json:"io_write_bytes"`
+	IOOtherBytes  uint64   `json:"io_other_bytes"`
+	IOReadBps     uint64   `json:"io_read_bps"`
+	IOWriteBps    uint64   `json:"io_write_bps"`
+	IOOtherBps    uint64   `json:"io_other_bps"`
+	CpuTimeNanos  int64    `json:"cpu_time_nanos"`
+	StartTimeUnix int64    `json:"start_time_unix,omitempty"`
+	WindowTitle   string   `json:"window_title"`
+	CmdLine       string   `json:"cmd_line,omitempty"`
+	LoadedLibs    []string `json:"loaded_libs,omitempty"`
 }
 
 type ListenerInfo struct {
@@ -46,6 +47,14 @@ type UDPListenerInfo struct {
 	LocalPort    int32  `json:"local_port"`
 }
 
+type RawSocketConn struct {
+	Pid    int32  `json:"pid"`
+	Local  string `json:"local"`
+	Remote string `json:"remote"`
+	State  string `json:"state"`
+	Proto  string `json:"proto"`
+}
+
 type Candidate struct {
 	Host                   string             `json:"host"`
 	Proc                   *ProcessInfo       `json:"proc"`
@@ -57,9 +66,11 @@ type Candidate struct {
 	Reasons                []string           `json:"reasons"`
 	Signals                []string           `json:"signals"`
 	Role                   string             `json:"role"`
+	ControlSubtype         string             `json:"control_subtype,omitempty"`
 	ActiveProxying         bool               `json:"active_proxying"`
 	ControlChannel         *ConnectionInfo    `json:"control_channel"`
 	ControlDurationSeconds int32              `json:"control_duration_seconds"`
+	SeenSeconds            int32              `json:"seen_seconds,omitempty"`
 	OutTotal               int32              `json:"out_total"`
 	OutExternal            int32              `json:"out_external"`
 	OutInternal            int32              `json:"out_internal"`
@@ -69,6 +80,12 @@ type Candidate struct {
 	InboundTotal           int32              `json:"inbound_total"`
 	TrafficVerified        bool               `json:"traffic_verified"`
 	StrongEvidence         bool               `json:"strong_evidence"`
+	DelegatedEgress        bool               `json:"delegated_egress,omitempty"`
+	DelegatedStrong        bool               `json:"delegated_strong,omitempty"`
+	DelegatedOwnerPID      int32              `json:"delegated_owner_pid,omitempty"`
+	DelegatedOwner         string             `json:"delegated_owner,omitempty"`
+	RawSocket              bool               `json:"raw_socket,omitempty"`
+	RawConns               []*RawSocketConn   `json:"raw_conns,omitempty"`
 }
 
 type CandidateEnvelope struct {

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-04-03
+
+### Added
+- **Dead drop tunnels via OpenAI Files API**: full SOCKS5 relay through OpenAI's `/v1/files` endpoint using `.jsonl` uploads with `purpose=fine-tune`. Both forward and reverse modes verified with E2E tests.
+- **GitHub dead drop**: session management with creator/non-creator pattern, stale session cleanup, `since`-filtered comment polling for reduced API pressure.
+- **Services mode**: new tab in Contour alongside Scan and Tunnel. Table display with columns for Service, Status, Method, and Key. Currently GitHub and OpenAI.
+- **Dashboard number key jumping**: press `0-6` from any view to jump directly to Dashboard, Calibration, Contour, ProxyHound, SIEM, Whitelist, or Keystore.
+- Crash recovery in background refresh goroutine — panics in detection pipeline no longer crash the application.
+- Tunnel constants centralizing 21+ magic values (`tunnelDialTimeout`, `tunnelIOTimeout`, `tunnelFrameBuf`, `tunnelRelayBuf`).
+
+### Changed
+- **Model maturity formula hardened**: "experienced" threshold raised to 5,000 observations, population scale requires 200+ profiles, feedback requires 20+ actions. New signal diversity and training pattern components.
+- **SIEM report overhauled**: wider 78-char box with double-line header, per-detection confidence/signal/query counts, analysis section, word-wrapped descriptions, query truncation raised to 100 chars. JSON output excludes `report_lines`.
+- **Services box redesigned**: table format with status indicators (`✓ READY` / `✓ reach` / `✗ blocked` / `○ untested`) and key column.
+- **Azure probe domain fixed**: `azure.microsoft.com` → `blob.core.windows.net`.
+- **Dashboard cycling fixed**: removed `LocalHost` guard blocking workflow cycling, removed double Left/Right event processing. All views handle cycling directly.
+- Deprecated `viewport.LineUp`/`LineDown` replaced with `ScrollUp`/`ScrollDown` across all views.
+
+### Removed
+- Dead drop services: Slack, Discord, Firebase, AWS, Azure Blob, GCS, Teams, Buildkite, GitLab and all SaaS/serverless tunnel transports. Kept GitHub and OpenAI only.
+- Telegram: all tunnel and dead drop code removed.
+- 70+ unused functions, types, variables, and constants across all packages.
+
+### Code Quality
+- 14 identifiers unexported to reduce public API surface.
+- BloodHound → ProxyHound naming in comments, docs, and display labels.
+- All `staticcheck`, `go vet`, and `gofmt` issues resolved (46 capitalized error strings, latent bug where model override reasons were silently dropped, and more).
+
 ## [1.0.4] - 2026-03-30
 
 ### Added

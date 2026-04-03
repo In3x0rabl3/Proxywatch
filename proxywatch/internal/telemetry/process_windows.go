@@ -50,9 +50,10 @@ func GetProcessInfoMap() (map[int]*shared.ProcessInfo, error) {
 				applyCachedMeta(pi, meta)
 			}
 
-			const access = windows.PROCESS_QUERY_INFORMATION | windows.PROCESS_VM_READ
-			h, err := windows.OpenProcess(access, false, uint32(pid))
-			if err != nil {
+			const fullAccess = windows.PROCESS_QUERY_INFORMATION | windows.PROCESS_VM_READ
+			h, err := windows.OpenProcess(fullAccess, false, uint32(pid))
+			fullHandle := err == nil
+			if !fullHandle {
 				h, err = windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 			}
 			if err == nil {
@@ -61,9 +62,19 @@ func GetProcessInfoMap() (map[int]*shared.ProcessInfo, error) {
 				fillIOCounters(h, pi)
 				fillCmdLine(h, pi)
 				if !metaOK {
-					fillUser(h, pi)
+					// ExePath works with limited handles via QueryFullProcessImageName.
 					fillExePath(h, pi)
-					fillIntegrity(h, pi)
+					if fullHandle {
+						// These require PROCESS_QUERY_INFORMATION | PROCESS_VM_READ.
+						fillLoadedLibs(h, pi)
+						fillUser(h, pi)
+						fillIntegrity(h, pi)
+					} else {
+						// Try user/integrity with the limited handle — OpenProcessToken
+						// may still succeed for same-user processes.
+						fillUser(h, pi)
+						fillIntegrity(h, pi)
+					}
 					fillCompany(pi)
 				}
 				windows.CloseHandle(h)
@@ -99,6 +110,8 @@ func fillTimes(h windows.Handle, pi *shared.ProcessInfo) {
 	}
 
 	pi.CpuTime = filetimeToDuration(k) + filetimeToDuration(u)
+	// Extract process creation time from the creation filetime.
+	pi.StartTime = time.Unix(0, c.Nanoseconds())
 }
 
 func fillMemory(h windows.Handle, pi *shared.ProcessInfo) {
@@ -401,4 +414,86 @@ func fillCmdLine(h windows.Handle, pi *shared.ProcessInfo) {
 	}
 	chars := unsafe.Slice((*uint16)(unsafe.Pointer(us.Buffer)), charCount)
 	pi.CmdLine = strings.TrimSpace(windows.UTF16ToString(chars))
+}
+
+// fillLoadedLibs enumerates loaded DLLs for a process using EnumProcessModules
+// and populates ProcessInfo.LoadedLibs with base filenames (lowercased).
+func fillLoadedLibs(h windows.Handle, pi *shared.ProcessInfo) {
+	var modules [256]windows.Handle
+	var needed uint32
+
+	r, _, _ := platform.ProcEnumProcessModules.Call(
+		uintptr(h),
+		uintptr(unsafe.Pointer(&modules[0])),
+		uintptr(unsafe.Sizeof(modules)),
+		uintptr(unsafe.Pointer(&needed)),
+	)
+	if r == 0 {
+		return
+	}
+
+	count := int(needed) / int(unsafe.Sizeof(modules[0]))
+	if count > len(modules) {
+		count = len(modules)
+	}
+
+	nameBuf := make([]uint16, 260)
+	var libs []string
+	// Skip module 0 (the exe itself), start at 1 for DLLs.
+	for i := 1; i < count && len(libs) < 20; i++ {
+		n, _, _ := platform.ProcGetModuleFileNameExW.Call(
+			uintptr(h),
+			uintptr(modules[i]),
+			uintptr(unsafe.Pointer(&nameBuf[0])),
+			uintptr(len(nameBuf)),
+		)
+		if n == 0 {
+			continue
+		}
+		fullPath := strings.ToLower(windows.UTF16ToString(nameBuf[:n]))
+		// Extract base filename.
+		base := fullPath
+		if idx := strings.LastIndexAny(fullPath, `/\`); idx >= 0 {
+			base = fullPath[idx+1:]
+		}
+		// Only include non-system DLLs that are interesting for detection.
+		if isInterestingDLL(base) {
+			libs = append(libs, base)
+		}
+	}
+	if len(libs) > 0 {
+		pi.LoadedLibs = libs
+	}
+}
+
+// isInterestingDLL returns true for DLLs that indicate proxy, tunnel, crypto,
+// or network capture capability. Skips common Windows system DLLs.
+func isInterestingDLL(base string) bool {
+	// Skip common Windows system DLLs.
+	systemPrefixes := []string{
+		"ntdll", "kernel32", "kernelbase", "msvcrt", "ucrtbase",
+		"user32", "gdi32", "advapi32", "shell32", "ole32",
+		"combase", "rpcrt4", "sechost", "bcrypt", "crypt32",
+		"msvcp", "vcruntime", "api-ms-", "ext-ms-",
+	}
+	for _, p := range systemPrefixes {
+		if strings.HasPrefix(base, p) {
+			return false
+		}
+	}
+
+	// Look for proxy/tunnel/crypto/capture patterns.
+	patterns := []string{
+		"ssh", "ssl", "tls", "crypto", "libcurl", "curl",
+		"socks", "proxy", "tunnel", "npcap", "wpcap", "pcap",
+		"libssh", "libssl", "libeay", "ssleay", "openssl",
+		"putty", "plink", "chisel", "ngrok", "frp",
+		"windivert", "rawsock",
+	}
+	for _, p := range patterns {
+		if strings.Contains(base, p) {
+			return true
+		}
+	}
+	return false
 }

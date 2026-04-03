@@ -96,7 +96,7 @@ This map groups code by function so developers can quickly find edit points.
 
 ## External Integrations and Utilities
 
-- `internal/bloodhound/collect.go`: BloodHound collection build/export.
-- `internal/bloodhound/upload.go`: BloodHound upload client/runtime config.
+- `internal/proxyhound/collect.go`: ProxyHound collection build/export.
+- `internal/proxyhound/upload.go`: ProxyHound upload client/runtime config.
 - `internal/keystore/keystore.go`: encrypted keystore and runtime env mapping.
 - `internal/safeio/safeio.go`: safe open/read/write wrappers.

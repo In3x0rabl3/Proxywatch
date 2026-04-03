@@ -179,8 +179,10 @@ func buildProbeMethodBaseRequestBody(method string, port int) []byte {
 		base = []byte("GET /contour-probe HTTP/1.1\r\nHost: contour.local\r\nUser-Agent: contour/http\r\n\r\n")
 	case "https":
 		base = []byte("CONNECT contour.local:" + strconv.Itoa(port) + " HTTP/1.1\r\nHost: contour.local\r\n\r\n")
-	case "ws", "wss":
+	case "ws":
 		base = []byte("GET /contour-probe/ws HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+	case "wss":
+		base = []byte("GET /contour-probe/wss HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nX-Contour-TLS: wss\r\n\r\n")
 	case "ssh":
 		base = []byte("SSH-2.0-ContourProbe\r\n")
 	case "smtp", "smtps":
@@ -584,8 +586,10 @@ func validateProbeMethodRequest(method string, body []byte, exfil bool) bool {
 		return bytes.HasPrefix(base, []byte("GET /contour-probe HTTP/1.1\r\n"))
 	case "https":
 		return bytes.HasPrefix(base, []byte("CONNECT contour.local:"))
-	case "ws", "wss":
-		return bytes.Contains(base, []byte("Upgrade: websocket"))
+	case "ws":
+		return bytes.Contains(base, []byte("Upgrade: websocket")) && !bytes.Contains(base, []byte("X-Contour-TLS: wss"))
+	case "wss":
+		return bytes.Contains(base, []byte("Upgrade: websocket")) && bytes.Contains(base, []byte("X-Contour-TLS: wss"))
 	case "ssh":
 		return bytes.HasPrefix(base, []byte("SSH-2.0-"))
 	case "smtp", "smtps":
@@ -613,7 +617,13 @@ func validateProbeMethodRequest(method string, body []byte, exfil bool) bool {
 	case "postgres":
 		return len(base) >= 8 && bytes.Equal(base[:8], []byte{0x00, 0x00, 0x00, 0x08, 0x04, 0xd2, 0x16, 0x2f})
 	case "dns":
-		return len(base) >= 12 && base[2]&0x80 == 0
+		// QR=0 (query), OPCODE=0 (standard), QDCOUNT>=1, and must contain
+		// a valid-looking query name (no NUL in first 12 bytes except QDCOUNT area).
+		return len(base) >= 12 &&
+			base[2]&0x80 == 0 && // QR = query
+			base[2]&0x78 == 0 && // OPCODE = 0 (standard query)
+			binary.BigEndian.Uint16(base[4:6]) >= 1 && // QDCOUNT >= 1
+			binary.BigEndian.Uint16(base[4:6]) <= 4 // QDCOUNT <= 4 (reasonable)
 	case "ntp":
 		return len(base) >= 48 && base[0]&0x7 == 3
 	case "quic":
@@ -719,9 +729,4 @@ func buildProbeMethodResponseBody(method string, requestBody []byte) []byte {
 	default:
 		return append([]byte("ACK"), acks...)
 	}
-}
-
-func validateProbeMethodResponse(method string, requestBody, responseBody []byte) bool {
-	expected := buildProbeMethodResponseBody(method, requestBody)
-	return bytes.Equal(responseBody, expected)
 }

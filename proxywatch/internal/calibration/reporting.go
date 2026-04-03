@@ -125,7 +125,7 @@ func DatasetPathForReport(outputPath string) string {
 	return base + ".dataset.jsonl"
 }
 
-func BuildReportArtifacts(report *Report, previous TuningSettings, samples []shared.Candidate, sampleEvery time.Duration) error {
+func buildReportArtifacts(report *Report, previous TuningSettings, samples []shared.Candidate, sampleEvery time.Duration) error {
 	if report == nil {
 		return fmt.Errorf("report is nil")
 	}
@@ -188,7 +188,7 @@ func BuildReportArtifacts(report *Report, previous TuningSettings, samples []sha
 	return nil
 }
 
-func MarkReportApplied(reportPath string) error {
+func markReportApplied(reportPath string) error {
 	if strings.TrimSpace(reportPath) == "" {
 		return nil
 	}
@@ -311,7 +311,7 @@ func RenderReportLines(report Report) []string {
 		}
 		// Contamination recovery guidance: show likely contaminating processes.
 		if report.LearningContamination >= 20 && len(report.TopProcesses) > 0 {
-			suspRoles := map[string]bool{"session": true, "beacon": true, "tunnel": true, "smb-pipe": true}
+			suspRoles := map[string]bool{"control-session": true, "control-beacon": true, "control-tunnel": true, "control-pivot": true}
 			contam := make([]string, 0, 5)
 			for _, p := range report.TopProcesses {
 				if suspRoles[p.Role] {
@@ -357,9 +357,76 @@ func RenderReportLines(report Report) []string {
 		}
 	}
 
+	// ── AI Intelligence Analysis ────────────────────────────
+	if len(report.NewSignals) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "New Signals")
+		for _, sig := range report.NewSignals {
+			lines = append(lines, fmt.Sprintf("  [%s] %s", sig.Weight, sig.Name))
+			lines = append(lines, wrapText("    "+sig.Description, 78, "    ")...)
+		}
+	}
+
+	if len(report.Correlations) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Correlations")
+		for _, cor := range report.Correlations {
+			lines = append(lines, fmt.Sprintf("  [%s] %s", cor.Severity, cor.Name))
+			lines = append(lines, fmt.Sprintf("    signals: %s", strings.Join(cor.Signals, " + ")))
+			lines = append(lines, wrapText("    "+cor.Meaning, 78, "    ")...)
+		}
+	}
+
+	if len(report.AIHeuristics) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Fast Heuristics")
+		for _, h := range report.AIHeuristics {
+			lines = append(lines, wrapText("  - "+h, 78, "    ")...)
+		}
+	}
+
+	if len(report.CounterEvasion) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Counter-Evasion")
+		for _, ce := range report.CounterEvasion {
+			lines = append(lines, wrapText("  - "+ce, 78, "    ")...)
+		}
+	}
+
+	if len(report.InnovationIdeas) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Innovation")
+		for _, idea := range report.InnovationIdeas {
+			lines = append(lines, wrapText("  - "+idea, 78, "    ")...)
+		}
+	}
+
+	if len(report.AILearningNotes) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Learning Guidance")
+		for _, note := range report.AILearningNotes {
+			lines = append(lines, wrapText("  - "+note, 78, "    ")...)
+		}
+	}
+
+	if len(report.ConfidenceNotes) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Confidence")
+		for _, cn := range report.ConfidenceNotes {
+			lines = append(lines, wrapText("  - "+cn, 78, "    ")...)
+		}
+	}
+
+	if len(report.FeedbackGaps) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Gaps")
+		for _, gap := range report.FeedbackGaps {
+			lines = append(lines, wrapText("  - "+gap, 78, "    ")...)
+		}
+	}
+
 	return lines
 }
-
 
 func compactReportList(items []string, limit int) string {
 	if limit <= 0 {
@@ -419,7 +486,7 @@ func deriveReportConfidence(report Report) int {
 	if report.CandidateCount >= 15 {
 		score += 6
 	}
-	susp := report.RoleCounts["session"] + report.RoleCounts["beacon"] + report.RoleCounts["tunnel"]
+	susp := report.RoleCounts["control-session"] + report.RoleCounts["control-beacon"] + report.RoleCounts["control-tunnel"] + report.RoleCounts["control-pivot"]
 	score += minInt(14, susp*2)
 	if report.StateCounts["strong"]+report.StateCounts["active"] > 0 {
 		score += 6
@@ -456,7 +523,7 @@ func summarizeSettingDiff(before, after TuningSettings) []string {
 
 func defaultRiskNotes(report Report) []string {
 	risks := make([]string, 0, 3)
-	if report.RoleCounts["listen"]+report.RoleCounts["outbound"] >= report.RoleCounts["session"]+report.RoleCounts["beacon"]+report.RoleCounts["tunnel"] {
+	if report.RoleCounts["listen"]+report.RoleCounts["outbound"] >= report.RoleCounts["control-session"]+report.RoleCounts["control-beacon"]+report.RoleCounts["control-tunnel"]+report.RoleCounts["control-pivot"] {
 		risks = append(risks, "Potential sensitivity to legitimate periodic health checks with stable timing; mitigated by conservative magnitude of changes.")
 	}
 	if len(report.RecommendedSettings) > 0 {
@@ -471,7 +538,7 @@ func defaultRiskNotes(report Report) []string {
 func defaultReasoningNotes(report Report) []string {
 	out := make([]string, 0, 4)
 	out = append(out, fmt.Sprintf("Baseline captured %d unique process candidates over %s.", report.CandidateCount, report.Duration))
-	out = append(out, fmt.Sprintf("Role mix observed: session=%d, beacon=%d, tunnel=%d, listen=%d, outbound=%d.", report.RoleCounts["session"], report.RoleCounts["beacon"], report.RoleCounts["tunnel"], report.RoleCounts["listen"], report.RoleCounts["outbound"]))
+	out = append(out, fmt.Sprintf("Role mix observed: session=%d, beacon=%d, pivot=%d, tunnel=%d, listen=%d, outbound=%d.", report.RoleCounts["control-session"], report.RoleCounts["control-beacon"], report.RoleCounts["control-pivot"], report.RoleCounts["control-tunnel"], report.RoleCounts["listen"], report.RoleCounts["outbound"]))
 	if len(report.RecommendedSettings) > 0 {
 		out = append(out, "Recommended settings were constrained by guardrails to avoid overfitting.")
 	} else {
@@ -542,7 +609,7 @@ func similarityScore(current Report, rec calibrationMemoryRecord) int {
 	ratio := float64(minInt(curTotal, recTotal)) / float64(maxInt(curTotal, recTotal))
 	score += int(ratio * 15)
 
-	families := []string{"session", "beacon", "tunnel", "listen", "outbound", "other"}
+	families := []string{"control-session", "control-beacon", "control-pivot", "control-tunnel", "listen", "outbound", "other"}
 	var dist float64
 	for _, fam := range families {
 		a := float64(current.RoleCounts[fam]) / float64(curTotal)
@@ -819,7 +886,7 @@ func validationLabel(sample shared.Candidate) bool {
 		return true
 	}
 	switch sample.Role {
-	case "session", "beacon", "tunnel", "smb-pipe":
+	case "control-session", "control-beacon", "control-tunnel", "control-pivot":
 		return true
 	default:
 		return false

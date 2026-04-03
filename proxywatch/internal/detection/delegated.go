@@ -340,4 +340,3 @@ func isKernelThreadLike(proc *shared.ProcessInfo) bool {
 	// kthreadd (2).
 	return strings.TrimSpace(proc.ExePath) == "" && proc.ParentPid >= 0 && proc.ParentPid <= 2
 }
-

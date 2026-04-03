@@ -21,6 +21,7 @@ type Candidate struct {
 	DelegatedOwner    string
 	RawSocket         bool            // process has open raw sockets (nmap, ping, etc.)
 	RawConns          []RawSocketConn // raw/packet socket connection entries
+	NamedPipes        []string        // named pipe handles (pipe names)
 
 	// classifier-owned fields
 	Score          int
@@ -28,11 +29,13 @@ type Candidate struct {
 	Reasons        []string
 	Signals        []string
 	Role           string
+	ControlSubtype string // subtype qualifier (e.g. "session", "beacon", "socks-tunnel", "tcp-pivot")
 	ActiveProxying bool
 
 	ControlChannel         *ConnectionInfo
 	ControlDurationSeconds int
 	SeenSeconds            int
+	Exited                 bool // process no longer running (lingered entry)
 
 	OutTotal      int
 	OutExternal   int
@@ -68,6 +71,7 @@ type ProcessInfo struct {
 	IOWriteBps   uint64
 	IOOtherBps   uint64
 	CpuTime      time.Duration // user + kernel
+	StartTime    time.Time     // process creation time from OS
 	WindowTitle  string        // reserved
 	CmdLine      string        // full command line
 	LoadedLibs   []string      // notable shared libraries / DLLs
@@ -105,14 +109,21 @@ type RawSocketConn struct {
 	Proto  string // "raw", "raw6", "packet"
 }
 
+// NamedPipeInfo represents an open named pipe handle detected on a process.
+type NamedPipeInfo struct {
+	Pid      int    `json:"pid"`
+	PipeName string `json:"pipe_name"`
+}
+
 type Snapshot struct {
 	Timestamp     time.Time
 	Processes     map[int]*ProcessInfo
 	Listeners     []ListenerInfo
 	Connections   []ConnectionInfo
 	UDPListeners  []UDPListenerInfo
-	RawSocketPIDs map[int]bool      // PIDs with open raw sockets
-	RawConns      []RawSocketConn  // raw/packet socket entries
+	RawSocketPIDs map[int]bool    // PIDs with open raw sockets
+	RawConns      []RawSocketConn // raw/packet socket entries
+	NamedPipes    []NamedPipeInfo // named pipe handles per process
 }
 
 type ListenerKey struct {
@@ -131,11 +142,11 @@ const (
 	BurstModerateConnThreshold = 25
 
 	ProcessMetaCacheTTL = 60 * time.Second
-	CandidateLingerTTL  = 2 * time.Minute
+	CandidateLingerTTL  = 30 * time.Second
 	// Keep suspicious labels visible long enough to survive intermittent callbacks.
-	CandidateSuspiciousLingerTTL = 15 * time.Minute
+	CandidateSuspiciousLingerTTL = 2 * time.Minute
 	// Keep strong findings visible longer than normal watch rows.
-	CandidateStrongLingerTTL = 6 * time.Minute
+	CandidateStrongLingerTTL = 1 * time.Minute
 )
 
 func CandidateKey(c Candidate) string {
@@ -147,6 +158,9 @@ func CandidateKey(c Candidate) string {
 }
 
 func CandidateState(c Candidate) string {
+	if c.Exited {
+		return "exited"
+	}
 	if c.ActiveProxying {
 		return "active"
 	}

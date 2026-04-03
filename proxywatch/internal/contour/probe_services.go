@@ -285,8 +285,8 @@ var knownDNSProviderIPs = map[string]string{
 	"76.76.10.0":      "Control D",
 }
 
-// ServiceMatch represents a classified external service.
-type ServiceMatch struct {
+// serviceMatch represents a classified external service.
+type serviceMatch struct {
 	Name     string
 	Category string
 	Risk     string
@@ -294,10 +294,10 @@ type ServiceMatch struct {
 
 // classifyServiceByDomain matches a hostname (typically from reverse DNS)
 // against the known service database.
-func classifyServiceByDomain(hostname string) (ServiceMatch, bool) {
+func classifyServiceByDomain(hostname string) (serviceMatch, bool) {
 	hostname = strings.ToLower(strings.TrimSpace(hostname))
 	if hostname == "" {
-		return ServiceMatch{}, false
+		return serviceMatch{}, false
 	}
 	for _, svc := range knownServices {
 		for _, domain := range svc.Domains {
@@ -307,32 +307,32 @@ func classifyServiceByDomain(hostname string) (ServiceMatch, bool) {
 			}
 			if strings.HasPrefix(domain, ".") {
 				if strings.HasSuffix(hostname, domain) || hostname == domain[1:] {
-					return ServiceMatch{Name: svc.Name, Category: svc.Category, Risk: svc.Risk}, true
+					return serviceMatch{Name: svc.Name, Category: svc.Category, Risk: svc.Risk}, true
 				}
 			} else {
 				if hostname == domain || strings.HasSuffix(hostname, "."+domain) {
-					return ServiceMatch{Name: svc.Name, Category: svc.Category, Risk: svc.Risk}, true
+					return serviceMatch{Name: svc.Name, Category: svc.Category, Risk: svc.Risk}, true
 				}
 			}
 		}
 	}
-	return ServiceMatch{}, false
+	return serviceMatch{}, false
 }
 
 // classifyServiceByIP checks well-known static IPs (e.g. public DNS resolvers).
-func classifyServiceByIP(ip string) (ServiceMatch, bool) {
+func classifyServiceByIP(ip string) (serviceMatch, bool) {
 	ip = strings.TrimSpace(ip)
 	if name, ok := knownDNSProviderIPs[ip]; ok {
-		return ServiceMatch{Name: name, Category: SvcCatDNSProvider, Risk: "low"}, true
+		return serviceMatch{Name: name, Category: SvcCatDNSProvider, Risk: "low"}, true
 	}
-	return ServiceMatch{}, false
+	return serviceMatch{}, false
 }
 
 // serviceResolution pairs an IP with its resolved service classification.
 type serviceResolution struct {
 	IP       string
 	Hostname string
-	Match    ServiceMatch
+	Match    serviceMatch
 	Matched  bool
 }
 
@@ -446,7 +446,7 @@ func newServiceProfile() *serviceProfile {
 	}
 }
 
-func (sp *serviceProfile) add(ip string, port int, match ServiceMatch) {
+func (sp *serviceProfile) add(ip string, port int, match serviceMatch) {
 	if sp == nil || match.Name == "" {
 		return
 	}
@@ -507,51 +507,12 @@ func riskRank(risk string) int {
 	}
 }
 
-// serviceCategoryLabel returns a human-readable label for a service category.
-func serviceCategoryLabel(category string) string {
-	switch category {
-	case SvcCatCloudStorage:
-		return "Cloud Storage"
-	case SvcCatMessaging:
-		return "Messaging"
-	case SvcCatCodeHosting:
-		return "Code Hosting"
-	case SvcCatCDN:
-		return "CDN"
-	case SvcCatDNSProvider:
-		return "DNS Provider"
-	case SvcCatPasteShare:
-		return "Paste/File Share"
-	case SvcCatCICD:
-		return "CI/CD"
-	case SvcCatAPICloud:
-		return "API/Cloud"
-	case SvcCatTunnelVPN:
-		return "Tunnel/VPN"
-	case SvcCatContainerReg:
-		return "Container Registry"
-	default:
-		return "Unknown"
-	}
-}
-
 // exfilCapableCategory returns true for service categories that are commonly
 // used as exfiltration channels.
 func exfilCapableCategory(category string) bool {
 	switch category {
 	case SvcCatCloudStorage, SvcCatMessaging, SvcCatCodeHosting,
 		SvcCatPasteShare, SvcCatContainerReg:
-		return true
-	default:
-		return false
-	}
-}
-
-// escapeCapableCategory returns true for service categories that facilitate
-// network escape or tunneling.
-func escapeCapableCategory(category string) bool {
-	switch category {
-	case SvcCatTunnelVPN, SvcCatCDN:
 		return true
 	default:
 		return false

@@ -12,12 +12,14 @@ func SamplesFromSnapshot(snap *shared.Snapshot, hostID, scope string) []shared.C
 	if len(scored) == 0 {
 		return nil
 	}
-	host := strings.TrimSpace(hostID)
-	if host == "" {
-		host = shared.DefaultHostID("local")
+	fallback := strings.TrimSpace(hostID)
+	if fallback == "" {
+		fallback = shared.DefaultHostID("local")
 	}
 	for i := range scored {
-		scored[i].Host = host
+		if strings.TrimSpace(scored[i].Host) == "" {
+			scored[i].Host = fallback
+		}
 	}
 	return filterSamplesByScope(scored, scope)
 }
@@ -43,12 +45,12 @@ func scopeRoleFilter(scope string) map[string]bool {
 	switch s {
 	case "", "recommended", "all":
 		return shared.ParseRoleFilter("all")
-	case "session":
-		return shared.ParseRoleFilter("session")
-	case "beacon":
-		return shared.ParseRoleFilter("beacon")
-	case "tunnel":
-		return shared.ParseRoleFilter("tunnel")
+	case "control-channel", "control-session", "control-beacon":
+		return shared.ParseRoleFilter(s)
+	case "control-pivot", "pivot":
+		return shared.ParseRoleFilter("control-pivot")
+	case "control-tunnel", "tunnel":
+		return shared.ParseRoleFilter("control-tunnel")
 	case "listen":
 		return shared.ParseRoleFilter("listen")
 	case "outbound":

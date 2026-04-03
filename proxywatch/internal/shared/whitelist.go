@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"proxywatch/internal/keystore"
 	"proxywatch/internal/safeio"
 )
 
@@ -120,7 +121,11 @@ func (w *Whitelist) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	vaultKey := "whitelist"
+	if idx := strings.Index(path, ".proxywatch/"); idx >= 0 {
+		vaultKey = path[idx+len(".proxywatch/"):]
+	}
+	return keystore.VaultWrite(vaultKey, data, path)
 }
 
 func (w *Whitelist) IsWhitelisted(c Candidate) bool {

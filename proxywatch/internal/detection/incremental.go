@@ -97,18 +97,16 @@ func touchHistoryFromCandidate(c *shared.Candidate, now time.Time) {
 		hist.LastActive = now
 	}
 
-	switch c.Role {
-	case "tunnel":
+	// Only set SuspicionProxy when the process is actively proxying traffic.
+	// Setting it for all tunnel/pivot roles causes the suspicion memory to
+	// cascade re-promote processes to tunnel on every refresh, even when
+	// current evidence points to a session.
+	if c.ActiveProxying {
 		hist.LastSuspicious = now
 		hist.SuspicionKind = shared.SuspicionProxy
-	case "beacon":
+	} else if shared.IsControlRole(c.Role) {
 		hist.LastSuspicious = now
-		hist.SuspicionKind = shared.SuspicionBeacon
-	default:
-		if shared.IsControlChannelRole(c.Role) {
-			hist.LastSuspicious = now
-			hist.SuspicionKind = shared.SuspicionControl
-		}
+		hist.SuspicionKind = shared.SuspicionControl
 	}
 
 	if hist.StickyScore < c.Score {
@@ -124,7 +122,7 @@ func shouldRescoreUnchangedCandidate(c *shared.Candidate, prev *shared.Candidate
 		return false
 	}
 	switch prev.Role {
-	case "outbound", "session", "beacon", "tunnel", "smb-pipe", "listen":
+	case "outbound", "control-session", "control-beacon", "control-channel", "control-tunnel", "control-pivot", "listen":
 		// Time-based signals (e.g., persistent control duration, burst cadence)
 		// must still evolve even when socket tuple signatures are unchanged.
 	default:

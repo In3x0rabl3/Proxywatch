@@ -163,3 +163,22 @@ func openPathRoot(path string) (*os.Root, string, error) {
 	}
 	return root, name, nil
 }
+
+// NormalizeJSONOutputPath normalizes a JSON output file path.
+// defaultPath is used when path is empty. baseDir is the parent for relative paths.
+func NormalizeJSONOutputPath(path, defaultPath, baseDir string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = defaultPath
+	}
+	path = ExpandHomePath(path)
+	if filepath.IsAbs(path) {
+		path = filepath.Clean(path)
+	} else {
+		path = filepath.Join(baseDir, SanitizeRelativePath(path, "latest.json"))
+	}
+	if !strings.HasSuffix(strings.ToLower(path), ".json") {
+		path += ".json"
+	}
+	return path
+}

@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"proxywatch/internal/keystore"
 	"proxywatch/internal/safeio"
 	"proxywatch/internal/shared"
 )
@@ -21,7 +21,7 @@ const (
 	defaultContourDir = "~/.proxywatch/contour"
 )
 
-var durationOptions = []string{"10s", "30s", "1m", "2m", "5m", "10m", "15m"}
+var durationOptions = []string{"30s", "1m", "5m"}
 
 type RunInput struct {
 	Source      string
@@ -32,8 +32,8 @@ type RunInput struct {
 	ProbeTarget string
 	ProbeMode   string
 	Samples     []shared.Candidate
-	OnProgress  func(lines []string)       // called with cumulative progress lines during execution
-	OnPartial   func(report Report)         // called with partial report as data becomes available
+	OnProgress  func(lines []string) // called with cumulative progress lines during execution
+	OnPartial   func(report Report)  // called with partial report as data becomes available
 }
 
 type RunResult struct {
@@ -227,11 +227,7 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 		return RunResult{}, err
 	}
 
-	emit("[*] Building behavioral findings from candidate profiles...")
 	findings := buildFindings(aggs)
-	if len(findings) > 0 {
-		emit(fmt.Sprintf("[+] %d behavioral findings generated", len(findings)))
-	}
 	if err := ctx.Err(); err != nil {
 		return RunResult{}, err
 	}
@@ -250,7 +246,7 @@ func ExecuteContext(ctx context.Context, input RunInput) (RunResult, error) {
 		partial := Report{
 			ID:                 runID,
 			GeneratedAt:        now,
-			Source:              source,
+			Source:             source,
 			SampleCount:        len(scoped),
 			CandidateCount:     len(aggs),
 			FindingCount:       len(findings),
@@ -448,7 +444,7 @@ func RenderReportLines(report Report) []string {
 				exfilFail++
 			}
 		}
-		if len(exfilPass) > 0 || len(exfilPartial) > 0 || probe.DNSExfilViable {
+		if len(exfilPass) > 0 || len(exfilPartial) > 0 {
 			lines = append(lines, "")
 			lines = append(lines, "  exfil")
 			if len(exfilPass) > 0 {
@@ -459,9 +455,6 @@ func RenderReportLines(report Report) []string {
 			}
 			if exfilFail > 0 {
 				lines = append(lines, fmt.Sprintf("    fail  %d protocol%s blocked", exfilFail, plural(exfilFail)))
-			}
-			if probe.DNSExfilViable {
-				lines = append(lines, "    - DNS TXT to external resolvers")
 			}
 		}
 	}
@@ -628,9 +621,7 @@ func filterBySource(samples []shared.Candidate, source string) []shared.Candidat
 	source = strings.TrimSpace(source)
 	if source == "" || strings.EqualFold(source, "all") {
 		out := make([]shared.Candidate, 0, len(samples))
-		for _, sample := range samples {
-			out = append(out, sample)
-		}
+		out = append(out, samples...)
 		return out
 	}
 	out := make([]shared.Candidate, 0, len(samples))
@@ -818,7 +809,7 @@ func buildFindings(aggs map[string]*candidateAggregate) []Finding {
 
 		if externalTargets > 0 && internalTargets > 0 {
 			sev := "strong"
-			if agg.role == "tunnel" || agg.active {
+			if agg.role == "control-tunnel" || agg.role == "control-pivot" || agg.active {
 				sev = "active"
 			}
 			findings = append(findings, makeFinding(agg, "escape", "internal-external-bridge", sev, "contour-escape-bridge",
@@ -828,7 +819,7 @@ func buildFindings(aggs map[string]*candidateAggregate) []Finding {
 
 		if externalTargets > 0 && loopTargets >= 2 {
 			sev := "strong"
-			if agg.active || agg.role == "tunnel" {
+			if agg.active || agg.role == "control-tunnel" || agg.role == "control-pivot" {
 				sev = "active"
 			}
 			findings = append(findings, makeFinding(agg, "escape", "loopback-egress-broker", sev, "contour-escape-loopback-broker",
@@ -838,7 +829,7 @@ func buildFindings(aggs map[string]*candidateAggregate) []Finding {
 
 		if hasListener && externalTargets > 0 {
 			sev := "strong"
-			if agg.role == "tunnel" || agg.active {
+			if agg.role == "control-tunnel" || agg.role == "control-pivot" || agg.active {
 				sev = "active"
 			}
 			findings = append(findings, makeFinding(agg, "escape", "listener-egress", sev, "contour-escape-listener-egress",
@@ -918,9 +909,9 @@ func buildFindings(aggs map[string]*candidateAggregate) []Finding {
 
 			// CDN domain-fronting risk.
 			cdnConns := sp.categories[SvcCatCDN]
-			if cdnConns > 0 && (agg.writeB >= 50*1024*1024 || agg.role == "tunnel" || agg.active) {
+			if cdnConns > 0 && (agg.writeB >= 50*1024*1024 || agg.role == "control-tunnel" || agg.role == "control-pivot" || agg.active) {
 				sev := "watch"
-				if agg.writeB >= 256*1024*1024 || agg.role == "tunnel" {
+				if agg.writeB >= 256*1024*1024 || agg.role == "control-tunnel" || agg.role == "control-pivot" {
 					sev = "strong"
 				}
 				names := serviceNamesForCategory(sp, SvcCatCDN)
@@ -1289,11 +1280,9 @@ func severityPriority(severity string) int {
 
 func rolePriority(role string) int {
 	switch role {
-	case "session":
+	case "control-session", "control-beacon":
 		return 4
-	case "beacon":
-		return 3
-	case "tunnel", "smb-pipe":
+	case "control-tunnel", "control-pivot":
 		return 3
 	case "listen":
 		return 2
@@ -1350,35 +1339,24 @@ func clip(v string, maxLen int) string {
 }
 
 func normalizeOutputPath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		path = defaultOutputPath
-	}
-	path = safeio.ExpandHomePath(path)
-	if filepath.IsAbs(path) {
-		path = filepath.Clean(path)
-	} else {
-		path = filepath.Join(safeio.ExpandHomePath(defaultContourDir), safeio.SanitizeRelativePath(path, "latest.json"))
-	}
-	if !strings.HasSuffix(strings.ToLower(path), ".json") {
-		path += ".json"
-	}
-	return path
+	return safeio.NormalizeJSONOutputPath(path, defaultOutputPath, safeio.ExpandHomePath(defaultContourDir))
 }
 
 func writeJSONFile(path string, value any) error {
 	path = normalizeOutputPath(path)
-	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	vaultKey := vaultKeyFromPath(path)
+	return keystore.VaultWrite(vaultKey, data, path)
+}
+
+func vaultKeyFromPath(path string) string {
+	if idx := strings.Index(path, ".proxywatch/"); idx >= 0 {
+		return path[idx+len(".proxywatch/"):]
+	}
+	return filepath.Base(path)
 }
 
 func maxUint64(a, b uint64) uint64 {

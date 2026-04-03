@@ -1,6 +1,6 @@
-# ProxyWatch BloodHound Queries (Role-Based Schema)
+# ProxyWatch ProxyHound Queries (Role-Based Schema)
 
-Use these in BloodHound Cypher tab. They return graph relationships (not just lists).
+Use these in the BloodHound CE Cypher tab. They return graph relationships (not just lists).
 
 These are parser-safe: no `CASE`, no `type()`, no `STARTS WITH`/`ENDS WITH`.
 

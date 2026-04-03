@@ -3,6 +3,7 @@ package shared
 import (
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -45,6 +46,8 @@ type ProcHistory struct {
 	LastDisplayEval time.Time
 	LastOutRatio    float64
 	LastInRatio     float64
+	LastRole        string
+	LastRoleChange  time.Time
 	LastLoopRatio   float64
 	ShapeSamples    int
 }
@@ -75,12 +78,12 @@ type PendingControlHistory struct {
 // beacon-like callback patterns even when the C2 server is down and
 // connections never reach ESTABLISHED state.
 type SYNCycleHistory struct {
-	Target      string      `json:"target"`
-	Cycles      int         `json:"cycles"`       // number of present→absent→present transitions
-	LastPresent bool        `json:"last_present"`  // was SYN_SENT present in previous sample
-	LastSeen    time.Time   `json:"last_seen"`
-	FirstSeen   time.Time   `json:"first_seen"`
-	Intervals   []float64   `json:"intervals"`     // seconds between cycle starts (rolling window)
+	Target      string    `json:"target"`
+	Cycles      int       `json:"cycles"`       // number of present→absent→present transitions
+	LastPresent bool      `json:"last_present"` // was SYN_SENT present in previous sample
+	LastSeen    time.Time `json:"last_seen"`
+	FirstSeen   time.Time `json:"first_seen"`
+	Intervals   []float64 `json:"intervals"` // seconds between cycle starts (rolling window)
 }
 
 const (
@@ -89,54 +92,64 @@ const (
 	SuspicionBeacon  = 3
 )
 
+// ClassifyMu protects all global classifier state maps from concurrent access.
+// The background refresh goroutine runs ScoreCandidate in parallel with the
+// main UI loop, and both read/write these maps.
+var ClassifyMu sync.Mutex
+
 var (
-	ConnFirstSeen             = make(map[ConnKey]time.Time)
-	ConnLastSeen              = make(map[ConnKey]time.Time)
-	ConnMissingGrace          = 45 * time.Second
-	ReverseControlMinDuration = 5 * time.Second
-	SessionMinLabelDuration   = 1 * time.Minute
-	TunnelMinLabelDuration    = 1 * time.Minute
-	SMBPipeMinLabelDuration   = 1 * time.Minute
-	BeaconMinLabelDuration    = 2 * time.Minute
-	LongLivedOutboundMinAge   = 60 * time.Second
-	ShortLivedOutboundMaxAge  = 10 * time.Second
-	ShortLivedBurstWindow     = 30 * time.Second
-	SlowScanWindow            = 3 * time.Minute
-	BeaconSleepThreshold      = 30 * time.Second
-	BeaconMinIntervals        = 2
-	LocalTransportWindow      = 30 * time.Second
-	PendingControlMinDuration = 15 * time.Second
-	PendingControlGapReset    = 45 * time.Second
-	PendingControlMinObs      = 3
-	RecentClientSeen          = make(map[int]time.Time)
-	RecentOutboundSeen        = make(map[int]time.Time)
-	RecentInternalScanSeen    = make(map[int]time.Time)
-	ShortLivedBurstLast       = make(map[int]time.Time)
-	ShortLivedBurstFirst      = make(map[int]time.Time)
-	ShortLivedBurstCount      = make(map[int]int)
-	ShortLivedBurstInterval   = make(map[int]time.Duration)
-	ShortLivedBurstHits       = make(map[int]int)
-	ShortLivedIntervals       = make(map[int][]time.Duration)
-	InboundBurstLast          = make(map[int]time.Time)
-	InboundBurstCount         = make(map[int]int)
-	BeaconSeen                = make(map[int]time.Time)
-	LocalTransportLast        = make(map[int]time.Time)
-	ParentChildFreq           = make(map[string]int)
-	RareTupleCount            = make(map[string]int)
-	PendingControlByPID       = make(map[int]*PendingControlHistory)
-	SYNCycleByPID             = make(map[int]*SYNCycleHistory)
-	ActiveWindow              = 10 * time.Second
-	SuspicionWindow           = 5 * time.Minute
-	HistoryTTL                = 5 * time.Minute
-	CleanupInterval           = 30 * time.Second
-	ReverseStickyScore        = 90
-	ForwardStickyScore        = 70
-	ReverseControlBaseScore   = 45
-	MinInternalTargetsForRev  = 2
-	MinInternalPortsForRev    = 2
-	OutboundOnlyExternalCap   = 30
-	ShapeDeltaThreshold       = 0.35 // 35% shift triggers shape anomaly
-	BeaconJitterCoVMax        = 0.8  // tighter jitter tolerance for callback cadence
+	ConnFirstSeen               = make(map[ConnKey]time.Time)
+	ConnLastSeen                = make(map[ConnKey]time.Time)
+	ConnKeysByPID               = make(map[int][]ConnKey) // reverse index for fast cleanup
+	ConnMissingGrace            = 45 * time.Second
+	ReverseControlMinDuration   = 30 * time.Second
+	SessionMinLabelDuration     = 60 * time.Second
+	TunnelMinLabelDuration      = 45 * time.Second
+	PivotMinLabelDuration       = 45 * time.Second
+	SMBPipeMinLabelDuration     = 45 * time.Second
+	BeaconMinLabelDuration      = 90 * time.Second
+	LongLivedOutboundMinAge     = 90 * time.Second
+	ShortLivedOutboundMaxAge    = 10 * time.Second
+	ShortLivedBurstWindow       = 45 * time.Second
+	SlowScanWindow              = 2 * time.Hour
+	BeaconSleepThreshold        = 30 * time.Second
+	BeaconMinIntervals          = 3
+	LocalTransportWindow        = 30 * time.Second
+	PendingControlMinDuration   = 15 * time.Second
+	PendingControlGapReset      = 45 * time.Second
+	PendingControlMinObs        = 3
+	RecentClientSeen            = make(map[int]time.Time)
+	RecentOutboundSeen          = make(map[int]time.Time)
+	RecentInternalScanSeen      = make(map[int]time.Time)
+	ShortLivedBurstLast         = make(map[int]time.Time)
+	ShortLivedBurstFirst        = make(map[int]time.Time)
+	ShortLivedBurstCount        = make(map[int]int)
+	ShortLivedBurstInterval     = make(map[int]time.Duration)
+	ShortLivedBurstHits         = make(map[int]int)
+	ShortLivedIntervals         = make(map[int][]time.Duration)
+	InboundBurstLast            = make(map[int]time.Time)
+	InboundBurstCount           = make(map[int]int)
+	BeaconSeen                  = make(map[int]time.Time)
+	LocalTransportLast          = make(map[int]time.Time)
+	ParentChildFreq             = make(map[string]int)
+	RareTupleCount              = make(map[string]int)
+	PendingControlByPID         = make(map[int]*PendingControlHistory)
+	SYNCycleByPID               = make(map[int]*SYNCycleHistory)
+	RoleChangeCooldown          = 10 * time.Second
+	MaliciousRoleDemoteCooldown = 5 * time.Minute
+	ActiveWindow                = 10 * time.Second
+	SuspicionWindow             = 10 * time.Minute
+	HistoryTTL                  = 2 * time.Hour
+	CleanupInterval             = 5 * time.Minute
+	ReverseStickyScore          = 100
+	ForwardStickyScore          = 80
+	ReverseControlBaseScore     = 45
+	MinInternalTargetsForRev    = 2
+	MinInternalPortsForRev      = 2
+	OutboundOnlyExternalCap     = 30
+	AnalyzingMinObservations    = 5    // hold malicious roles in "analyzing" until this many scan cycles
+	ShapeDeltaThreshold         = 0.35 // 35% shift triggers shape anomaly
+	BeaconJitterCoVMax          = 0.5  // beacon jitter tolerance (50% CoV — real beacons are periodic)
 	// How far to demote traffic that matches verified destinations without strong evidence in the UI ranking.
 	TrafficVerifiedPenalty = 80
 	// Minimum external target prefix diversity to treat traffic as verified on benign ports.
@@ -147,18 +160,40 @@ var (
 	ProcHistoryByPID                 = make(map[int]*ProcHistory)
 	ProcessBehaviorByKey             = make(map[string]*ProcessBehavior)
 	LastHistoryCleanup               time.Time
+
+	// Temporal tracking for advanced behavioral signals.
+	// IOBurstHistory tracks recent IO rates per PID for sleep-then-burst detection.
+	IOBurstHistory = make(map[int]*IOBurstTracker)
+	// ConnCountHistory tracks recent connection counts per PID for oscillation detection.
+	ConnCountHistory = make(map[int]*ConnCountTracker)
 )
+
+// IOBurstTracker records recent IO rates to detect sleep→burst patterns.
+type IOBurstTracker struct {
+	Samples    []uint64 // recent total BPS samples (ring buffer)
+	WriteIdx   int
+	LastUpdate time.Time
+	ZeroRuns   int // consecutive samples with 0 IO
+	BurstRuns  int // consecutive samples with high IO
+}
+
+// ConnCountTracker records recent outbound connection counts for oscillation detection.
+type ConnCountTracker struct {
+	Samples    []int // recent outTotal values (ring buffer)
+	WriteIdx   int
+	LastUpdate time.Time
+}
 
 func RolePriority(role string) int {
 	switch role {
-	case "tunnel":
+	case "control-tunnel":
 		return 100
-	case "smb-pipe":
+	case "control-pivot":
 		return 95
-	case "session":
+	case "control-session", "control-beacon":
 		return 90
-	case "beacon":
-		return 86
+	case "analyzing":
+		return 70
 	case "listen":
 		return 60
 	case "outbound":
@@ -170,8 +205,15 @@ func RolePriority(role string) int {
 
 func RoleFamily(role string) string {
 	switch role {
-	case "session", "beacon", "tunnel", "smb-pipe", "listen", "outbound":
+	case "control-session", "control-beacon", "control-pivot", "control-tunnel", "listen", "outbound", "analyzing":
 		return role
+	// Legacy aliases.
+	case "control-channel":
+		return "control-session"
+	case "tunnel":
+		return "control-tunnel"
+	case "smb-pipe":
+		return "control-pivot"
 	default:
 		return "other"
 	}
@@ -180,14 +222,12 @@ func RoleFamily(role string) string {
 // MITRETechniques returns the ATT&CK technique IDs associated with a role.
 func MITRETechniques(role string) []string {
 	switch role {
-	case "session":
+	case "control-session", "control-beacon":
 		return []string{"T1071", "T1090", "T1573"}
-	case "beacon":
-		return []string{"T1071", "T1571", "T1008"}
-	case "tunnel":
+	case "control-tunnel":
 		return []string{"T1572", "T1090", "T1573"}
-	case "smb-pipe":
-		return []string{"T1572", "T1021.002", "T1570"}
+	case "control-pivot":
+		return []string{"T1572", "T1021.002", "T1570", "T1090"}
 	case "listen":
 		return []string{"T1090", "T1571"}
 	case "outbound":
@@ -200,11 +240,9 @@ func MITRETechniques(role string) []string {
 // MITRETactics returns the ATT&CK tactic names associated with a role family.
 func MITRETactics(role string) []string {
 	switch role {
-	case "tunnel", "smb-pipe":
+	case "control-tunnel", "control-pivot":
 		return []string{"Command and Control", "Lateral Movement"}
-	case "session":
-		return []string{"Command and Control"}
-	case "beacon":
+	case "control-session", "control-beacon":
 		return []string{"Command and Control"}
 	case "listen":
 		return []string{"Command and Control", "Persistence"}
@@ -215,9 +253,9 @@ func MITRETactics(role string) []string {
 	}
 }
 
-func IsControlChannelRole(role string) bool {
+func IsControlRole(role string) bool {
 	switch role {
-	case "session", "beacon", "tunnel", "smb-pipe":
+	case "control-session", "control-beacon", "control-channel", "control-tunnel", "control-pivot", "analyzing":
 		return true
 	default:
 		return false
@@ -226,6 +264,11 @@ func IsControlChannelRole(role string) bool {
 
 // CandidateLess defines a consistent ordering for candidates.
 func CandidateLess(a, b Candidate) bool {
+	// Exited processes always sort below live ones.
+	if a.Exited != b.Exited {
+		return !a.Exited && b.Exited
+	}
+
 	famA := roleFamilyPriority(a.Role)
 	famB := roleFamilyPriority(b.Role)
 	if famA != famB {
@@ -254,11 +297,11 @@ func CandidateLess(a, b Candidate) bool {
 
 func roleFamilyPriority(role string) int {
 	switch role {
-	case "tunnel", "smb-pipe":
+	case "control-tunnel", "control-pivot":
 		return 5
-	case "session":
+	case "control-session", "control-beacon":
 		return 4
-	case "beacon":
+	case "analyzing":
 		return 3
 	case "listen":
 		return 2
@@ -279,28 +322,35 @@ func candidatePriority(c Candidate) int {
 
 func ParseRoleFilter(s string) map[string]bool {
 	allRoles := []string{
-		"session",
-		"beacon",
-		"tunnel",
-		"smb-pipe",
+		"control-session",
+		"control-beacon",
+		"control-pivot",
+		"control-tunnel",
+		"analyzing",
 		"listen",
 		"outbound",
 	}
 
 	roleGroups := map[string][]string{
-		"recommended": {"session", "beacon", "tunnel", "smb-pipe"},
-		"all":         allRoles,
-		"session":     {"session"},
-		"beacon":      {"beacon"},
-		"tunnel":      {"tunnel", "smb-pipe"},
-		"listen":      {"listen"},
-		"outbound":    {"outbound"},
+		"recommended":     {"control-session", "control-beacon", "control-pivot", "control-tunnel", "analyzing"},
+		"all":             allRoles,
+		"control-session": {"control-session"},
+		"control-beacon":  {"control-beacon"},
+		"control-pivot":   {"control-pivot"},
+		"control-tunnel":  {"control-tunnel"},
+		"listen":          {"listen"},
+		"outbound":        {"outbound"},
 		// Legacy aliases.
-		"control":  {"session", "beacon", "tunnel", "smb-pipe"},
-		"command":  {"session", "beacon"},
-		"network":  {"listen", "outbound"},
-		"listener": {"listen"},
-		"reverse":  {"session", "tunnel"},
+		"control-channel": {"control-session", "control-beacon"},
+		"session":         {"control-session"},
+		"beacon":          {"control-beacon"},
+		"tunnel":          {"control-tunnel", "control-pivot"},
+		"smb-pipe":        {"control-pivot"},
+		"control":         {"control-session", "control-beacon", "control-tunnel", "control-pivot"},
+		"command":         {"control-session", "control-beacon"},
+		"network":         {"listen", "outbound"},
+		"reverse":         {"control-session", "control-beacon", "control-tunnel"},
+		"pivot":           {"control-pivot"},
 	}
 
 	out := make(map[string]bool)
@@ -359,20 +409,6 @@ func IsLoopbackIP(ip string) bool {
 
 func IsWildcardIP(ip string) bool {
 	return ip == "0.0.0.0" || ip == "::"
-}
-
-func UDPScopeCounts(list []UDPListenerInfo) (internal, external, loopback int) {
-	for _, u := range list {
-		switch {
-		case IsLoopbackIP(u.LocalAddress):
-			loopback++
-		case IsInternalIP(u.LocalAddress):
-			internal++
-		default:
-			external++
-		}
-	}
-	return
 }
 
 func ScopeLabelForLocalAddress(addr string) string {

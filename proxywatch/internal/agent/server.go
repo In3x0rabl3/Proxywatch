@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"proxywatch/internal/agent/pb"
+	"proxywatch/internal/model"
 	"proxywatch/internal/shared"
 
 	"google.golang.org/grpc"
@@ -279,6 +280,31 @@ func (r *RemoteScanner) Refresh(app *shared.AppState) {
 		app.SnapshotCandidates = cands
 		app.HostSummaries = hostSummaries
 	}
+	// Record experience for all candidates so the model learns in ingest mode.
+	if len(cands) > 0 {
+		expRecords := make([]model.ExperienceRecord, 0, len(cands))
+		for i := range cands {
+			c := &cands[i]
+			if c.Proc == nil {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(c.Host)) + "|" +
+				strings.ToLower(strings.TrimSpace(strings.ReplaceAll(c.Proc.ExePath, "\\", "/"))) + "|" +
+				strings.ToLower(strings.TrimSpace(c.Proc.Name)) + "|" +
+				strings.ToLower(strings.TrimSpace(c.Proc.UserName))
+			expRecords = append(expRecords, model.ExperienceRecord{
+				ProcessKey:   key,
+				Name:         c.Proc.Name,
+				Role:         c.Role,
+				Score:        c.Score,
+				Signals:      c.Signals,
+				IOReadBytes:  c.Proc.IOReadBytes,
+				IOWriteBytes: c.Proc.IOWriteBytes,
+			})
+		}
+		model.RecordExperience(expRecords)
+	}
+
 	filtered := shared.ApplyWhitelist(cands, r.Whitelist)
 	shared.ApplySelection(app, filtered, now)
 }

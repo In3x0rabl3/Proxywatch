@@ -1,182 +1,412 @@
-# ProxyWatch BloodHound Queries
+# ProxyWatch OpenCypher Queries
 
-Use these in the BloodHound Cypher tab. They return graph relationships (not just lists).
+Use these in the BloodHound Cypher tab or any Neo4j-compatible graph viewer.
 
-## Suspicious process inventory
+---
 
-1) Hosts → Susp processes
-```cypher
-MATCH (h:Host)-[r:HasSuspProcess]->(p:Process)
-RETURN h, r, p
-```
+## Process Inventory
 
-2) Users → Susp processes
-```cypher
-MATCH (u:User)-[r:UserHasSuspProcess]->(p:Process)
-RETURN u, r, p
-```
-
-3) All susp processes
+### All control-role processes
 ```cypher
 MATCH (p:Process)
-WHERE p.role STARTS WITH "susp-"
+WHERE p.role STARTS WITH "control-"
 RETURN p
 ```
 
-4) Hosts with susp processes and users
+### Hosts → All detected processes
 ```cypher
-MATCH (h:Host)-[r1:HasSuspProcess]->(p:Process)-[r2:UserHasSuspProcess]-(u:User)
-RETURN h, r1, p, r2, u
+MATCH path = (h:Host)-[r]->(p:Process)
+WHERE type(r) STARTS WITH "Has"
+RETURN path
 ```
 
-## External traffic
-
-5) Host → Process → External endpoint
+### Users → All detected processes
 ```cypher
-MATCH (h:Host)-[r1:HasSuspProcess]->(p:Process)-[r2:SuspConnectsToExternal]->(e:Endpoint)
-RETURN h, r1, p, r2, e
+MATCH path = (u:User)-[r]->(p:Process)
+WHERE type(r) STARTS WITH "Runs"
+RETURN path
 ```
 
-6) User → External traffic
+### Full context: Host → Process ← User
 ```cypher
-MATCH (u:User)-[r:UserSuspTrafficExternal]->(e:Endpoint)
-RETURN u, r, e
+MATCH path = (h:Host)-[r1]->(p:Process)<-[r2]-(u:User)
+WHERE type(r1) STARTS WITH "Has" AND type(r2) STARTS WITH "Runs"
+RETURN path
 ```
 
-7) Susp processes with any external traffic
+### Full context: Host → Process ← User → External endpoint
 ```cypher
-MATCH (p:Process)-[r:SuspConnectsToExternal]->(e:Endpoint)
-WHERE p.role STARTS WITH "susp-"
-RETURN p, r, e
+MATCH path1 = (h:Host)-[r1]->(p:Process)<-[r2]-(u:User),
+      path2 = (p)-[:ConnectsTo]->(e:Endpoint)
+WHERE type(r1) STARTS WITH "Has" AND type(r2) STARTS WITH "Runs"
+RETURN path1, path2
 ```
 
-8) External endpoints with multiple susp processes
+#### Filter by host, user, or process name
 ```cypher
-MATCH (p:Process)-[r:SuspConnectsToExternal]->(e:Endpoint)
-WITH e, count(p) AS hits, collect(p) AS procs
-WHERE hits > 1
+MATCH path1 = (h:Host)-[r1]->(p:Process)<-[r2]-(u:User),
+      path2 = (p)-[:ConnectsTo]->(e:Endpoint)
+WHERE type(r1) STARTS WITH "Has" AND type(r2) STARTS WITH "Runs"
+  AND h.name = "YOURHOST"        // pick host
+  // AND u.name = "YOURUSER"     // pick user
+  // AND p.name = "YOURPROCESS"  // pick process
+RETURN path1, path2
+```
+
+### Full context: Host → Process ← User → Internal endpoint
+```cypher
+MATCH path1 = (h:Host)-[r1]->(p:Process)<-[r2]-(u:User),
+      path2 = (p)-[:ConnectsToInternal]->(e:Endpoint)
+WHERE type(r1) STARTS WITH "Has" AND type(r2) STARTS WITH "Runs"
+RETURN path1, path2
+```
+
+### Full context: Host → Local endpoint → Process ← User → External endpoint
+```cypher
+MATCH path1 = (h:Host)-[:HasEndpoint]->(le:Endpoint)-[:BoundBy]->(p:Process)<-[r]-(u:User),
+      path2 = (p)-[:ConnectsTo]->(e:Endpoint)
+WHERE type(r) STARTS WITH "Runs"
+RETURN path1, path2
+```
+
+---
+
+## C2 Sessions
+
+### All sessions
+```cypher
+MATCH path = (h:Host)-[:HasSession]->(p:Process)
+RETURN path
+```
+
+### Session → External C2 target
+```cypher
+MATCH path = (h:Host)-[:HasSession]->(p:Process)-[:ConnectsTo]->(e:Endpoint)
+RETURN path
+```
+
+### Sessions with persistent control channels (>60s)
+```cypher
+MATCH (p:Process)
+WHERE p.role = "control-session" AND p.control_duration_seconds > 60
+RETURN p, p.control_target AS target, p.control_duration_seconds AS duration
+```
+
+### Users running C2 sessions
+```cypher
+MATCH path = (u:User)-[:RunsSession]->(p:Process)-[:ConnectsTo]->(e:Endpoint)
+RETURN path
+```
+
+---
+
+## Beacons
+
+### All beacons
+```cypher
+MATCH path = (h:Host)-[:HasBeacon]->(p:Process)
+RETURN path
+```
+
+### Beacon → Callback target
+```cypher
+MATCH path = (h:Host)-[:HasBeacon]->(p:Process)-[:ConnectsTo]->(e:Endpoint)
+RETURN path
+```
+
+### Shared C2: multiple beacons calling same endpoint
+```cypher
+MATCH (p:Process)-[:ConnectsTo]->(e:Endpoint)
+WHERE p.role = "control-beacon"
+WITH e, collect(p) AS beacons, count(p) AS cnt
+WHERE cnt > 1
+UNWIND beacons AS p
+MATCH path = (p)-[:ConnectsTo]->(e)
+RETURN path
+```
+
+---
+
+## Tunnels
+
+### All tunnels
+```cypher
+MATCH path = (h:Host)-[:HasTunnel]->(p:Process)
+RETURN path
+```
+
+### Tunnel → External endpoint
+```cypher
+MATCH path = (h:Host)-[:HasTunnel]->(p:Process)-[:ConnectsTo]->(e:Endpoint)
+RETURN path
+```
+
+### Tunnels actively proxying internal traffic
+```cypher
+MATCH path = (p:Process)-[:ConnectsToInternal]->(e:Endpoint)
+WHERE p.role = "control-tunnel"
+RETURN path
+```
+
+### Tunnel with both external and internal connections
+```cypher
+MATCH path1 = (p:Process)-[:ConnectsTo]->(ext:Endpoint),
+      path2 = (p)-[:ConnectsToInternal]->(int:Endpoint)
+WHERE p.role = "control-tunnel"
+RETURN path1, path2
+```
+
+---
+
+## Pivots & Lateral Movement
+
+### All pivots
+```cypher
+MATCH path = (h:Host)-[:HasPivot]->(p:Process)
+RETURN path
+```
+
+### Pivot → Internal host (lateral movement)
+```cypher
+MATCH path = (h1:Host)-[:HasPivot]->(p:Process)-[:ReachesHostInternal]->(h2:Host)
+RETURN path
+```
+
+### SMB and named pipe pivots
+```cypher
+MATCH path = (p:Process)-[:ConnectsToInternal]->(e:Endpoint)
+WHERE p.control_subtype IN ["smb-pivot", "pipe-pivot"]
+RETURN path
+```
+
+### Double pivot chain
+```cypher
+MATCH path = (h1:Host)-[:HasPivot]->(p1:Process)-[:ReachesHostInternal]->(mid:Host)-[:HasPivot]->(p2:Process)-[:ReachesHostInternal]->(h3:Host)
+RETURN path
+```
+
+### Internal targets hit by multiple control processes
+```cypher
+MATCH (p:Process)-[:ConnectsToInternal]->(e:Endpoint)
+WHERE p.role STARTS WITH "control-"
+WITH e, collect(p) AS procs, count(p) AS cnt
+WHERE cnt > 1
 UNWIND procs AS p
-RETURN p, e
+MATCH path = (p)-[:ConnectsToInternal]->(e)
+RETURN path
 ```
 
-## Host pivots (IP-backed hosts)
-
-9) Host → Process → Remote host (any scope)
+### Connections to admin ports
 ```cypher
-MATCH (h:Host)-[r1:HasSuspProcess]->(p:Process)-[r2]->(h2:Host)
-WHERE type(r2) STARTS WITH "SuspConnectsToHost"
-RETURN h, r1, p, r2, h2
+MATCH path = (p:Process)-[:ConnectsToInternal]->(e:Endpoint)
+WHERE e.port IN [22, 135, 139, 445, 3389, 5985, 5986]
+RETURN path
 ```
 
-10) Host → Process → Internal host (lateral)
+### Connections to credential ports (Kerberos, LDAP)
 ```cypher
-MATCH (h:Host)-[r1:HasSuspProcess]->(p:Process)-[r2:SuspConnectsToHostInternal]->(h2:Host)
-RETURN h, r1, p, r2, h2
+MATCH path = (p:Process)-[:ConnectsToInternal]->(e:Endpoint)
+WHERE e.port IN [88, 389, 636, 3268, 3269]
+RETURN path
 ```
 
-11) Host name ↔ host IP links
+---
+
+## External Traffic
+
+### All external connections
 ```cypher
-MATCH (h:Host)-[r:HostHasIP]->(hip:Host)
-RETURN h, r, hip
+MATCH path = (p:Process)-[:ConnectsTo]->(e:Endpoint)
+RETURN path
 ```
 
-12) Double pivot (host → process → host → process → host)
+### External endpoints with multiple processes (shared infra)
 ```cypher
-MATCH (h1:Host)-[:HasSuspProcess]->(p1:Process)-[r1]->(hip:Host)
-MATCH (h2:Host)-[:HostHasIP]->(hip)
-MATCH (h2)-[:HasSuspProcess]->(p2:Process)-[r2]->(h3:Host)
-WHERE type(r1) STARTS WITH "SuspConnectsToHost"
-  AND type(r2) STARTS WITH "SuspConnectsToHost"
-RETURN h1, p1, hip, h2, p2, h3
-```
-
-## Internal traffic
-
-13) Host → Process → Internal endpoint
-```cypher
-MATCH (h:Host)-[r1:HasSuspProcess]->(p:Process)-[r2:SuspConnectsToInternal]->(e:Endpoint)
-RETURN h, r1, p, r2, e
-```
-
-14) User → Internal traffic
-```cypher
-MATCH (u:User)-[r:UserSuspTrafficInternal]->(e:Endpoint)
-RETURN u, r, e
-```
-
-15) Susp processes with any internal traffic
-```cypher
-MATCH (p:Process)-[r:SuspConnectsToInternal]->(e:Endpoint)
-WHERE p.role STARTS WITH "susp-"
-RETURN p, r, e
-```
-
-16) Internal endpoints contacted by multiple susp processes
-```cypher
-MATCH (p:Process)-[r:SuspConnectsToInternal]->(e:Endpoint)
-WITH e, count(p) AS hits, collect(p) AS procs
-WHERE hits > 1
+MATCH (p:Process)-[:ConnectsTo]->(e:Endpoint)
+WHERE p.role STARTS WITH "control-"
+WITH e, collect(p) AS procs, count(p) AS cnt
+WHERE cnt > 1
 UNWIND procs AS p
-RETURN p, e
+MATCH path = (p)-[:ConnectsTo]->(e)
+RETURN path
 ```
 
-## Loopback traffic
-
-17) Susp processes using loopback endpoints
+### Connections on uncommon ports
 ```cypher
-MATCH (p:Process)-[r:SuspConnectsToLoopback]->(e:Endpoint)
-WHERE p.role STARTS WITH "susp-"
-RETURN p, r, e
+MATCH path = (p:Process)-[:ConnectsTo]->(e:Endpoint)
+WHERE p.role STARTS WITH "control-" AND NOT e.port IN [80, 443, 22, 53]
+RETURN path
 ```
 
-## Local endpoint chains
+---
 
-18) Host → LocalEndpoint → SuspProcess
+## Internal Traffic
+
+### All internal connections
 ```cypher
-MATCH (h:Host)-[r1:HostHasLocalEndpoint]->(le:Endpoint)-[r2:LocalEndpointUsedBySuspProcess]->(p:Process)
-RETURN h, r1, le, r2, p
+MATCH path = (p:Process)-[:ConnectsToInternal]->(e:Endpoint)
+RETURN path
 ```
 
-19) Host → LocalEndpoint → External endpoint (full chain)
+### Internal fan-out (single process → 3+ internal targets)
 ```cypher
-MATCH (h:Host)-[r1:HostHasLocalEndpoint]->(le:Endpoint)-[r2:LocalEndpointConnectsToExternal]->(e:Endpoint)
-RETURN h, r1, le, r2, e
+MATCH (p:Process)-[:ConnectsToInternal]->(e:Endpoint)
+WHERE p.role STARTS WITH "control-"
+WITH p, count(e) AS targets
+WHERE targets >= 3
+MATCH path = (p)-[:ConnectsToInternal]->(e:Endpoint)
+RETURN path
 ```
 
-20) Host → LocalEndpoint → Internal endpoint (full chain)
+---
+
+## Host Relationships
+
+### Host ↔ IP mappings
 ```cypher
-MATCH (h:Host)-[r1:HostHasLocalEndpoint]->(le:Endpoint)-[r2:LocalEndpointConnectsToInternal]->(e:Endpoint)
-RETURN h, r1, le, r2, e
+MATCH path = (h:Host)-[:HostHasIP]->(hip:Host)
+RETURN path
 ```
 
-21) Full chain with process context (external)
+### Process reaches remote host
 ```cypher
-MATCH (h:Host)-[r1:HostHasLocalEndpoint]->(le:Endpoint)
-      -[r2:LocalEndpointUsedBySuspProcess]->(p:Process)
-      -[r3:SuspConnectsToExternal]->(e:Endpoint)
-RETURN h, r1, le, r2, p, r3, e
+MATCH path = (h1:Host)-[r1]->(p:Process)-[:ReachesHost]->(h2:Host)
+WHERE type(r1) STARTS WITH "Has"
+RETURN path
 ```
 
-22) Full chain with process context (internal)
+### Process reaches internal host
 ```cypher
-MATCH (h:Host)-[r1:HostHasLocalEndpoint]->(le:Endpoint)
-      -[r2:LocalEndpointUsedBySuspProcess]->(p:Process)
-      -[r3:SuspConnectsToInternal]->(e:Endpoint)
-RETURN h, r1, le, r2, p, r3, e
+MATCH path = (h1:Host)-[r1]->(p:Process)-[:ReachesHostInternal]->(h2:Host)
+WHERE type(r1) STARTS WITH "Has"
+RETURN path
 ```
 
-## Role-specific views
+---
 
-23) Susp-beacon only
+## Local Endpoints
+
+### Process binds to local port
 ```cypher
-MATCH (p:Process)-[r]->(e:Endpoint)
-WHERE p.role = "susp-beacon" AND type(r) STARTS WITH "SuspConnectsTo"
-RETURN p, r, e
+MATCH path = (p:Process)-[:BindsTo]->(e:Endpoint)
+RETURN path
 ```
 
-24) Susp-tun only
+### Host → Endpoint → Process chain
 ```cypher
-MATCH (p:Process)-[r]->(e:Endpoint)
-WHERE p.role = "susp-tun" AND type(r) STARTS WITH "SuspConnectsTo"
-RETURN p, r, e
+MATCH path = (h:Host)-[:HasEndpoint]->(le:Endpoint)-[:BoundBy]->(p:Process)
+RETURN path
+```
+
+### Full chain: Local → Process → External
+```cypher
+MATCH path = (h:Host)-[:HasEndpoint]->(le:Endpoint)-[:BoundBy]->(p:Process)-[:ConnectsTo]->(e:Endpoint)
+RETURN path
+```
+
+### Full chain: Local → Process → Internal
+```cypher
+MATCH path = (h:Host)-[:HasEndpoint]->(le:Endpoint)-[:BoundBy]->(p:Process)-[:ConnectsToInternal]->(e:Endpoint)
+RETURN path
+```
+
+---
+
+## Analyzing
+
+### Processes under analysis
+```cypher
+MATCH (p:Process)
+WHERE p.role = "analyzing"
+RETURN p
+```
+
+### Hosts with analyzing processes
+```cypher
+MATCH path = (h:Host)-[r]->(p:Process)
+WHERE p.role = "analyzing" AND type(r) STARTS WITH "Has"
+RETURN path
+```
+
+---
+
+## Cross-Role Analysis
+
+### Process count by role
+```cypher
+MATCH (p:Process)
+WHERE p.role STARTS WITH "control-"
+RETURN p.role AS role, count(p) AS count
+ORDER BY count DESC
+```
+
+### Hosts with multiple roles (compromised)
+```cypher
+MATCH (h:Host)-[r]->(p:Process)
+WHERE type(r) STARTS WITH "Has" AND p.role STARTS WITH "control-"
+WITH h, collect(DISTINCT p.role) AS roles
+WHERE size(roles) > 1
+RETURN h.name AS host, roles
+```
+
+### Users with multiple control processes
+```cypher
+MATCH (u:User)-[r]->(p:Process)
+WHERE type(r) STARTS WITH "Runs" AND p.role STARTS WITH "control-"
+WITH u, count(p) AS total, collect(DISTINCT p.role) AS roles
+WHERE total > 1
+RETURN u.name AS user, total, roles
+```
+
+### High-score processes
+```cypher
+MATCH (p:Process)
+WHERE p.score > 70
+RETURN p ORDER BY p.score DESC
+```
+
+### Strong evidence
+```cypher
+MATCH (p:Process)
+WHERE p.strong_evidence = true
+RETURN p
+```
+
+### Active proxying
+```cypher
+MATCH (p:Process)
+WHERE p.active_proxying = true
+RETURN p
+```
+
+---
+
+## Attack Path Reconstruction
+
+### Full chain: External C2 → Session → Pivot → Internal target
+```cypher
+MATCH path = (ext:Endpoint)<-[:ConnectsTo]-(sess:Process)<-[:HasSession]-(h1:Host)-[:HasPivot]->(piv:Process)-[:ReachesHostInternal]->(h2:Host)
+RETURN path
+```
+
+### Tunnel → Internal scanning
+```cypher
+MATCH path = (ext:Endpoint)<-[:ConnectsTo]-(tun:Process)-[:ConnectsToInternal]->(int:Endpoint)
+WHERE tun.role = "control-tunnel"
+RETURN path
+```
+
+### Beacon → Session upgrade on same host
+```cypher
+MATCH path1 = (h:Host)-[:HasBeacon]->(b:Process),
+      path2 = (h)-[:HasSession]->(s:Process)
+WHERE b <> s
+RETURN path1, path2
+```
+
+### Full kill chain: C2 → Session → Tunnel → Pivot → Target
+```cypher
+MATCH path1 = (c2:Endpoint)<-[:ConnectsTo]-(sess:Process)<-[:HasSession]-(h1:Host)-[:HasTunnel]->(tun:Process)-[:ConnectsToInternal]->(int:Endpoint),
+      path2 = (h1)-[:HasPivot]->(piv:Process)-[:ReachesHostInternal]->(h2:Host)
+RETURN path1, path2
 ```
