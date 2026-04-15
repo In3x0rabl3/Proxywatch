@@ -182,6 +182,10 @@ Signal families:
 
 Cypher query pack: [`docs/queries.md`](docs/queries.md).
 
+## HTTP APIs
+
+ProxyWatch exposes three HTTP APIs for introspection and control — a local/server-mode Debug API (`/candidates`, `/fp-report`, `/operator/label`, `/metrics`), a per-agent Debug API for connect-mode agents, and a Contour API for headless tunnel operation. See [`docs/api-reference.md`](docs/api-reference.md) for full endpoint documentation with schemas, query parameters, and usage examples.
+
 ## Notes
 
 - Run as root (`sudo`) for full visibility including raw socket detection and process IO stats.

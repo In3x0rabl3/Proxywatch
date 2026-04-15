@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `docs/api-reference.md` — complete HTTP API reference covering the local/server-mode Debug API, the per-agent Debug API for connect-mode agents, and the headless Contour API. Documents every endpoint with methods, query parameters, request/response schemas, and operator usage patterns (polling during scans, capturing baselines for regression diffing, training operator labels).
+
 ### Changed
 - Docs scrubbed to match v1.0.6 layout: removed stale Calibration / SIEM dashboard sections from `README.md`, updated file-path references from `internal/detection/rank.go` to `internal/detection/scoring/rank.go`, dropped calibration/SIEM rows from the Managed Keys and Persistence tables, and rewrote `proxywatch/docs/architecture/CODEMAP.md` against the current tree.
 - Added vibe-coded disclaimer to `README.md` noting significant portions of ProxyWatch were authored with AI-pair-programming assistance.
