@@ -2,7 +2,7 @@
 
 ProxyWatch is a real-time process and network behavior monitor for detecting proxy activity, tunnels, C2 sessions, beacons, and lateral movement. It classifies processes into threat-focused role families using live host telemetry, behavioral heuristics, and an on-device ML model.
 
-> ⚠️ **Vibe-coded disclaimer:** Significant portions of ProxyWatch — including classification heuristics, UI views, detection plumbing, and this documentation — were authored with heavy AI-pair-programming assistance ("vibe coding"). The detection logic is live-verified against a lab network, but edge cases, race conditions, and subtle heuristic interactions may exist that haven't been encountered. Audit before production use. Contributions welcome, especially for hardening and test coverage.
+> ⚠️ **Vibe-coded disclaimer:** Significant portions of ProxyWatch, including classification heuristics, UI views. Audit before production use. Contributions welcome, especially for hardening and test coverage.
 
 **Current version: v1.0.6**
 
