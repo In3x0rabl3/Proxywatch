@@ -138,18 +138,9 @@ Manages API keys, tokens, and runtime settings with AES-256-GCM encryption.
 
 ## How Classification Works
 
-Core classifier lives in `proxywatch/internal/detection/scoring/rank.go`; thresholds and runtime state maps are in `proxywatch/internal/shared/classify.go`. The pipeline combines rule-engine topology analysis with an on-device LightGBM predictor.
+ProxyWatch classifies every process into one of four roles — `outbound`, `listener`, `control-channel`, `control-pivot` — using a rule-engine scorer and an on-device LightGBM predictor running in parallel. SOCKS-forwarding processes get a 60-second `control-pivot` linger while traffic flows; tunneling state only shows when bytes are actually moving.
 
-Signal families:
-
-- **Control-channel detection** — persistent external sessions, pending-control SYN cycles, reverse-control shape, beacon cadence/jitter.
-- **Control-pivot detection** — internal-only forwarding (`pivot-non-loopback-internal`), SMB admin-share activity, named-pipe C2 patterns, SOCKS candidate shape, cross-role disambiguation for sshd-style relays.
-- **Listener detection** — wildcard/loopback bind, client-session multiplexing, named-pipe servers, raw-socket ownership.
-- **Outbound classification** — ASN/vendor alignment, publisher DNS alignment, known-network-active heuristics.
-- **Online verification** — Authenticode OCSP trust hints (Windows) when `PROXYWATCH_ONLINE_VERIFY=live`.
-- **ML role predictor** — LightGBM GBDT trained on a 122-feature schema, runs shadow-only until qualified via shadow-agreement + prediction volume, then becomes primary for role assignment.
-- **Time-lingered pivot promotion** — `ApplyPivotLinger` (in `internal/detection/scoring/child_tunnel.go`) holds `control-pivot` for 60 seconds after active internal-only forwarding is observed in a relay context, walking the parent process tree to handle Windows OpenSSH's privsep children.
-- **Stability guards** — role-change cooldown, malicious-role demote cooldown, committed-role hold for benign/benign model predictions.
+See [`docs/detection.md`](docs/detection.md) for the role taxonomy, disambiguation tables, FP-suppression tiers, and worked examples.
 
 ## Persistence
 

@@ -9,13 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `docs/api-reference.md` — complete HTTP API reference covering the local/server-mode Debug API, the per-agent Debug API for connect-mode agents, and the headless Contour API. Documents every endpoint with methods, query parameters, request/response schemas, and operator usage patterns (polling during scans, capturing baselines for regression diffing, training operator labels).
+- `docs/detection.md` — single presentation-friendly detection overview. Covers the role taxonomy, how roles are decided (rule engine + on-device ML), pivot linger, tunneling state semantics, role disambiguation, FP suppression tiers, worked examples, and code pointers.
 
 ### Changed
 - Docs scrubbed to match v1.0.6 layout: removed stale Calibration / SIEM dashboard sections from `README.md`, updated file-path references from `internal/detection/rank.go` to `internal/detection/scoring/rank.go`, dropped calibration/SIEM rows from the Managed Keys and Persistence tables, and rewrote `proxywatch/docs/architecture/CODEMAP.md` against the current tree.
 - Added vibe-coded disclaimer to `README.md` noting significant portions of ProxyWatch were authored with AI-pair-programming assistance.
 - Consolidated duplicate Cypher query docs: deleted `proxywatch/docs/queries.md` (old Session/Beacon/Tunnel role taxonomy). `docs/queries.md` (control-* taxonomy) is the single source.
-- Annotated `calibration_verdict` JSON tag in `docs/detection-architecture.md` as a legacy key still honored for backward-compat with persisted experience-model state.
 - Simplified `PULL_REQUEST_TEMPLATE.md` — replaced `<TODO>` placeholders with a minimal Summary / Type / Testing / Checklist template.
+
+### Removed
+- Three detection-architecture docs (`docs/detection-architecture.md`, `docs/control-channel-architecture.md`, `docs/detection-redesign-v2.md`) consolidated into a single `docs/detection.md`. The old docs had heavy overlap, internal implementation detail (specific signal names, feature indices, retrain triggers), and historical migration notes that aren't useful for presentation or operator orientation.
 
 ## [1.0.6] - 2026-04-15
 
