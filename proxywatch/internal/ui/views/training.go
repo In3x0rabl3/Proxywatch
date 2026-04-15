@@ -420,14 +420,6 @@ func (m TrainingModel) buildContent() string {
 		b.WriteString(kvLine("Observations", fmt.Sprintf("%d total, %d in buffer", model.LiveObservationCount(), bufSize)))
 		b.WriteString(kvLine("Labels", fmt.Sprintf("%d operator", labels)))
 		b.WriteString(kvLine("Auto-Learn", autoLabel))
-		readiness := model.GetBaselineReadiness()
-		readinessStyle := dimText
-		if readiness.Ready {
-			readinessStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379"))
-		}
-		b.WriteString("  " + dimText.Render("Export:         ") +
-			readinessStyle.Render(fmt.Sprintf("%s  (%d profiles, %d signals, %.0f%% stability)",
-				readiness.Reason, readiness.Profiles, readiness.SignalsCov, readiness.Stability*100)) + "\n")
 
 		// ML model status.
 		shadowRate := model.ShadowAgreementRate()

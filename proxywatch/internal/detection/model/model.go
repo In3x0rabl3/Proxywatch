@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -390,76 +389,6 @@ type BaselineStatus struct {
 	Patterns     int
 	EgressPaths  int
 	LastUpdated  time.Time
-}
-
-// BaselineReadiness reports how ready the current model is for export.
-type BaselineReadiness struct {
-	Profiles      int  // unique process profiles
-	SignalsCov    int  // signals with effectiveness data
-	Observations  int  // total experience observations across profiles
-	HasSuspicious bool // at least one suspicious-role profile
-	HasBenign     bool // at least one benign-role profile
-	Stability     float64 // average role stability across profiles
-	Ready         bool // meets minimum export criteria
-	Reason        string // why not ready, or "ready"
-}
-
-var (
-	cachedReadiness     BaselineReadiness
-	cachedReadinessTime time.Time
-)
-
-// GetBaselineReadiness evaluates whether the current model is good enough to export.
-// Export requires 100% maturity — the ML model must be trained, qualified, and stable.
-// Results are cached for 2 seconds to avoid expensive iteration on every UI render.
-func GetBaselineReadiness() BaselineReadiness {
-	if time.Since(cachedReadinessTime) < 2*time.Second {
-		return cachedReadiness
-	}
-
-	mu.RLock()
-	defer mu.RUnlock()
-
-	r := BaselineReadiness{}
-	if current == nil {
-		r.Reason = "no model loaded"
-		cachedReadiness = r
-		cachedReadinessTime = time.Now()
-		return r
-	}
-
-	r.Profiles = len(current.Processes)
-	r.SignalsCov = len(current.SignalStats)
-
-	var totalStab float64
-	stabCount := 0
-	for _, p := range current.Processes {
-		r.Observations += p.ExperienceObservations
-		if p.ExperienceObservations >= 30 {
-			totalStab += p.RoleStability
-			stabCount++
-		}
-		if isSuspiciousRole(p.DominantRole) {
-			r.HasSuspicious = true
-		} else if p.DominantRole == "outbound" || p.DominantRole == "listener" {
-			r.HasBenign = true
-		}
-	}
-	if stabCount > 0 {
-		r.Stability = totalStab / float64(stabCount)
-	}
-
-	// Export requires 100% maturity. No shortcuts.
-	m := ComputeMaturity()
-	if m.Score >= 100 {
-		r.Ready = true
-		r.Reason = fmt.Sprintf("ready to export (%d profiles, %d signals, %.0f%% stability)", r.Profiles, r.SignalsCov, r.Stability*100)
-	} else {
-		r.Reason = fmt.Sprintf("maturity %d%% (need 100%%)", m.Score)
-	}
-	cachedReadiness = r
-	cachedReadinessTime = time.Now()
-	return r
 }
 
 // ResetToBaseline clears all learned intelligence (experience, feedback,
