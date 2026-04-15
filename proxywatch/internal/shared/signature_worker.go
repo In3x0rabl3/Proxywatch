@@ -84,7 +84,7 @@ type signatureWorker struct {
 var sigWorker = &signatureWorker{
 	byPath:       make(map[string]*VerdictEntry),
 	inQueue:      make(map[string]struct{}),
-	posture:      OnlineVerifyCacheOnly,
+	posture:      OnlineVerifyLive,
 	rateInterval: 50 * time.Millisecond,
 }
 
@@ -462,12 +462,30 @@ func cachePathFor(exePath string) string {
 	return filepath.Join(cacheRoot(), h[:2], h+".json")
 }
 
+// resolvePosture picks the online-verification posture.
+//
+// Default (no env var set) is "live" — Authenticode / OCSP / CT verification
+// runs out of the box. Signature checks happen off the hot path on a
+// background worker capped at ~1200/min, so there's no user-visible cost and
+// nothing to configure for the common case.
+//
+// Escape hatches via PROXYWATCH_ONLINE_VERIFY for operators who need them:
+//   - "off" / "0" / "false" / "disable" — fully disabled. No cache reads, no
+//     verification. Use when signature work must not touch disk.
+//   - "cache-only" — read persisted verdicts but do not verify. Use in
+//     air-gapped or OCSP-blocked environments where the live path would
+//     waste retries.
+//   - "live" or unset — default, run live verification.
 func resolvePosture() string {
 	raw := strings.ToLower(strings.TrimSpace(os.Getenv("PROXYWATCH_ONLINE_VERIFY")))
 	switch raw {
-	case OnlineVerifyOff, OnlineVerifyLive:
-		return raw
-	default:
+	case "off", "0", "false", "disable", "disabled":
+		return OnlineVerifyOff
+	case OnlineVerifyCacheOnly, "cache", "offline":
 		return OnlineVerifyCacheOnly
+	case OnlineVerifyLive, "on", "1", "true", "enable", "enabled":
+		return OnlineVerifyLive
+	default:
+		return OnlineVerifyLive
 	}
 }

@@ -202,7 +202,13 @@ Key fields (see [`FPReportEntry`](../proxywatch/internal/detection/output/debug_
 
 ### `GET /online/status`
 
-Online-verification (Authenticode OCSP) runtime state — whether live verification is enabled, how many entries are in the cache, last OCSP fetch time.
+Online-verification runtime state — current posture (`live` / `cache-only` / `off`), how many entries are in the reputation cache, last OCSP fetch time, OCSP error counter.
+
+Live verification is the default posture on all platforms. On Windows, it runs full Authenticode + OCSP through the WinTrust API. On Linux/macOS, it falls back to path + ownership trust hints. Operators can override via `PROXYWATCH_ONLINE_VERIFY`:
+
+- unset, `live`, `on`, `1`, `true` — default, run live verification.
+- `cache-only`, `offline` — read the persisted reputation cache but make no outbound calls. Use in air-gapped environments.
+- `off`, `0`, `false`, `disable` — fully disabled.
 
 ### `GET /online/verdict/<sha256>`
 

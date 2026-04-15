@@ -125,12 +125,12 @@ type ProcessInfo struct {
 	Signed         bool
 	SignatureTrust string
 
-	// Authenticode details populated by the Windows signature verifier when
-	// PROXYWATCH_ONLINE_VERIFY is enabled. Publisher is the signer CN
-	// extracted from the signing cert. AuthenticodeOCSPSeen is true when
-	// the verdict came from a full WinVerifyTrust + OCSP round-trip (not
-	// just a cached verdict from a prior run). Used by the FP-shape
-	// evaluator to distinguish "fully verified" from "presumed via cache".
+	// Authenticode details populated by the Windows signature verifier.
+	// Publisher is the signer CN extracted from the signing cert.
+	// AuthenticodeOCSPSeen is true when the verdict came from a full
+	// WinVerifyTrust + OCSP round-trip (not just a cached verdict from a
+	// prior run). Used by the FP-shape evaluator to distinguish "fully
+	// verified" from "presumed via cache".
 	Publisher            string
 	AuthenticodeOCSPSeen bool
 

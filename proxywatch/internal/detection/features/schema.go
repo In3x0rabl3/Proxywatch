@@ -176,11 +176,12 @@ const (
 	FBeaconReconnectCount       // (N) connection teardown/recreate cycles — high for beacons
 	FSessionIOActiveRatio       // (H) fraction of observation time with active IO — high for sessions
 
-	// Online verification features (120-121). Populated only when
-	// PROXYWATCH_ONLINE_VERIFY=live on a platform with Authenticode
-	// (Windows) or a pre-populated cache from any source. Default is
-	// zero on Linux/macOS and on cache-miss, so an untrained instance
-	// degrades to the 120-feature behavior by never setting them.
+	// Online verification features (120-121). Populated by the signature
+	// worker running by default in live posture on Windows (Authenticode +
+	// OCSP); on Linux/macOS the worker falls back to path+ownership trust
+	// hints with ocspSeen=false. Operators in air-gapped environments can
+	// set PROXYWATCH_ONLINE_VERIFY=cache-only to suppress live network
+	// calls while still consulting the persisted reputation cache.
 	FOnlineKnownBenign    // (H) 1.0 when SignatureTrust=trusted and OCSP response was seen
 	FOnlineKnownMalicious // (H) 1.0 when SignatureTrust=untrusted (distrust or revoked chain)
 )
