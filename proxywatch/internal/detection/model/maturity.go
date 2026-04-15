@@ -35,15 +35,66 @@ var (
 	maturityStableCount   atomic.Int64 // predictions that match committed role
 	maturityNewLabels     atomic.Int64 // operator labels since last retrain
 	maturityLastRetrain   atomic.Int64 // unix timestamp of last retrain
-	shadowAgree           atomic.Int64 // ML agrees with rule-based
-	shadowDisagree        atomic.Int64 // ML disagrees with rule-based
+	shadowAgree           atomic.Int64 // ML agrees with rule-based (lifetime)
+	shadowDisagree        atomic.Int64 // ML disagrees with rule-based (lifetime)
 	mlQualified           atomic.Bool  // true when ML model meets quality gate
+	mlDemoted             atomic.Bool  // true when ML was qualified then dropped below degrade floor
+)
+
+// Shadow-agreement gates. Exported so the Training UI can show the same
+// numbers the runtime actually enforces (previously the view lied about
+// 60%/100 while the code gated at 70%/200).
+const (
+	// ShadowQualifyAgreement is the minimum fraction of ML predictions that
+	// must match the rule engine's verdict before ML takes over role
+	// assignment. Measured on the rolling shadow window.
+	ShadowQualifyAgreement = 0.70
+
+	// ShadowQualifyPredictions is the minimum number of shadow-mode
+	// predictions that must be accumulated before ML can qualify. Matches
+	// the retrain buffer size so "enough to have triggered at least one
+	// retrain" is the floor.
+	ShadowQualifyPredictions int64 = 200
+
+	// ShadowDegradeFloor is the rolling-window agreement rate below which a
+	// previously-qualified model is un-qualified and reverts to shadow.
+	// Lower than the qualify threshold so we don't flip-flop on noise.
+	ShadowDegradeFloor = 0.60
+
+	// shadowWindow caps how many shadow outcomes are tracked. When the
+	// running total exceeds this, counters halve — same sliding-window
+	// pattern used for the prediction/confidence counters below. Without
+	// this, an early run of good agreement masks later degradation
+	// indefinitely (thousands of stale "agree" votes drowning current
+	// "disagree" votes).
+	shadowWindow = 2000
 )
 
 // MLQualified returns true when the ML model has proven reliable enough
-// to take over role assignment. Requires 100+ predictions and 80%+ shadow agreement.
+// to take over role assignment. See ShadowQualifyAgreement /
+// ShadowQualifyPredictions for the thresholds.
 func MLQualified() bool {
 	return mlQualified.Load()
+}
+
+// MLDemoted returns true when the ML model was once qualified but its
+// rolling shadow agreement has since dropped below ShadowDegradeFloor.
+// Cleared when the model re-qualifies (typically after a retrain) or when
+// the buffer drops below ShadowQualifyPredictions on the rolling window.
+func MLDemoted() bool {
+	return mlDemoted.Load()
+}
+
+// ResetShadowForRetrain is called after a fresh predictor is hot-swapped
+// in via the retrain pipeline. Zeros the shadow counters and clears the
+// demoted latch so the new model starts from a clean slate — otherwise
+// a previously-degraded lifetime history poisons the rolling rate before
+// the new model gets enough predictions to prove itself.
+func ResetShadowForRetrain() {
+	shadowAgree.Store(0)
+	shadowDisagree.Store(0)
+	mlDemoted.Store(false)
+	mlQualified.Store(false)
 }
 
 // maturityWindow caps how many predictions are tracked for stability/confidence.
@@ -113,11 +164,23 @@ func decayMaturityCountersIfNeeded() {
 }
 
 // RecordShadowComparison tracks ML vs rule agreement.
+// Counters decay when the running total exceeds shadowWindow so the
+// rolling rate reflects *recent* agreement instead of lifetime — that's
+// the signal we need to detect model degradation between retrains.
 func RecordShadowComparison(agree bool) {
 	if agree {
 		shadowAgree.Add(1)
 	} else {
 		shadowDisagree.Add(1)
+	}
+	if shadowAgree.Load()+shadowDisagree.Load() > shadowWindow {
+		// Halving preserves the ratio while bounding the denominator.
+		// Not perfectly synchronized across atomics but acceptable — one
+		// decayed sample out of ~thousand doesn't move the rolling rate.
+		a := shadowAgree.Load()
+		d := shadowDisagree.Load()
+		shadowAgree.Store(a / 2)
+		shadowDisagree.Store(d / 2)
 	}
 }
 
@@ -275,18 +338,48 @@ func ComputeMaturity() ModelMaturity {
 		markDirty()
 	}
 
-	// Evaluate ML qualification. Until the model earns its keep we keep it
-	// in shadow-only mode — see MLQualified() callers. Criteria:
-	//   - ≥200 predictions recorded (matches retrain buffer size so "enough
-	//     to have triggered at least one retrain" is the minimum bar)
-	//   - ≥70% shadow-agreement rate vs rule-engine inference
-	// Lowered from 500→200 to make qualification reachable on hosts where
-	// ML only predicts intermittently.
-	mlPreds := maturityPredictions.Load()
+	// Evaluate ML qualification + degradation on the rolling shadow window.
+	//
+	//   - Qualify when ≥ ShadowQualifyPredictions predictions have been
+	//     accumulated AND rolling agreement ≥ ShadowQualifyAgreement.
+	//   - Once qualified, demote back to shadow if rolling agreement drops
+	//     below ShadowDegradeFloor (hysteresis band so we don't flip-flop
+	//     on noise). Demotion latches an mlDemoted flag the UI surfaces;
+	//     the flag clears when the model re-qualifies (usually after a
+	//     retrain swaps in a fresh predictor).
+	//
+	// Without the degrade check, a model that was qualified early keeps
+	// primary status forever even as its rolling agreement rots, because
+	// the lifetime agree counter drowns recent disagree votes. The decay
+	// in RecordShadowComparison + this demote gate together make that
+	// visible and recoverable.
+	wasQualified := mlQualified.Load()
 	agree := shadowAgree.Load()
 	disagree := shadowDisagree.Load()
 	shadowTotal := agree + disagree
-	qualified := mlPreds >= 200 && shadowTotal > 0 && float64(agree)/float64(shadowTotal) >= 0.70
+
+	var rollingRate float64
+	if shadowTotal > 0 {
+		rollingRate = float64(agree) / float64(shadowTotal)
+	}
+
+	qualified := false
+	switch {
+	case wasQualified:
+		// Hysteresis: stay qualified until rolling rate crosses the floor.
+		if shadowTotal >= ShadowQualifyPredictions && rollingRate < ShadowDegradeFloor {
+			qualified = false
+			mlDemoted.Store(true)
+		} else {
+			qualified = true
+		}
+	default:
+		// Fresh qualification path: need full bar, not just the floor.
+		qualified = shadowTotal >= ShadowQualifyPredictions && rollingRate >= ShadowQualifyAgreement
+		if qualified {
+			mlDemoted.Store(false)
+		}
+	}
 	mlQualified.Store(qualified)
 
 	// Check baseline state transition (needs write lock, so defer to separate call).

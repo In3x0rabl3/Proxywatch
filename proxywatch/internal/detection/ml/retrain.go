@@ -236,7 +236,12 @@ func (cl *ContinuousLearner) CheckForNewModel() {
 		// Hot-swap.
 		cl.predictor.Swap(newPred)
 		cl.lastModelMod = info.ModTime()
-		shared.LogInfo("ml", "hot-swapped to model: %s (%s)", path, newPred.ModelVersion())
+		// Reset shadow counters so the new model is judged on its own
+		// predictions, not inherited from the previous one. If the prior
+		// model had been demoted, clearing the mlDemoted latch lets the
+		// new model go through qualification cleanly.
+		model.ResetShadowForRetrain()
+		shared.LogInfo("ml", "hot-swapped to model: %s (%s) — shadow counters reset", path, newPred.ModelVersion())
 		if cl.OnModelSwapped != nil {
 			cl.OnModelSwapped()
 		}

@@ -495,12 +495,20 @@ func (m TrainingModel) buildContent() string {
 			if qualified {
 				summary := fmt.Sprintf("  Qualified — %d agree, %d disagree (%.0f%% match)", agree, disagree, shadowRate*100)
 				b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379")).Render(summary) + "\n")
+			} else if model.MLDemoted() {
+				// Previously qualified but rolling agreement dropped below the
+				// degrade floor — model is running in shadow again while it
+				// either re-earns trust or gets replaced by the next retrain.
+				summary := fmt.Sprintf("  DEGRADED — dropped below %.0f%% agreement, reverting to shadow (retrain pending)", model.ShadowDegradeFloor*100)
+				b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#E06C75")).Render(summary) + "\n")
 			} else {
 				var summary string
-				if shadowRate < 0.60 {
-					summary = fmt.Sprintf("  Shadowing — %.0f%% agreement (need 60%% to qualify)", shadowRate*100)
+				needThreshold := model.ShadowQualifyAgreement
+				needPreds := model.ShadowQualifyPredictions
+				if shadowRate < needThreshold {
+					summary = fmt.Sprintf("  Shadowing — %.0f%% agreement (need %.0f%% to qualify)", shadowRate*100, needThreshold*100)
 				} else {
-					needed := int64(100) - totalShadow
+					needed := needPreds - totalShadow
 					if needed > 0 {
 						summary = fmt.Sprintf("  Shadowing — %d more predictions to qualify", needed)
 					} else {
