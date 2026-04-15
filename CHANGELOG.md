@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Docs scrubbed to match v1.0.6 layout: removed stale Calibration / SIEM dashboard sections from `README.md`, updated file-path references from `internal/detection/rank.go` to `internal/detection/scoring/rank.go`, dropped calibration/SIEM rows from the Managed Keys and Persistence tables, and rewrote `proxywatch/docs/architecture/CODEMAP.md` against the current tree.
+- Added vibe-coded disclaimer to `README.md` noting significant portions of ProxyWatch were authored with AI-pair-programming assistance.
+- Consolidated duplicate Cypher query docs: deleted `proxywatch/docs/queries.md` (old Session/Beacon/Tunnel role taxonomy). `docs/queries.md` (control-* taxonomy) is the single source.
+- Annotated `calibration_verdict` JSON tag in `docs/detection-architecture.md` as a legacy key still honored for backward-compat with persisted experience-model state.
+- Simplified `PULL_REQUEST_TEMPLATE.md` — replaced `<TODO>` placeholders with a minimal Summary / Type / Testing / Checklist template.
+
 ## [1.0.6] - 2026-04-15
 
 ### Added

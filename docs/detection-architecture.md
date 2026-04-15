@@ -502,7 +502,7 @@ Post-training evaluation:
   
   "operator_label": "beacon",
   "user_verdict": "",
-  "calibration_verdict": "suspicious",
+  "calibration_verdict": "suspicious",  // legacy JSON key; still honored by the experience model for backward-compat with persisted state
   
   "experience_role": "control-beacon",
   "experience_observations": 500,

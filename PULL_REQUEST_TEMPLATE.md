@@ -1,11 +1,21 @@
-Please follow the steps below to tell us about your contribution.
+## Summary
 
-1. Copy the correct template for your contribution
-  - Fixing a bug? Copy the template from <TODO>
-  - Updating documentation? Copy the template from <TODO>
-  - Changing functionality? Copy the template from <TODO>
-2. Replace this text with the contents of the template
-3. Fill in all sections of the template
-4. Click "Create pull request"
+<one or two sentences on what this PR does and why>
 
-**Note:** Use the above links to get the proper text. If you navigate to the files yourself you must use the _Raw_ button to view the raw MarkDown text.
+## Type of change
+
+- [ ] Bug fix
+- [ ] New feature / enhancement
+- [ ] Refactor / code quality
+- [ ] Documentation
+
+## Testing
+
+<how you verified the change — e.g. unit tests added, live test against lab agent, manual reproduction steps>
+
+## Checklist
+
+- [ ] `go build ./... && GOOS=windows go build ./cmd/proxywatch && go vet ./...` all pass
+- [ ] `CHANGELOG.md` updated under `[Unreleased]` (or the target version)
+- [ ] Relevant docs updated (`README.md`, `docs/*`, `proxywatch/docs/*`)
+- [ ] No references to removed subsystems reintroduced (calibration UI, top-level `detection/rank.go` before the `scoring/` split, etc.)

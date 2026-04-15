@@ -1,25 +1,27 @@
 # ProxyWatch
 
-ProxyWatch is a real-time process and network behavior monitor for detecting proxy activity, tunnels, C2 sessions, beacons, and lateral movement. It classifies processes into threat-focused role families using live host telemetry, behavioral heuristics, and persisted learning data.
+ProxyWatch is a real-time process and network behavior monitor for detecting proxy activity, tunnels, C2 sessions, beacons, and lateral movement. It classifies processes into threat-focused role families using live host telemetry, behavioral heuristics, and an on-device ML model.
+
+> ⚠️ **Vibe-coded disclaimer:** Significant portions of ProxyWatch — including classification heuristics, UI views, detection plumbing, and this documentation — were authored with heavy AI-pair-programming assistance ("vibe coding"). The detection logic is live-verified against a lab network, but edge cases, race conditions, and subtle heuristic interactions may exist that haven't been encountered. Audit before production use. Contributions welcome, especially for hardening and test coverage.
 
 **Current version: v1.0.6**
 
 ## Features
 
-- **Real-time dashboard** with process classification into control roles: control-channel, control-pivot, outbound, listener.
-- **Time-lingered pivot detection** — processes doing SOCKS / port-forwarding (sshd children, beacon SOCKS sub-channels, session port-forwards) flip to `control-pivot` while traffic is flowing and hold the role for a 60s linger window before reverting to their structural role.
+- **Real-time dashboard** with process classification into control-centric roles: `control-channel`, `control-pivot`, `outbound`, `listener`.
+- **Time-lingered pivot detection** — processes doing SOCKS / port-forwarding (sshd children, beacon SOCKS sub-channels, session port-forwards) flip to `control-pivot` while traffic flows and hold the role for a 60s linger window before reverting to their structural role.
 - **Strict real-time tunneling state** — `state=tunneling` is shown only when bytes are actively moving through the tunnel, not just when tunnel topology exists.
 - **Enriched pivot evidence** — the Inspector's Evidence panel shows the actual TCP relay destinations (`ip:port`), SMB admin-share activity, and named pipe names for a pivoting process.
 - **Raw socket detection** for tools that bypass the kernel TCP stack (nmap SYN scans, ping, tcpdump, custom packet tools).
 - **Inspector** with detailed process identity, network, analysis, reasons, and connection views in organized panels.
 - **Contour** network probe suite: tunnel/exfil matrix, service reachability, TLS inspection, domain fronting, DNS exfiltration, HTTP method detection.
-- **Calibration** with AI-driven threshold tuning via OpenAI, Anthropic, or local LLM providers.
-- **SIEM** detection pack generation: Splunk, KQL, ESQL, Suricata, and YARA output from calibration data.
 - **ProxyHound** collection and graph export with optional BloodHound CE API upload.
+- **SIEM export** — generate detection rule bundles (Suricata, YARA, Splunk, KQL, ESQL) from live classifier state.
+- **Training dashboard** — live ML training telemetry, feature schema, role predictions, model maturity and retrain timing.
 - **Encrypted keystore** with YubiKey HMAC support, multiple keystores, auto-relock after use.
 - **Multi-host** ingest mode with gRPC agent streaming and remote process kill.
 - **Whitelist** manager for suppressing known-good processes.
-- **Learning persistence** — calibration, classifier memory, and environment models are cumulative across runs.
+- **Learning persistence** — ML model and classifier memory are cumulative across runs.
 
 ## Quick Start
 
@@ -49,7 +51,7 @@ sudo ./build/proxywatch-linux-amd64 -listen 0.0.0.0:50051
 
 Use Left/Right arrow keys or number keys to switch between dashboards:
 
-**Dashboard** → **1 Calibration** → **2 Contour** → **3 ProxyHound** → **4 SIEM** → **5 Whitelist** → **6 Keystore** → (cycles back)
+**Dashboard** → **1 Training** → **2 Contour** → **3 ProxyHound** → **4 SIEM** → **5 Whitelist** → **6 Keystore** → (cycles back)
 
 Press `?` in any dashboard for context-specific help.
 
@@ -79,25 +81,11 @@ Detailed view of a single process with sections for identity, metadata, network 
 | `Tab`/`Shift+Tab` | Jump between sections |
 | `Esc` | Return to dashboard |
 
-## Calibration
+## Training
 
-AI-driven threshold tuning. Collects telemetry samples, sends to an AI provider, and generates tuning recommendations with confidence scoring.
+Live view of the on-device ML classifier. Shows feature-schema layout, current role predictions and confidences, model maturity (observations, shadow agreement, qualification status), and retrain timing.
 
-| Key | Action |
-|-----|--------|
-| `Enter` on Action | Start calibration / stop |
-| `Enter` on Apply | Apply saved profile |
-| `Enter` on fields | Cycle options via menu |
-
-Requires an active keystore with an API key (OpenAI, Anthropic, or Local LLM). If using an encrypted keystore, YubiKey touch is prompted automatically when starting.
-
-Results displayed in panels: Confidence, Tuning, Recommendations, Learning, History, Reasoning.
-
-## SIEM
-
-Generates detection packs from calibration reports with queries for Splunk, KQL, ESQL, Suricata rules, and YARA rules.
-
-Results displayed in panels: Summary, Detections (high-level with severity), Notes. Full query details are in the JSON output file.
+No operator input required — the predictor runs continuously in shadow mode until it qualifies, then becomes primary.
 
 ## Contour
 
@@ -109,7 +97,13 @@ Network security probe suite that tests egress paths, tunnel viability, and exfi
 - **Endpoints**: reachable proxies and config endpoints.
 - **Misc**: TLS inspection, domain fronting, DNS exfiltration, HTTP methods.
 
-## BloodHound
+## SIEM
+
+Exports detection rule bundles generated from live classifier state. One click produces Suricata rules, YARA rules, Splunk SPL queries, KQL queries, and ESQL queries in a single JSON file at `~/.proxywatch/siem/siem-<host>.json`.
+
+No calibration workflow — the bundle is generated directly from the current classifier signals and role assignments on the host. Re-run to regenerate after new detections mature.
+
+## ProxyHound
 
 Collects process/network graph data and exports to BloodHound-compatible JSON format.
 
@@ -138,42 +132,38 @@ Manages API keys, tokens, and runtime settings with AES-256-GCM encryption.
 
 | Category | Keys |
 |----------|------|
-| AI Providers | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LOCAL_LLM_URL`, `LOCAL_LLM_API_KEY` |
 | BloodHound | `BLOODHOUND_API_URL`, `BLOODHOUND_API_TOKEN`, `BLOODHOUND_API_TOKEN_ID` |
-| SIEM | `PROXYWATCH_SIEM_PROVIDER`, `PROXYWATCH_SIEM_MODEL`, `PROXYWATCH_SIEM_*` |
 | Detection | `PROXYWATCH_DETECT_DEBUG_LOG`, `PROXYWATCH_DETECT_RULES_JSON` |
 | Agent/TLS | `PROXYWATCH_TLS_DIR`, `PROXYWATCH_AGENT_TOKEN` |
 
 ## How Classification Works
 
-Classification logic is in `proxywatch/internal/detection/rank.go`. Thresholds are in `proxywatch/internal/shared/classify.go`.
+Core classifier lives in `proxywatch/internal/detection/scoring/rank.go`; thresholds and runtime state maps are in `proxywatch/internal/shared/classify.go`. The pipeline combines rule-engine topology analysis with an on-device LightGBM predictor.
 
-Core signals:
+Signal families:
 
-- Long-lived control-channel behavior
-- Tunnel/forwarding patterns from listener + flow relationships
-- Beacon cadence/jitter detection
-- Raw socket detection (bypasses TCP stack)
-- Delegated egress via proxy broker processes
-- Internal/external scope and destination-prefix context
-- ASN organization alignment with process publisher context
-- Command-line proxy/tunnel flag detection
-- Stability guards to reduce role thrash
+- **Control-channel detection** — persistent external sessions, pending-control SYN cycles, reverse-control shape, beacon cadence/jitter.
+- **Control-pivot detection** — internal-only forwarding (`pivot-non-loopback-internal`), SMB admin-share activity, named-pipe C2 patterns, SOCKS candidate shape, cross-role disambiguation for sshd-style relays.
+- **Listener detection** — wildcard/loopback bind, client-session multiplexing, named-pipe servers, raw-socket ownership.
+- **Outbound classification** — ASN/vendor alignment, publisher DNS alignment, known-network-active heuristics.
+- **Online verification** — Authenticode OCSP trust hints (Windows) when `PROXYWATCH_ONLINE_VERIFY=live`.
+- **ML role predictor** — LightGBM GBDT trained on a 122-feature schema, runs shadow-only until qualified via shadow-agreement + prediction volume, then becomes primary for role assignment.
+- **Time-lingered pivot promotion** — `ApplyPivotLinger` (in `internal/detection/scoring/child_tunnel.go`) holds `control-pivot` for 60 seconds after active internal-only forwarding is observed in a relay context, walking the parent process tree to handle Windows OpenSSH's privsep children.
+- **Stability guards** — role-change cooldown, malicious-role demote cooldown, committed-role hold for benign/benign model predictions.
 
 ## Persistence
 
 | Data | Path |
 |------|------|
 | Classifier memory | `~/.proxywatch/runtime/classifier-memory.json` |
-| Active tuning profile | `~/.proxywatch/calibration/tuning.json` |
-| Historical profiles | `~/.proxywatch/calibration/profiles/*.json` |
-| Learning model | `~/.proxywatch/calibration/training/environment-model.json` |
-| Calibration history | `~/.proxywatch/calibration/training/validated-calibrations.jsonl` |
+| ML model + GBDT snapshots | `~/.proxywatch/model/` |
+| Training telemetry | `~/.proxywatch/training/` |
+| Operator labels (kill / whitelist / training) | `~/.proxywatch/operator_labels/` |
 | Keystores | `~/.proxywatch/keystores/` |
 | Keystore registry | `~/.proxywatch/keystores.json` |
-| Collections | `~/.proxywatch/collections/` |
+| ProxyHound collections | `~/.proxywatch/collections/` |
 | Contour reports | `~/.proxywatch/contour/` |
-| SIEM detections | `~/.proxywatch/siem/` |
+| SIEM exports | `~/.proxywatch/siem/` |
 | Whitelist | `~/.proxywatch/whitelist.json` |
 
 ## BloodHound Examples
@@ -190,12 +180,11 @@ Core signals:
 
 <img width="1577" height="602" alt="Full internal connection chain" src="https://github.com/user-attachments/assets/fda21094-b2bc-46f3-990a-eefd767f1bea" />
 
-Cypher query pack: `docs/queries.md`
+Cypher query pack: [`docs/queries.md`](docs/queries.md).
 
 ## Notes
 
 - Run as root (`sudo`) for full visibility including raw socket detection and process IO stats.
 - Whitelist is stored on disk and applied after classification.
 - Kill actions may require elevation.
-- Each dashboard displays results in styled, bordered panels.
-- Learning is cumulative — calibration and classifier memory persist across runs.
+- Classifier memory persists across runs; the ML model retrains from its observation buffer on feature-schema bumps.
