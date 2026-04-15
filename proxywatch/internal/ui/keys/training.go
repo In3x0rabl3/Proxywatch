@@ -107,7 +107,7 @@ func handleTrainingAction(app *shared.AppState) bool {
 		}
 		app.TrainingRetraining = true
 		app.TrainingRetrainStart = time.Now()
-		orch.TriggerRetrain("manual (dashboard)", learner.Buffer())
+		orch.TriggerRetrainManual("manual (dashboard)", learner.Buffer())
 		if app.StartTrainingRetrain != nil {
 			app.StartTrainingRetrain()
 		}

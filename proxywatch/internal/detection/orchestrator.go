@@ -82,7 +82,22 @@ func (o *Orchestrator) LastTrainTime() time.Time {
 }
 
 // TriggerRetrain starts an async training run if not already active.
+// Uses the default minimum sample floor (gbdt.DefaultMinTrainingSamples)
+// — for the automated retrain path.
 func (o *Orchestrator) TriggerRetrain(reason string, buffer *ml.TrainingBuffer) {
+	o.trigger(reason, buffer, gbdt.DefaultMinTrainingSamples)
+}
+
+// TriggerRetrainManual starts an async training run at the operator's
+// request. Lowers the minimum-sample floor to gbdt.ManualMinTrainingSamples
+// so "train now" works even when the buffer hasn't filled to the auto
+// threshold. The buffer is still cleared on both success and failure so
+// collection restarts cleanly for the next cycle.
+func (o *Orchestrator) TriggerRetrainManual(reason string, buffer *ml.TrainingBuffer) {
+	o.trigger(reason, buffer, gbdt.ManualMinTrainingSamples)
+}
+
+func (o *Orchestrator) trigger(reason string, buffer *ml.TrainingBuffer, minSamples int) {
 	o.mu.Lock()
 	if o.active {
 		o.mu.Unlock()
@@ -95,8 +110,8 @@ func (o *Orchestrator) TriggerRetrain(reason string, buffer *ml.TrainingBuffer) 
 	o.cancelFn = cancel
 	o.mu.Unlock()
 
-	shared.LogInfo("training", "retrain triggered: %s", reason)
-	go o.runTraining(ctx, buffer, reason)
+	shared.LogInfo("training", "retrain triggered: %s (min samples: %d, buffer: %d)", reason, minSamples, buffer.Len())
+	go o.runTraining(ctx, buffer, reason, minSamples)
 }
 
 // StopRetrain cancels a running training run.
@@ -111,7 +126,7 @@ func (o *Orchestrator) StopRetrain() {
 	shared.LogInfo("training", "retrain cancelled by operator")
 }
 
-func (o *Orchestrator) runTraining(ctx context.Context, buffer *ml.TrainingBuffer, reason string) {
+func (o *Orchestrator) runTraining(ctx context.Context, buffer *ml.TrainingBuffer, reason string, minSamples int) {
 	shared.TrainingActiveAtomic.Store(true)
 	shared.TrainingStartTime.Store(time.Now().UnixNano())
 	defer func() {
@@ -166,7 +181,7 @@ func (o *Orchestrator) runTraining(ctx context.Context, buffer *ml.TrainingBuffe
 		return
 	}
 
-	vr := gbdt.ValidateDataset(ds)
+	vr := gbdt.ValidateDataset(ds, minSamples)
 	if !vr.Valid {
 		fail(&run, "validation: "+strings.Join(vr.Errors, "; "))
 		return

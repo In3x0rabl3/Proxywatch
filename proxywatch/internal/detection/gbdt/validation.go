@@ -7,11 +7,25 @@ import (
 	"proxywatch/internal/detection/features"
 )
 
+// Default and manual-trigger sample floors. Automated retrains use the
+// higher floor so the pipeline doesn't burn compute on sparse buffers;
+// operator-initiated retrains use the lower floor so manual "train now"
+// works even when the buffer hasn't filled to the auto threshold.
+const (
+	DefaultMinTrainingSamples = 200
+	ManualMinTrainingSamples  = 20
+)
+
 // ValidateDataset checks a dataset before training begins.
-// If Valid is false, training must not proceed.
-func ValidateDataset(ds *Dataset) ValidationResult {
+// If Valid is false, training must not proceed. minSamples is the hard
+// floor on len(ds.Y); pass 0 to use DefaultMinTrainingSamples.
+func ValidateDataset(ds *Dataset, minSamples int) ValidationResult {
 	var r ValidationResult
 	r.Valid = true
+
+	if minSamples <= 0 {
+		minSamples = DefaultMinTrainingSamples
+	}
 
 	if ds == nil || len(ds.Y) == 0 {
 		r.Errors = append(r.Errors, "dataset is empty")
@@ -20,8 +34,8 @@ func ValidateDataset(ds *Dataset) ValidationResult {
 	}
 
 	// Minimum total samples.
-	if len(ds.Y) < 200 {
-		r.Errors = append(r.Errors, fmt.Sprintf("insufficient samples: %d (need at least 200)", len(ds.Y)))
+	if len(ds.Y) < minSamples {
+		r.Errors = append(r.Errors, fmt.Sprintf("insufficient samples: %d (need at least %d)", len(ds.Y), minSamples))
 		r.Valid = false
 	}
 
