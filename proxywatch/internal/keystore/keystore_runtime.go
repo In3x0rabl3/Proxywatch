@@ -62,13 +62,6 @@ func ApplyToRuntime(values map[string]string) {
 	}
 }
 
-// RuntimeSetValue sets a single key in the runtime values map.
-func RuntimeSetValue(key, value string) {
-	runtimeMu.Lock()
-	defer runtimeMu.Unlock()
-	runtimeValues[strings.TrimSpace(key)] = strings.TrimSpace(value)
-}
-
 // ClearSensitiveRuntime removes API keys and secrets from the runtime
 // values map.  Non-sensitive config (URLs, paths, flags) is preserved.
 func ClearSensitiveRuntime() {
@@ -115,10 +108,6 @@ func RuntimeValue(key string) string {
 
 	// Final fallback: check environment variables.
 	return strings.TrimSpace(os.Getenv(key))
-}
-
-func RuntimeSet(key string) bool {
-	return strings.TrimSpace(RuntimeValue(key)) != ""
 }
 
 func IsSecretKey(key string) bool {

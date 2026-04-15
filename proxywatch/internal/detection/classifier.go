@@ -1,13 +1,55 @@
-package classifier
+package detection
 
 import (
 	"sort"
 	"strings"
 	"time"
 
-	"proxywatch/internal/model"
+	"proxywatch/internal/detection/features"
+	"proxywatch/internal/detection/gbdt"
+	"proxywatch/internal/detection/ml"
+	"proxywatch/internal/detection/model"
+	"proxywatch/internal/detection/output"
+	"proxywatch/internal/detection/scoring"
 	"proxywatch/internal/shared"
 )
+
+func hasReason(reasons []string, reason string) bool {
+	for _, r := range reasons {
+		if r == reason {
+			return true
+		}
+	}
+	return false
+}
+
+// confidenceToScore converts a model probability (0.0-1.0) to a display
+// score (0-100). The mapping is non-linear: low confidence stays low,
+// high confidence maps to high scores.
+func confidenceToScore(prob float64) int {
+	score := int(prob * 100)
+	if score > 100 {
+		score = 100
+	}
+	if score < 0 {
+		score = 0
+	}
+	return score
+}
+
+// TrainingExporter is set externally to enable ML telemetry export.
+// When nil, no training data is emitted.
+var TrainingExporter *gbdt.Exporter
+
+// MLLearner is set externally when the continuous learning system is active.
+// Provides the active predictor and training buffer.
+var MLLearner *ml.ContinuousLearner
+
+// MLPrimary controls whether the ML model is the primary role assigner.
+var MLPrimary bool
+
+// bufferAddLogged tracks whether we've logged the first buffer add (one-time diagnostic).
+var bufferAddLogged bool
 
 // Classify converts a telemetry snapshot into classified candidates.
 func Classify(
@@ -40,6 +82,7 @@ func Classify(
 	var interesting []shared.Candidate
 	for i := range candidates {
 		c := &candidates[i]
+		var pendingTrainingRec *gbdt.TrainingRecord
 		if c.Proc == nil {
 			continue
 		}
@@ -54,38 +97,336 @@ func Classify(
 				if prev, ok := prevCands[c.Proc.Pid]; ok {
 					if prevSig, ok := prevSigs[c.Proc.Pid]; ok && prevSig == sig {
 						if shouldRescoreUnchangedCandidate(c, &prev, now) {
-							ScoreCandidate(c)
+							scoring.ScoreCandidate(c)
 						} else {
 							reuseCandidate(c, &prev)
 							touchHistoryFromCandidate(c, now)
 						}
 					} else {
-						ScoreCandidate(c)
+						scoring.ScoreCandidate(c)
 					}
 				} else {
-					ScoreCandidate(c)
+					scoring.ScoreCandidate(c)
 				}
 			} else {
-				ScoreCandidate(c)
+				scoring.ScoreCandidate(c)
 			}
 
 			nextSignatures[c.Proc.Pid] = sig
-			nextCandidates[c.Proc.Pid] = *c
+			// nextCandidates stored after model override + ActiveProxying (below).
 		} else {
-			ScoreCandidate(c)
+			scoring.ScoreCandidate(c)
+		}
+
+		// Record observation for maturity — ALWAYS, regardless of ML state.
+		if c.Proc != nil {
+			model.RecordObservationForMaturity()
+		}
+
+		// ── Model-first classification ──────────────────────────────────
+		// The model is the primary role assigner. The rule engine's role
+		// (SuggestedRole) is retained for training data and fallback only.
+		// When no model is loaded, the rule engine's role stands.
+		if c.Proc != nil {
+			key := ProcessBehaviorKey(c)
+			behavior := shared.ProcessBehaviorByKey[key]
+			profile := model.ResolveProfile(key)
+
+			// Signal-only inference used for override tiebreakers below.
+			// NOTE: do NOT assign to c.SuggestedRole — that field stores
+			// rank.go's topology decision (set at rank.go line 1627) and is
+			// the authoritative "Rule engine decided X" value shown in the
+			// inspector and used for ML training labels. Overwriting here
+			// would replace rank.go's deep topology analysis with weak
+			// signal counting (e.g. known beacons get suppressed to
+			// "outbound" by outbound-baseline-verified).
+			ruleRole := shared.InferRoleFromSignals(c.Signals, c.ControlSubtype, c.Role)
+
+			// Check if ML predictor is available (model loaded and trained).
+			hasPred := false
+			if MLLearner != nil {
+				fv := features.Extract(c, behavior, profile)
+				if fv.Valid {
+					pred := MLLearner.Predictor()
+					if pred != nil {
+						hasPred = true
+						result := pred.PredictRole(fv)
+						c.MLRole = result.TopRole
+						c.MLConfidence = result.TopProb
+						c.MLActive = true
+						for _, rp := range result.TopN {
+							c.MLTopN = append(c.MLTopN, shared.MLRolePrediction{
+								Role: rp.Role,
+								Prob: rp.Prob,
+							})
+						}
+
+						// Model is primary ONLY after it has qualified via shadow
+						// agreement + prediction volume (see model.MLQualified()).
+						// Before qualification, the predictor runs in shadow-only
+						// mode: predictions are recorded for maturity computation
+						// and signal-effectiveness tracking, but c.Role stays as
+						// rank.go's topology decision. This prevents a half-baked
+						// model (low shadow agreement or few predictions) from
+						// flipping roles incorrectly. Once qualified, ML takes
+						// over (subject to the Case 1/2/3 confidence gates below).
+						scoreRole := c.Role // preserve ScoreCandidate's role (rank.go topology analysis)
+						if model.MLQualified() {
+							c.Role = result.TopRole
+							c.Score = confidenceToScore(result.TopProb)
+						}
+
+						// Signal-based override: trust live signals/topology over the
+						// model when they disagree — BUT ONLY when the model itself
+						// is uncertain. A high-confidence ML prediction (>=0.80) has
+						// learned patterns across thousands of observations; a single
+						// topology heuristic should not override it. Gate every
+						// override path on mlLowConfidence so msedgewebview2-style
+						// cases (ML outbound 99%, topology control-channel) stop
+						// flipping to the topology verdict.
+						const mlTrustThreshold = 0.80
+						mlLowConfidence := result.TopProb < mlTrustThreshold
+
+						signalOverride := false
+						// Case 1: ML says suspicious, signals say benign → trust signals
+						// (prevent FP). Only override when ML is itself uncertain.
+						if mlLowConfidence && scoring.IsMaliciousRole(c.Role) && (ruleRole == "outbound" || ruleRole == "listener") {
+							c.Role = ruleRole
+							c.Score = 0
+							signalOverride = true
+						}
+						// Case 2: ML says benign, signals say suspicious → trust signals
+						// (prevent FN). Also gated — a 99%-confident "this is outbound"
+						// prediction outweighs signal-only inference.
+						if mlLowConfidence && !scoring.IsMaliciousRole(c.Role) && scoring.IsMaliciousRole(ruleRole) {
+							c.Role = ruleRole
+							signalOverride = true
+						}
+						// Case 3: ML says benign, ScoreCandidate topology says
+						// suspicious. Rank.go has deeper analysis than signal counting
+						// (connection topology, multiplexed inbound, child aggregation)
+						// so we still honor its verdict over ML — but only when ML
+						// isn't high-confidence. A 99%-confident outbound prediction
+						// wins here too.
+						if !signalOverride && mlLowConfidence && !scoring.IsMaliciousRole(c.Role) && scoring.IsMaliciousRole(scoreRole) {
+							c.Role = scoreRole
+							signalOverride = true
+						}
+
+						// Operator overrides — training labels, kill/whitelist verdicts.
+						decision := model.ApplyOperatorOverrides(
+							key, c.Role, c.Score, c.Proc,
+							c.OutExternal, c.OutInternal, len(c.Listeners) > 0,
+						)
+						if decision.Override {
+							c.Role = decision.Role
+							if !hasReason(c.Reasons, decision.Reason) {
+								c.Reasons = append(c.Reasons, decision.Reason)
+							}
+						}
+
+						// Role stability — prevent rapid flapping between callbacks.
+						// Skip when signal override fired — the signal engine already
+						// made the authoritative decision based on current telemetry.
+						hist := scoring.GetHistory(c.Proc.Pid, now)
+						if !signalOverride {
+							if hist.LastRole != "" && c.Role != hist.LastRole {
+								prevMal := scoring.IsMaliciousRole(hist.LastRole)
+								newMal := scoring.IsMaliciousRole(c.Role)
+								if prevMal && !newMal {
+									if now.Sub(hist.LastRoleChange) < shared.MaliciousRoleDemoteCooldown {
+										c.Role = hist.LastRole
+									}
+								}
+							}
+						}
+						if hist.LastRole == c.Role && hist.LastRole != "" {
+							hist.RoleStableStreak++
+						} else {
+							hist.RoleStableStreak = 1
+							hist.LastRoleChange = now
+						}
+						hist.LastRole = c.Role
+
+						// Maturity tracking.
+						model.RecordShadowComparison(result.TopRole == ruleRole)
+						committed := ""
+						if profile != nil {
+							committed = profile.ExperienceLastRole
+						}
+						model.RecordMLPrediction(result.TopProb, result.TopRole == committed)
+					}
+
+					// Buffer for continuous learning. Use SuggestedRole (rank.go's
+					// topology decision) — not the local signal-only ruleRole —
+					// so the model learns from the deeper rule-engine analysis,
+					// not just signal counting.
+					rec := gbdt.TrainingRecord{
+						Timestamp:       now.UTC(),
+						Host:            strings.TrimSpace(c.Host),
+						ProcessKey:      key,
+						ProcessName:     c.Proc.Name,
+						ProcessPath:     c.Proc.ExePath,
+						User:            c.Proc.UserName,
+						Company:         c.Proc.Company,
+						Features:        fv.ToMap(),
+						Signals:         c.Signals,
+						RuleRole:        c.SuggestedRole,
+						RuleScore:       c.Score,
+						StrongEvidence:  c.StrongEvidence,
+						TrafficVerified: c.TrafficVerified,
+					}
+					if profile != nil {
+						rec.ExperienceObservations = profile.ExperienceObservations
+						rec.ExperienceStability = profile.RoleStability
+						rec.ExperienceRole = profile.DominantRole
+						rec.UserVerdict = profile.UserVerdict
+						rec.CalibrationVerdict = profile.CalibrationVerdict
+						if profile.TrainingLabel != "" {
+							label := profile.TrainingLabel
+							rec.OperatorLabel = &label
+						}
+					}
+					// Defer buffer add until after ActiveProxying is computed
+					// so the training record can reflect tunneling → pivot.
+					pendingTrainingRec = &rec
+				}
+			}
+			// Fallback: no ML predictor available (model not loaded or not trained).
+			// Use signal-based role inference, BUT preserve rank.go's topology
+			// decision (in c.SuggestedRole) when it found a suspicious pattern
+			// that signal-only counting missed. ScoreCandidate has deeper
+			// analysis (topology, multiplexed inbound, beacon-syn-cycle,
+			// reverseControl) than InferRoleFromSignals (signal counting with
+			// outbound suppression). Without this, sshd.exe with multiplexed
+			// inbound would drop from "control-pivot" (rank.go) → "listener"
+			// (signal-only) when ML is unavailable.
+			if !hasPred {
+				topologyRole := c.SuggestedRole // rank.go's pre-DecideRole role
+				topologyIsSuspicious := scoring.IsMaliciousRole(topologyRole)
+				ruleIsSuspicious := scoring.IsMaliciousRole(ruleRole)
+
+				if topologyIsSuspicious && !ruleIsSuspicious {
+					// Topology found a tunnel/pivot/control pattern that signal
+					// counting suppressed (e.g. outbound-baseline-verified
+					// suppression on a sshd with multiplexed SSH sessions).
+					// Trust topology — that's what rank.go's deep analysis is for.
+					c.Role = topologyRole
+				} else {
+					c.Role = ruleRole
+				}
+
+				// Role stability — prevent control-channel → outbound flapping
+				// between beacon callbacks (zero connections = zero signals = outbound).
+				tunnelActive := false
+				if _, ok := shared.TunnelingSeen[c.Proc.Pid]; ok {
+					tunnelActive = true
+				}
+				if _, ok := shared.TunnelingSeen[scoring.HistoryPIDForCandidate(c)]; ok {
+					tunnelActive = true
+				}
+				hist := scoring.GetHistory(c.Proc.Pid, now)
+				if hist.LastRole != "" && c.Role != hist.LastRole {
+					prevMal := scoring.IsMaliciousRole(hist.LastRole)
+					newMal := scoring.IsMaliciousRole(c.Role)
+					if prevMal && !newMal && (ruleIsSuspicious || topologyIsSuspicious || tunnelActive) {
+						if now.Sub(hist.LastRoleChange) < shared.MaliciousRoleDemoteCooldown {
+							c.Role = hist.LastRole
+						}
+					}
+				}
+				if hist.LastRole == c.Role && hist.LastRole != "" {
+					hist.RoleStableStreak++
+				} else {
+					hist.RoleStableStreak = 1
+					hist.LastRoleChange = now
+				}
+				hist.LastRole = c.Role
+			}
+		}
+
+		// Publisher → destination DNS alignment — live per-cycle check so
+		// fresh connections get evaluated as soon as PTR cache populates.
+		// Never blocks: DNS resolution is async-cached; miss returns false
+		// and triggers a refresh for the next cycle. See
+		// shared/verifier_publisher_dns.go.
+		if c.Proc != nil {
+			if aligned, tags := shared.EvaluatePublisherDNSAlignment(c); aligned {
+				c.Proc.PublisherDNSAligned = true
+				c.Proc.OnlineEvidence = append(c.Proc.OnlineEvidence, tags...)
+			}
+		}
+
+		// Shape-only control-channel demotion — if rank.go assigned a
+		// control role based purely on phone-home shape (persistent HTTPS
+		// to a single destination, crypto-lib loaded, no children) AND
+		// no distinguishing suspicion signal fired (raw socket, SSH
+		// tunnel flags, suspicious path, lateral movement, confirmed
+		// beacon cadence, etc.), demote to outbound. This is the
+		// structural replacement for per-vendor name lists.
+		if c.Proc != nil {
+			shared.DemoteShapeOnlyControlRole(c)
+			// Sleeping-beacon rescue: re-promote outbound candidates that
+			// the per-host baseline incorrectly committed as "outbound"
+			// because the beacon sleeps most of the time. Tight 5-fact
+			// combo (beacon cadence + suspicious path + unsigned +
+			// !pkg-owned + !known-vendor) so benign vendor polling is
+			// unaffected. See shared/distinguishing.go.
+			shared.UpgradeSleepingBeaconProfile(c)
+		}
+
+		// Vendor-FP suppression pass — runs after BOTH the ML-loaded and the
+		// fallback role-assignment branches so behavior is identical with
+		// or without a trained model. Both rules are no-ops when blockers
+		// are present (decisive pivot/tunnel signals, ActiveProxying, etc.).
+		// See shared/vendor_fp_shape.go for the blocker canonical list.
+		if c.Proc != nil {
+			shared.ApplyVendorUpdateSuppression(c)
+			shared.ApplyVendorFPShape(c)
+		}
+
+		// ActiveProxying is set by ScoreCandidate (rank.go) which has deep
+		// understanding of connection topology, role context, and relay patterns.
+		// The classifier does not override it — rank.go is authoritative.
+
+		// Persist tunneling state when live topology evidence exists.
+		// Only set TunnelingSeen from isActivelyProxying result (actual relay
+		// connections visible), not from role alone. This ensures the 10-minute
+		// expiry works — when connections stop, TunnelingSeen stops being refreshed
+		// and eventually expires, transitioning state back to "watch".
+		if c.Proc != nil && c.ActiveProxying {
+			shared.TunnelingSeen[c.Proc.Pid] = now
+			shared.TunnelingSeen[scoring.HistoryPIDForCandidate(c)] = now
+		}
+
+		// Flush deferred training record now that ActiveProxying is known.
+		// When tunneling is active, promote the label to control-pivot so
+		// the ML model learns that this behavior pattern is a pivot.
+		if pendingTrainingRec != nil && MLLearner != nil {
+			if c.ActiveProxying && pendingTrainingRec.RuleRole != "control-pivot" {
+				pendingTrainingRec.RuleRole = "control-pivot"
+			}
+			MLLearner.Buffer().Add(*pendingTrainingRec)
+			if !bufferAddLogged {
+				bufferAddLogged = true
+				shared.LogInfo("training", "buffer: first record added (key=%s, buffer=%d)", pendingTrainingRec.ProcessKey, MLLearner.Buffer().Len())
+			}
+		}
+
+		// Store fully-corrected candidate in incremental cache.
+		if opts.Incremental && nextCandidates != nil && c.Proc != nil {
+			nextCandidates[c.Proc.Pid] = *c
 		}
 
 		if !shouldDisplayCandidate(c, now) {
 			continue
 		}
 
-		if !shared.RoleMatchesFilter(c.Role, opts.RoleFilter) {
-			continue
-		}
+		// Role filter is applied AFTER linger in ApplyScoreAndRoleFilters.
+		// Filtering here prevents processes from reaching the linger cache
+		// where child tunnel evidence can be correlated with parents.
 
-		if c.Score >= opts.MinScore || shared.IsControlRole(c.Role) {
-			interesting = append(interesting, *c)
-		}
+		interesting = append(interesting, *c)
 	}
 
 	if opts.Incremental && cache != nil {
@@ -93,10 +434,46 @@ func Classify(
 		cache.Signatures = nextSignatures
 	}
 
+	// Aggregate child process tunnel evidence to parents with listeners.
+	// SSH SOCKS proxy: parent sshd forks children that exit quickly.
+	// Transfer children's internal connection evidence to the parent.
+	scoring.AggregateChildTunnelEvidence(candidates)
+
+	// Time-lingered control-pivot promotion. Any candidate observed forwarding
+	// internal-only traffic in a relay context (own listener, parent listener,
+	// or already a control role) gets stamped into shared.PivotUntil and held
+	// at role=control-pivot for the linger window. Runs after
+	// AggregateChildTunnelEvidence so parent-has-listener evidence is
+	// up-to-date, and after per-candidate ScoreCandidate + model.DecideRole so
+	// the ML model's committed role hold cannot un-promote the pivot.
+	scoring.ApplyPivotLinger(candidates, snap.Processes)
+
+	// Re-sync ActiveProxying from candidates→interesting after child aggregation.
+	// AggregateChildTunnelEvidence updates the candidates slice but interesting
+	// has copies from before the aggregation.
+	candidateByPID := make(map[int]*shared.Candidate, len(candidates))
+	for i := range candidates {
+		if candidates[i].Proc != nil {
+			candidateByPID[candidates[i].Proc.Pid] = &candidates[i]
+		}
+	}
+	for i := range interesting {
+		if interesting[i].Proc != nil {
+			if src, ok := candidateByPID[interesting[i].Proc.Pid]; ok {
+				interesting[i].ActiveProxying = src.ActiveProxying
+				interesting[i].OutInternal = src.OutInternal
+				interesting[i].OutTotal = src.OutTotal
+				interesting[i].Role = src.Role
+				interesting[i].Signals = src.Signals
+				interesting[i].Reasons = src.Reasons
+			}
+		}
+	}
+
 	sort.Slice(interesting, func(i, j int) bool {
 		return shared.CandidateLess(interesting[i], interesting[j])
 	})
-	emitDetectionOutputs(now.UTC(), hostScope, candidates, interesting, opts)
+	output.EmitDetectionOutputs(now.UTC(), hostScope, candidates, interesting, opts)
 
 	// Feed ALL scored candidates into the detection model as experience.
 	// This ensures every process gets a profile, not just high-scoring ones.
@@ -107,22 +484,34 @@ func Classify(
 			if c.Proc == nil {
 				continue
 			}
+			// Use the FINAL assigned role (after ML prediction + operator overrides),
+			// not the rule engine's signal inference. The model and operator labels
+			// are the source of truth — experience must reflect their decisions.
+			role := c.Role
 			rec := model.ExperienceRecord{
 				ProcessKey:   ProcessBehaviorKey(c),
 				Name:         c.Proc.Name,
-				Role:         c.Role,
+				Role:         role,
 				Score:        c.Score,
 				Signals:      c.Signals,
 				IOReadBytes:  c.Proc.IOReadBytes,
 				IOWriteBytes: c.Proc.IOWriteBytes,
 			}
-			if c.ControlSubtype == "beacon" {
-				for _, sig := range c.Signals {
-					if sig == "beacon-confirmed" {
-						rec.BeaconInterval = c.ControlDurationSeconds * 1000
-						break
-					}
+			// Track role stability for maturity — compare assigned role to
+			// the committed/dominant role from experience profile.
+			// Only record when we have a prior committed role to compare against.
+			// Skip first-observation processes (no baseline = meaningless comparison).
+			// Skip when ML already recorded (avoid 2x inflation).
+			if !c.MLActive {
+				if profile := model.ResolveProfile(rec.ProcessKey); profile != nil && profile.ExperienceLastRole != "" {
+					model.RecordRoleAssignment(role == profile.ExperienceLastRole, c.Score)
 				}
+			}
+			// Persist beacon interval even when role is blocked — the cadence
+			// was confirmed regardless of whether the role promotion succeeded.
+			if c.BeaconIntervalMs > 0 {
+				rec.BeaconInterval = c.BeaconIntervalMs
+				rec.BeaconJitter = c.BeaconJitter
 			}
 			expRecords = append(expRecords, rec)
 		}
@@ -131,12 +520,65 @@ func Classify(
 		}
 	}
 
+	// Emit ML training telemetry if exporter is configured.
+	if TrainingExporter != nil {
+		for i := range candidates {
+			c := &candidates[i]
+			if c.Proc == nil {
+				continue
+			}
+			key := ProcessBehaviorKey(c)
+			behavior := shared.ProcessBehaviorByKey[key]
+			profile := model.ResolveProfile(key)
+			fv := features.Extract(c, behavior, profile)
+			if !fv.Valid {
+				continue
+			}
+
+			rec := gbdt.TrainingRecord{
+				Timestamp:   now.UTC(),
+				Host:        strings.TrimSpace(c.Host),
+				ProcessKey:  key,
+				ProcessName: c.Proc.Name,
+				ProcessPath: c.Proc.ExePath,
+				User:        c.Proc.UserName,
+				Company:     c.Proc.Company,
+				Features:    fv.ToMap(),
+				Signals:     c.Signals,
+				RuleRole:    c.SuggestedRole,
+				RuleScore:   c.Score,
+				StrongEvidence:  c.StrongEvidence,
+				TrafficVerified: c.TrafficVerified,
+			}
+			if profile != nil {
+				rec.ExperienceObservations = profile.ExperienceObservations
+				rec.ExperienceStability = profile.RoleStability
+				rec.ExperienceRole = profile.DominantRole
+				rec.UserVerdict = profile.UserVerdict
+				rec.CalibrationVerdict = profile.CalibrationVerdict
+				if profile.TrainingLabel != "" {
+					label := profile.TrainingLabel
+					rec.OperatorLabel = &label
+				}
+			}
+			_ = TrainingExporter.Emit(rec)
+		}
+	}
+
 	shared.MaybeSaveClassifierMemory("", now.UTC())
 	model.RefreshRuntimeProfiles()
 	model.MaybeSave(now.UTC())
 
+	// Update training dashboard state.
+	if MLLearner != nil {
+		shared.TrainingBufferSizeAtomic.Store(int64(MLLearner.Buffer().Len()))
+	}
+
 	return interesting
 }
+
+// inferRoleFromSignals is now shared.InferRoleFromSignals — single source of truth
+// used by both standalone (classifier.go) and server (server.go).
 
 func refreshObservedExternalPortProfile(candidates []shared.Candidate) {
 	procPorts := make(map[int]map[int]struct{})
@@ -149,7 +591,7 @@ func refreshObservedExternalPortProfile(candidates []shared.Candidate) {
 		}
 		seenForProc := make(map[int]struct{})
 		for _, cn := range c.Conns {
-			if !isActiveConnState(cn.State) {
+			if !scoring.IsActiveConnState(cn.State) {
 				continue
 			}
 			if cn.RemotePort <= 0 ||
@@ -237,8 +679,8 @@ func buildCandidates(snap *shared.Snapshot) []shared.Candidate {
 	for pid := range snap.RawSocketPIDs {
 		seen[pid] = true
 	}
-	seedConnHistoryFromSnapshot(cmap, now)
-	delegated := correlateDelegatedEgress(snap, cmap, seen, now)
+	scoring.SeedConnHistoryFromSnapshot(cmap, now)
+	delegated := scoring.CorrelateDelegatedEgress(snap, cmap, seen, now)
 
 	for pid, t := range shared.BeaconSeen {
 		if now.Sub(t) <= shared.SuspicionWindow {
@@ -297,10 +739,10 @@ func buildCandidates(snap *shared.Snapshot) []shared.Candidate {
 			Conns:             cmap[pid],
 			UDPListeners:      umap[pid],
 			RawConns:          rmap[pid],
-			DelegatedEgress:   delegated[pid].ownerPID > 0,
-			DelegatedStrong:   delegated[pid].strong,
-			DelegatedOwnerPID: delegated[pid].ownerPID,
-			DelegatedOwner:    delegated[pid].ownerName,
+			DelegatedEgress:   delegated[pid].OwnerPID > 0,
+			DelegatedStrong:   delegated[pid].Strong,
+			DelegatedOwnerPID: delegated[pid].OwnerPID,
+			DelegatedOwner:    delegated[pid].OwnerName,
 			RawSocket:         snap.RawSocketPIDs[pid],
 			NamedPipes:        pipemap[pid],
 		})
@@ -333,19 +775,3 @@ func isSuspiciousStagingPathForVisibility(exePath string) bool {
 	return false
 }
 
-// ClassifyAllForCalibration scores every buildable candidate from a snapshot,
-// without display-gating/min-score filtering used by interactive views.
-func ClassifyAllForCalibration(snap *shared.Snapshot) []shared.Candidate {
-	if snap == nil {
-		return nil
-	}
-	candidates := buildCandidates(snap)
-	refreshObservedExternalPortProfile(candidates)
-	for i := range candidates {
-		ScoreCandidate(&candidates[i])
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return shared.CandidateLess(candidates[i], candidates[j])
-	})
-	return candidates
-}

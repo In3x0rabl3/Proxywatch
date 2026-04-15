@@ -187,7 +187,7 @@ func CollectLiveLines(app *shared.AppState) []string {
 	lines = append(lines, fmt.Sprintf("[+] %d unique processes", len(seen)))
 
 	parts := make([]string, 0, 6)
-	for _, r := range []string{"control-session", "control-beacon", "control-pivot", "control-tunnel", "analyzing", "listen", "outbound"} {
+	for _, r := range []string{"control-channel", "control-pivot", "listener", "outbound"} {
 		if n := roleCounts[r]; n > 0 {
 			parts = append(parts, fmt.Sprintf("%s %d", r, n))
 		}

@@ -151,12 +151,7 @@ func (m WhitelistModel) renderProcesses(w, totalH int) string {
 			name = shared.DisplayProcessName(c.Proc)
 		}
 		role := normalizeDashboardRole(c.Role)
-		state := "watch"
-		if c.ActiveProxying {
-			state = "active"
-		} else if c.StrongEvidence {
-			state = "strong"
-		}
+		state := shared.CandidateState(c)
 		sel := focused && i == m.app.WhitelistProcessSelected
 		gap := applySelectBg(bg(), sel)
 		prefix := " "

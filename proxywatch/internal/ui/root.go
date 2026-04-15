@@ -11,7 +11,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"proxywatch/internal/shared"
-	"proxywatch/internal/siem"
 )
 
 // ── Message types ───────────────────────────────────────────────────────────
@@ -25,11 +24,8 @@ type RefreshResultMsg struct{ res refreshResult }
 // ContourExecResultMsg carries the result of a contour run.
 type ContourExecResultMsg struct{ res keys.ContourExecResult }
 
-// CalibrationExecResultMsg carries the result of a calibration run.
-type CalibrationExecResultMsg struct{ res keys.CalibrationExecResult }
-
-// SIEMExecResultMsg carries the result of a SIEM generation.
-type SIEMExecResultMsg struct{ res siemExecResult }
+// TrainingExecResultMsg carries the result of a training retrain run.
+type TrainingExecResultMsg struct{ Err error }
 
 // ── Root Model ──────────────────────────────────────────────────────────────
 
@@ -40,56 +36,52 @@ type RootModel struct {
 	app     *shared.AppState
 	scanner shared.Scanner
 
-	dashboard   views.DashboardModel
-	inspector   views.InspectorModel
-	contour     views.ContourModel
-	calibration views.CalibrationModel
-	siem        views.SIEMModel
-	proxyhound  views.ProxyhoundModel
-	keystore    views.KeystoreModel
-	whitelist   views.WhitelistModel
-	legacy      views.LegacyModel
+	dashboard  views.DashboardModel
+	inspector  views.InspectorModel
+	contour    views.ContourModel
+	training   views.TrainingModel
+	proxyhound views.ProxyhoundModel
+	siem       views.SIEMModel
+	keystore   views.KeystoreModel
+	whitelist  views.WhitelistModel
+	legacy     views.LegacyModel
 
 	width  int
 	height int
 
 	// Async work channels — the same pattern as the tcell event loop,
 	// but results arrive as tea.Msg via tea.Cmd.
-	refreshCh   chan refreshResult
-	calibrateCh chan keys.CalibrationExecResult
-	contourCh   chan keys.ContourExecResult
-	siemCh      chan siemExecResult
+	refreshCh  chan refreshResult
+	contourCh  chan keys.ContourExecResult
+	trainingCh chan TrainingExecResultMsg
 
-	refreshInFlight   bool
-	calibrateInFlight bool
-	contourInFlight   bool
-	siemInFlight      bool
+	refreshInFlight  bool
+	contourInFlight  bool
+	trainingInFlight bool
 
 	// Tracking whether a wait command is already listening on each channel.
-	refreshWaiting   bool
-	calibrateWaiting bool
-	contourWaiting   bool
-	siemWaiting      bool
+	refreshWaiting  bool
+	contourWaiting  bool
+	trainingWaiting bool
 }
 
 // NewRootModel creates the top-level model for the bubbletea program.
 func NewRootModel(app *shared.AppState, scanner shared.Scanner) RootModel {
 	return RootModel{
-		app:         app,
-		scanner:     scanner,
-		dashboard:   views.NewDashboardModel(app),
-		inspector:   views.NewInspectorModel(app),
-		contour:     views.NewContourModel(app),
-		calibration: views.NewCalibrationModel(app),
-		siem:        views.NewSIEMModel(app),
-		proxyhound:  views.NewProxyhoundModel(app),
-		keystore:    views.NewKeystoreModel(app),
-		whitelist:   views.NewWhitelistModel(app),
-		legacy:      views.NewLegacyModel(app),
-		refreshCh:   make(chan refreshResult, 1),
-		calibrateCh: make(chan keys.CalibrationExecResult, 1),
-		contourCh:   make(chan keys.ContourExecResult, 1),
-		siemCh:      make(chan siemExecResult, 1),
+		app:        app,
+		scanner:    scanner,
+		dashboard:  views.NewDashboardModel(app),
+		inspector:  views.NewInspectorModel(app),
+		contour:    views.NewContourModel(app),
+		training:   views.NewTrainingModel(app),
+		proxyhound: views.NewProxyhoundModel(app),
+		siem:       views.NewSIEMModel(app),
+		keystore:   views.NewKeystoreModel(app),
+		whitelist:  views.NewWhitelistModel(app),
+		legacy:     views.NewLegacyModel(app),
+		refreshCh:  make(chan refreshResult, 1),
+		contourCh:  make(chan keys.ContourExecResult, 1),
+		trainingCh: make(chan TrainingExecResultMsg, 1),
 	}
 }
 
@@ -122,11 +114,11 @@ func (m RootModel) Update(msg tea.Msg) (retModel tea.Model, retCmd tea.Cmd) {
 		m.dashboard, _ = m.dashboard.Update(msg)
 		m.inspector, _ = m.inspector.Update(msg)
 		m.contour, _ = m.contour.Update(msg)
-		m.calibration, _ = m.calibration.Update(msg)
-		m.siem, _ = m.siem.Update(msg)
 		m.proxyhound, _ = m.proxyhound.Update(msg)
+		m.siem, _ = m.siem.Update(msg)
 		m.keystore, _ = m.keystore.Update(msg)
 		m.whitelist, _ = m.whitelist.Update(msg)
+		m.training, _ = m.training.Update(msg)
 		m.legacy, _ = m.legacy.Update(msg)
 		return m, nil
 
@@ -134,21 +126,16 @@ func (m RootModel) Update(msg tea.Msg) (retModel tea.Model, retCmd tea.Cmd) {
 		clearExpiredKillConfirmation(m.app)
 		clearExpiredQuitConfirmation(m.app)
 
-		// Auto-calibration.
-		if m.app.AutoCalibrateEnabled && m.app.AutoCalibrateInterval > 0 &&
-			!m.app.CalibrateActive && !m.app.CalibrateAnalyzing &&
-			time.Since(m.app.AutoCalibrateLastRun) >= m.app.AutoCalibrateInterval {
-			m.app.AutoCalibrateLastRun = time.Now()
-			if m.app.CalibrateProvider != "" {
-				keys.BeginCalibrationAnalysis(m.app, m.calibrateCh, &m.calibrateInFlight)
-			}
+		// Sync ML classifier primary status from detection package.
+		if m.app.MLPrimarySource != nil {
+			m.app.MLClassifierPrimary = *m.app.MLPrimarySource
 		}
 
 		// Periodic refresh.
 		if !keys.ShouldPausePeriodicRefresh(m.app) {
 			beginRefresh(m.app, m.scanner, m.refreshCh, &m.refreshInFlight)
 		}
-		if m.app.RefreshRequested {
+		if m.app.RefreshRequested && !m.refreshInFlight {
 			m.app.RefreshRequested = false
 			beginRefresh(m.app, m.scanner, m.refreshCh, &m.refreshInFlight)
 		}
@@ -160,12 +147,12 @@ func (m RootModel) Update(msg tea.Msg) (retModel tea.Model, retCmd tea.Cmd) {
 		switch m.app.Mode {
 		case shared.ModeInspect:
 			m.inspector.RefreshContent()
-		case shared.ModeCalibration:
-			m.calibration.RefreshContent()
-		case shared.ModeSIEM:
-			m.siem.RefreshContent()
+		case shared.ModeTraining:
+			m.training.RefreshContent()
 		case shared.ModeCollect:
 			m.proxyhound.RefreshContent()
+		case shared.ModeSIEM:
+			m.siem.RefreshContent()
 		}
 
 		cmds = append(cmds, m.startPendingWaits()...)
@@ -178,7 +165,6 @@ func (m RootModel) Update(msg tea.Msg) (retModel tea.Model, retCmd tea.Cmd) {
 		applyRefreshResult(m.app, msg.res)
 		updateCollectionState(m.app)
 		keys.UpdateContourState(m.app, m.contourCh, &m.contourInFlight)
-		keys.UpdateCalibrationState(m.app, m.calibrateCh, &m.calibrateInFlight)
 		cmds = append(cmds, m.startPendingWaits()...)
 		return m, tea.Batch(cmds...)
 
@@ -189,27 +175,33 @@ func (m RootModel) Update(msg tea.Msg) (retModel tea.Model, retCmd tea.Cmd) {
 		m.contour.RefreshContent()
 		return m, nil
 
-	case CalibrationExecResultMsg:
-		m.calibrateInFlight = false
-		m.calibrateWaiting = false
-		keys.ApplyCalibrationExecResult(m.app, msg.res)
-		return m, nil
-
-	case SIEMExecResultMsg:
-		m.siemInFlight = false
-		m.siemWaiting = false
-		applySIEMExecResult(m.app, msg.res)
+	case TrainingExecResultMsg:
+		m.trainingInFlight = false
+		m.trainingWaiting = false
+		m.app.TrainingRetraining = false
+		if msg.Err != nil {
+			shared.LogError("training", "retrain failed: %v", msg.Err)
+		} else {
+			shared.LogInfo("training", "retrain completed from dashboard")
+		}
 		return m, nil
 	}
 
 	// Keep contour spinner alive while scan is running, even when
 	// viewing another view. Without this the tick chain breaks
 	// and spinners freeze when switching back.
+	// CRITICAL: Do NOT forward KeyMsg here — the contour model's Update
+	// processes LEFT/RIGHT and calls stepWorkflowMenu, which combined with
+	// the main view's Update below causes double-cycling (one key press
+	// moves 2 workflows). Only forward tick/timer/mouse messages for the
+	// spinner's own needs.
 	if m.app.Mode != shared.ModeContour && (m.app.ContourActive || m.app.ContourAnalyzing) {
-		var cmd tea.Cmd
-		m.contour, cmd = m.contour.Update(msg)
-		if cmd != nil {
-			cmds = append(cmds, cmd)
+		if _, isKey := msg.(tea.KeyMsg); !isKey {
+			var cmd tea.Cmd
+			m.contour, cmd = m.contour.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 	}
 
@@ -233,21 +225,21 @@ func (m RootModel) Update(msg tea.Msg) (retModel tea.Model, retCmd tea.Cmd) {
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-	case shared.ModeCalibration:
+	case shared.ModeTraining:
 		var cmd tea.Cmd
-		m.calibration, cmd = m.calibration.Update(msg)
-		if cmd != nil {
-			cmds = append(cmds, cmd)
-		}
-	case shared.ModeSIEM:
-		var cmd tea.Cmd
-		m.siem, cmd = m.siem.Update(msg)
+		m.training, cmd = m.training.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	case shared.ModeCollect:
 		var cmd tea.Cmd
 		m.proxyhound, cmd = m.proxyhound.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case shared.ModeSIEM:
+		var cmd tea.Cmd
+		m.siem, cmd = m.siem.Update(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -276,18 +268,18 @@ func (m RootModel) Update(msg tea.Msg) (retModel tea.Model, retCmd tea.Cmd) {
 	case shared.ModeInspect:
 		m.inspector.InitViewport()
 		m.inspector.RefreshContent()
-	case shared.ModeCalibration:
-		m.calibration.InitViewport()
-		m.calibration.RefreshContent()
-	case shared.ModeSIEM:
-		m.siem.InitViewport()
-		m.siem.RefreshContent()
+	case shared.ModeTraining:
+		m.training.InitViewport()
+		m.training.RefreshContent()
 	case shared.ModeContour:
 		m.contour.InitViewport()
 		m.contour.RefreshContent()
 	case shared.ModeCollect:
 		m.proxyhound.InitViewport()
 		m.proxyhound.RefreshContent()
+	case shared.ModeSIEM:
+		m.siem.InitViewport()
+		m.siem.RefreshContent()
 	}
 
 	// After key handling, start wait commands for any newly launched async work.
@@ -308,12 +300,12 @@ func (m RootModel) View() string {
 		view = m.inspector.View()
 	case shared.ModeContour:
 		view = m.contour.View()
-	case shared.ModeCalibration:
-		view = m.calibration.View()
-	case shared.ModeSIEM:
-		view = m.siem.View()
+	case shared.ModeTraining:
+		view = m.training.View()
 	case shared.ModeCollect:
 		view = m.proxyhound.View()
+	case shared.ModeSIEM:
+		view = m.siem.View()
 	case shared.ModeKeystore:
 		view = m.keystore.View()
 	case shared.ModeWhitelist:
@@ -341,17 +333,13 @@ func (m *RootModel) startPendingWaits() []tea.Cmd {
 		m.refreshWaiting = true
 		cmds = append(cmds, m.waitRefresh())
 	}
-	if m.calibrateInFlight && !m.calibrateWaiting {
-		m.calibrateWaiting = true
-		cmds = append(cmds, m.waitCalibrate())
-	}
 	if m.contourInFlight && !m.contourWaiting {
 		m.contourWaiting = true
 		cmds = append(cmds, m.waitContour())
 	}
-	if m.siemInFlight && !m.siemWaiting {
-		m.siemWaiting = true
-		cmds = append(cmds, m.waitSIEM())
+	if m.trainingInFlight && !m.trainingWaiting {
+		m.trainingWaiting = true
+		cmds = append(cmds, m.waitTraining())
 	}
 	return cmds
 }
@@ -375,13 +363,6 @@ func (m RootModel) waitRefresh() tea.Cmd {
 	}
 }
 
-func (m RootModel) waitCalibrate() tea.Cmd {
-	ch := m.calibrateCh
-	return func() tea.Msg {
-		return CalibrationExecResultMsg{res: <-ch}
-	}
-}
-
 func (m RootModel) waitContour() tea.Cmd {
 	ch := m.contourCh
 	return func() tea.Msg {
@@ -389,37 +370,9 @@ func (m RootModel) waitContour() tea.Cmd {
 	}
 }
 
-func (m RootModel) waitSIEM() tea.Cmd {
-	ch := m.siemCh
+func (m RootModel) waitTraining() tea.Cmd {
+	ch := m.trainingCh
 	return func() tea.Msg {
-		return SIEMExecResultMsg{res: <-ch}
-	}
-}
-
-// wireSIEMCallback sets up app.StartSIEMGeneration to write results into the
-// given channel and set the in-flight flag.
-func wireSIEMCallback(app *shared.AppState, ch chan siemExecResult, inFlight *bool) {
-	app.StartSIEMGeneration = func(sourceReport, provider, model, outputReport, outputJSON string) {
-		if *inFlight {
-			return
-		}
-		*inFlight = true
-		go func() {
-			result, err := siem.ExecuteSIEM(siem.SIEMRunInput{
-				SourceReport: sourceReport,
-				Provider:     provider,
-				Model:        model,
-				OutputReport: outputReport,
-				OutputJSON:   outputJSON,
-				OnProgress: func(lines []string) {
-					cp := make([]string, len(lines))
-					copy(cp, lines)
-					app.ProgressMu.Lock()
-					app.SIEMProgressLines = cp
-					app.ProgressMu.Unlock()
-				},
-			})
-			ch <- siemExecResult{result: result, err: err}
-		}()
+		return <-ch
 	}
 }

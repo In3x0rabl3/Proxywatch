@@ -2,11 +2,14 @@
 
 ProxyWatch is a real-time process and network behavior monitor for detecting proxy activity, tunnels, C2 sessions, beacons, and lateral movement. It classifies processes into threat-focused role families using live host telemetry, behavioral heuristics, and persisted learning data.
 
-**Current version: v1.0.5**
+**Current version: v1.0.6**
 
 ## Features
 
-- **Real-time dashboard** with process classification into roles: tunnel, session, beacon, listener, outbound.
+- **Real-time dashboard** with process classification into control roles: control-channel, control-pivot, outbound, listener.
+- **Time-lingered pivot detection** — processes doing SOCKS / port-forwarding (sshd children, beacon SOCKS sub-channels, session port-forwards) flip to `control-pivot` while traffic is flowing and hold the role for a 60s linger window before reverting to their structural role.
+- **Strict real-time tunneling state** — `state=tunneling` is shown only when bytes are actively moving through the tunnel, not just when tunnel topology exists.
+- **Enriched pivot evidence** — the Inspector's Evidence panel shows the actual TCP relay destinations (`ip:port`), SMB admin-share activity, and named pipe names for a pivoting process.
 - **Raw socket detection** for tools that bypass the kernel TCP stack (nmap SYN scans, ping, tcpdump, custom packet tools).
 - **Inspector** with detailed process identity, network, analysis, reasons, and connection views in organized panels.
 - **Contour** network probe suite: tunnel/exfil matrix, service reachability, TLS inspection, domain fronting, DNS exfiltration, HTTP method detection.

@@ -4,13 +4,11 @@ import (
 	"strings"
 	"time"
 
-	"proxywatch/internal/calibration"
 	"proxywatch/internal/contour"
-	classifier "proxywatch/internal/detection"
+	"proxywatch/internal/detection"
 	"proxywatch/internal/keystore"
-	"proxywatch/internal/model"
+	"proxywatch/internal/detection/model"
 	"proxywatch/internal/shared"
-	"proxywatch/internal/siem"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -61,7 +59,7 @@ func HandleDashboardKey(app *shared.AppState, tev *tcell.EventKey) bool {
 	case 'c', 'C':
 		OpenRoleSortMenu(app)
 	case '1':
-		EnterCalibrationMode(app)
+		EnterTrainingMode(app)
 	case '2':
 		EnterContourMode(app)
 	case '3':
@@ -70,6 +68,8 @@ func HandleDashboardKey(app *shared.AppState, tev *tcell.EventKey) bool {
 		EnterSIEMMode(app)
 	case '5':
 		EnterWhitelistManager(app)
+	case '6':
+		EnterKeystoreMode(app)
 	case '<':
 		StepDashboardWorkflow(app, -1)
 	case '>':
@@ -86,8 +86,6 @@ func HandleDashboardKey(app *shared.AppState, tev *tcell.EventKey) bool {
 		EnterCollectMode(app)
 	case 'o', 'O':
 		EnterContourMode(app)
-	case 'm', 'M':
-		EnterSIEMMode(app)
 	case 'w':
 		EnterWhitelistManager(app)
 	case 'q':
@@ -141,23 +139,27 @@ func HandleDashboardOverlayKey(app *shared.AppState, tev *tcell.EventKey) bool {
 		return false
 	case '1':
 		CloseDashboardOverlays(app)
-		EnterCalibrationMode(app)
+		EnterTrainingMode(app)
 		return false
 	case '2':
 		CloseDashboardOverlays(app)
-		EnterSIEMMode(app)
+		EnterContourMode(app)
 		return false
 	case '3':
 		CloseDashboardOverlays(app)
-		EnterContourMode(app)
+		EnterCollectMode(app)
 		return false
 	case '4':
 		CloseDashboardOverlays(app)
-		EnterCollectMode(app)
+		EnterSIEMMode(app)
 		return false
 	case '5':
 		CloseDashboardOverlays(app)
 		EnterWhitelistManager(app)
+		return false
+	case '6':
+		CloseDashboardOverlays(app)
+		EnterKeystoreMode(app)
 		return false
 	case '<':
 		CloseDashboardOverlays(app)
@@ -166,10 +168,6 @@ func HandleDashboardOverlayKey(app *shared.AppState, tev *tcell.EventKey) bool {
 	case '>':
 		CloseDashboardOverlays(app)
 		StepDashboardWorkflow(app, 1)
-		return false
-	case 'm', 'M':
-		CloseDashboardOverlays(app)
-		EnterSIEMMode(app)
 		return false
 	case 'o', 'O':
 		CloseDashboardOverlays(app)
@@ -285,12 +283,12 @@ func dashboardMenuHelpOptions() []string {
 		"ESC          Exit host process view",
 		"",
 		"[Workflows]",
-		"1            Calibration",
+		"1            Model",
 		"2            Contour",
 		"3            ProxyHound",
 		"4            SIEM",
 		"5            Whitelist",
-		"k            Keystore",
+		"6            Keystore",
 		"LEFT/RIGHT   Cycle workflows",
 		"",
 		"[Actions]",
@@ -339,7 +337,7 @@ func ShouldPausePeriodicRefresh(app *shared.AppState) bool {
 		return DashboardOverlayOpen(app)
 	case shared.ModeInspect:
 		return app.ShowInspectMenu
-	case shared.ModeWhitelist, shared.ModeKeystore, shared.ModeSIEM:
+	case shared.ModeWhitelist, shared.ModeKeystore:
 		return true
 	case shared.ModeCollect:
 		if app.CollectActive {
@@ -351,11 +349,6 @@ func ShouldPausePeriodicRefresh(app *shared.AppState) bool {
 			return false
 		}
 		return app.ContourEditing || app.ContourShowMenu
-	case shared.ModeCalibration:
-		if app.CalibrateActive || app.CalibrateAnalyzing {
-			return false
-		}
-		return app.ShowCalibrateMenu || app.ShowCalibrateHelp || app.CalibrateEditing
 	default:
 		return false
 	}
@@ -380,7 +373,7 @@ func RoleSortMenuChoices() []RoleSortMenuChoice {
 }
 
 func rolePresetOptions() []string {
-	return []string{"recommended", "all", "control-session", "control-beacon", "control-pivot", "control-tunnel", "analyzing", "listen", "outbound"}
+	return []string{"recommended", "all", "control-channel", "control-pivot", "listener", "outbound"}
 }
 
 func sortPresetOptions() []string {
@@ -711,32 +704,21 @@ func EnterContourMode(app *shared.AppState) {
 	app.Mode = shared.ModeContour
 }
 
-func EnterCalibrationMode(app *shared.AppState) {
-	app.CalibrateProvider = calibration.ProviderKey(app.CalibrateProvider)
-	if app.CalibrateDuration == "" {
-		app.CalibrateDuration = "1h"
+func EnterSIEMMode(app *shared.AppState) {
+	if app == nil {
+		return
 	}
-	if app.CalibrateProvider == "" {
-		app.CalibrateProvider = calibration.ProviderKey("OpenAI")
-	}
-	if app.CalibrateModel == "" || !containsString(calibration.ModelOptions(app.CalibrateProvider), app.CalibrateModel) {
-		app.CalibrateModel = calibration.DefaultModel(app.CalibrateProvider)
-	}
-	if app.CalibrateProfile == "" {
-		app.CalibrateProfile = "tuning.json"
-	}
-	if app.CalibrateOutput == "" {
-		app.CalibrateOutput = calibration.DefaultOutputPath()
-	}
-	app.CalibrateEditing = false
-	app.ShowCalibrateMenu = false
-	app.ShowCalibrateHelp = false
-	app.CalibrateReportScroll = 0
-	if app.CalibrateField < 0 || app.CalibrateField > CalibrateFieldMax {
-		app.CalibrateField = CalibrateFieldOutput
-	}
-	RefreshCalibrationState(app)
-	app.Mode = shared.ModeCalibration
+	app.SiemShowHelp = false
+	app.SiemField = 0
+	// Deliberately retain SiemGeneratedSet / SiemGenerated across mode
+	// transitions so an operator can jump to another workflow and back
+	// without losing their snapshot. A fresh [g] regenerates.
+	app.Mode = shared.ModeSIEM
+}
+
+func EnterTrainingMode(app *shared.AppState) {
+	app.TrainingDashboardActive = true
+	app.Mode = shared.ModeTraining
 }
 
 func EnterKeystoreMode(app *shared.AppState) {
@@ -758,42 +740,6 @@ func EnterKeystoreMode(app *shared.AppState) {
 		app.KeystoreField = KeystoreFieldOpenAIKey
 	}
 	app.Mode = shared.ModeKeystore
-}
-
-func EnterSIEMMode(app *shared.AppState) {
-	app.SIEMDebugLogPath = strings.TrimSpace(app.KeystoreValues["PROXYWATCH_DETECT_DEBUG_LOG"])
-	app.SIEMRulesJSONPath = strings.TrimSpace(app.KeystoreValues["PROXYWATCH_DETECT_RULES_JSON"])
-	app.SIEMSourceReport = strings.TrimSpace(app.KeystoreValues["PROXYWATCH_SIEM_SOURCE_REPORT"])
-	app.SIEMProvider = calibration.ProviderKey(app.KeystoreValues["PROXYWATCH_SIEM_PROVIDER"])
-	app.SIEMModel = strings.TrimSpace(app.KeystoreValues["PROXYWATCH_SIEM_MODEL"])
-	app.SIEMReportPath = strings.TrimSpace(app.KeystoreValues["PROXYWATCH_SIEM_REPORT_OUTPUT"])
-	app.SIEMExportPath = strings.TrimSpace(app.KeystoreValues["PROXYWATCH_SIEM_JSON_OUTPUT"])
-	if app.SIEMSourceReport == "" {
-		app.SIEMSourceReport = app.CalibrateOutput
-	}
-	if app.SIEMProvider == "" {
-		app.SIEMProvider = calibration.ProviderKey("OpenAI")
-	}
-	if app.SIEMModel == "" || !containsString(calibration.ModelOptions(app.SIEMProvider), app.SIEMModel) {
-		app.SIEMModel = calibration.DefaultModel(app.SIEMProvider)
-	}
-	if app.SIEMReportPath == "" {
-		app.SIEMReportPath = siem.DefaultSIEMReportPath()
-	}
-	if app.SIEMExportPath == "" {
-		app.SIEMExportPath = siem.DefaultSIEMJSONPath()
-	}
-	app.SIEMEditing = false
-	app.SIEMShowMenu = false
-	app.SIEMShowHelp = false
-	if app.SIEMField < 0 || app.SIEMField > SiemFieldMax {
-		app.SIEMField = SiemFieldProvider
-	}
-	RefreshSIEMSourceReports(app)
-	app.SIEMReportLines = nil
-	app.SIEMReportScroll = 0
-	app.SIEMReportMaxScroll = 0
-	app.Mode = shared.ModeSIEM
 }
 
 func EnterWhitelistManager(app *shared.AppState) {
@@ -849,7 +795,7 @@ func WhitelistSelectedCandidate(app *shared.AppState) {
 	model.RecordFeedback(model.FeedbackEntry{
 		Timestamp:   time.Now().UTC(),
 		Action:      "whitelist",
-		ProcessKey:  classifier.ProcessBehaviorKey(&cand),
+		ProcessKey:  detection.ProcessBehaviorKey(&cand),
 		ProcessName: cand.Proc.Name,
 		Role:        cand.Role,
 		Score:       cand.Score,

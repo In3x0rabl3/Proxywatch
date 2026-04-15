@@ -54,8 +54,8 @@ func DrawContour(app *shared.AppState) {
 		label string
 		value string
 	}{
-		{contourFieldEndpoint, "Target", nonEmptySIEMValue(strings.TrimSpace(app.ContourProbeEndpoint), "127.0.0.1")},
-		{contourFieldOutput, "Output", nonEmptySIEMValue(strings.TrimSpace(app.ContourOutput), contour.DefaultOutputPath())},
+		{contourFieldEndpoint, "Target", nonEmptyValue(strings.TrimSpace(app.ContourProbeEndpoint), "127.0.0.1")},
+		{contourFieldOutput, "Output", nonEmptyValue(strings.TrimSpace(app.ContourOutput), contour.DefaultOutputPath())},
 		{contourFieldAction, "Action", contourActionLabel(app)},
 	}
 	for i, row := range rows {

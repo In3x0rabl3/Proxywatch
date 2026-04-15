@@ -23,6 +23,19 @@ type ProcessInfo struct {
 	WindowTitle   string   `json:"window_title"`
 	CmdLine       string   `json:"cmd_line,omitempty"`
 	LoadedLibs    []string `json:"loaded_libs,omitempty"`
+
+	// Signature trust — populated by the agent's local telemetry reader.
+	// Omitted on platforms where the verifier returns Unknown, keeping the
+	// wire format backward-compatible with pre-signature-trust builds.
+	SignatureTrust       string   `json:"signature_trust,omitempty"`
+	Signed               bool     `json:"signed,omitempty"`
+	Publisher            string   `json:"publisher,omitempty"`
+	AuthenticodeOCSPSeen bool     `json:"authenticode_ocsp_seen,omitempty"`
+	SHA256               string   `json:"sha256,omitempty"`
+	PkgOwned             bool     `json:"pkg_owned,omitempty"`
+	PkgOwnerName         string   `json:"pkg_owner_name,omitempty"`
+	PublisherDNSAligned  bool     `json:"publisher_dns_aligned,omitempty"`
+	OnlineEvidence       []string `json:"online_evidence,omitempty"`
 }
 
 type ListenerInfo struct {
@@ -86,6 +99,10 @@ type Candidate struct {
 	DelegatedOwner         string             `json:"delegated_owner,omitempty"`
 	RawSocket              bool               `json:"raw_socket,omitempty"`
 	RawConns               []*RawSocketConn   `json:"raw_conns,omitempty"`
+	NamedPipes             []string           `json:"named_pipes,omitempty"`
+	Exited                 bool               `json:"exited,omitempty"`
+	BeaconIntervalMs       int32              `json:"beacon_interval_ms,omitempty"`
+	BeaconJitter           float64            `json:"beacon_jitter,omitempty"`
 }
 
 type CandidateEnvelope struct {
@@ -94,15 +111,50 @@ type CandidateEnvelope struct {
 	Candidates    []*Candidate `json:"candidates"`
 }
 
+type TrainingRecord struct {
+	TimestampUnix          int64     `json:"timestamp_unix"`
+	ProcessKey             string    `json:"process_key"`
+	ProcessName            string    `json:"process_name"`
+	Features               []float64 `json:"features"`
+	Signals                []string  `json:"signals"`
+	RuleRole               string    `json:"rule_role"`
+	RuleScore              int32     `json:"rule_score"`
+	OperatorLabel          string    `json:"operator_label,omitempty"`
+	ExperienceRole         string    `json:"experience_role,omitempty"`
+	ExperienceObservations int32     `json:"experience_observations"`
+	ExperienceStability    float64   `json:"experience_stability"`
+	StrongEvidence         bool      `json:"strong_evidence"`
+	TrafficVerified        bool      `json:"traffic_verified"`
+}
+
+type TrainingBatch struct {
+	HostId        string            `json:"host_id"`
+	SchemaHash    string            `json:"schema_hash"`
+	BatchSequence int64             `json:"batch_sequence"`
+	Records       []*TrainingRecord `json:"records,omitempty"`
+}
+
+type ModelArtifact struct {
+	Version         string `json:"version"`
+	SchemaHash      string `json:"schema_hash"`
+	ModelJson       []byte `json:"model_json,omitempty"`
+	ManifestJson    []byte `json:"manifest_json,omitempty"`
+	PromotionReason string `json:"promotion_reason,omitempty"`
+	TrainedAtUnix   int64  `json:"trained_at_unix,omitempty"`
+	DatasetSize     int64  `json:"dataset_size,omitempty"`
+}
+
 type ClientMessage struct {
 	Envelope        *CandidateEnvelope `json:"envelope,omitempty"`
 	CommandResponse *CommandResponse   `json:"command_response,omitempty"`
+	TrainingBatch   *TrainingBatch     `json:"training_batch,omitempty"`
 }
 
 type ServerCommand struct {
-	RequestId string `json:"request_id"`
-	Type      string `json:"type"`
-	Pid       int32  `json:"pid"`
+	RequestId string         `json:"request_id"`
+	Type      string         `json:"type"`
+	Pid       int32          `json:"pid"`
+	Model     *ModelArtifact `json:"model,omitempty"`
 }
 
 type CommandResponse struct {

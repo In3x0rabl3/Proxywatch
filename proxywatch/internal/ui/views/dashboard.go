@@ -57,8 +57,11 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 func (m DashboardModel) View() string {
 	w := m.width
 	h := m.height
-	if w <= 0 || h <= 0 {
-		return ""
+	if w <= 0 {
+		w = 80
+	}
+	if h <= 0 {
+		h = 24
 	}
 
 	var sections []string
@@ -116,7 +119,6 @@ func (m DashboardModel) View() string {
 
 func (m DashboardModel) renderHeader(w int) string {
 	utcValue := time.Now().UTC().Format(UTCTimeFormat)
-	roleVal := safeRolePreset(m.app)
 	refreshVal := m.app.RefreshInt.String()
 
 	contentW := w - 2
@@ -124,58 +126,26 @@ func (m DashboardModel) renderHeader(w int) string {
 		contentW = 20
 	}
 
+	// Line 1: help hint (left) ... UTC value (right, value de-emphasized).
 	helpPlain := "? menu"
 	utcPlain := "UTC: " + utcValue
 	gap1 := max(1, contentW-len(helpPlain)-len(utcPlain))
 	line1 := dimText.Render(helpPlain) + bgSp(gap1) +
-		rightLabelStyle.Render("UTC: ") + sectionLabel.Render(utcValue)
+		rightLabelStyle.Render("UTC: ") + dimText.Render(utcValue)
 
-	sortVal := m.app.SortPreset
-	if sortVal == "" {
-		sortVal = "default"
+	// Line 2: refresh rate + classifier mode (right, values de-emphasized).
+	classifierVal := "Rules"
+	if m.app.MLClassifierPrimary {
+		classifierVal = "ML"
 	}
-	rolesPlain := "Roles: " + roleVal + "   Sort: " + sortVal + "   Refresh: " + refreshVal
-	gap2 := max(0, contentW-len(rolesPlain))
-	line2 := bgSp(gap2) +
-		rightLabelStyle.Render("Roles: ") + sectionLabel.Render(roleVal) +
-		rightLabelStyle.Render("   Sort: ") + sectionLabel.Render(sortVal) +
-		rightLabelStyle.Render("   Refresh: ") + sectionLabel.Render(refreshVal)
+	refreshRight := rightLabelStyle.Render("Refresh: ") + dimText.Render(refreshVal)
+	refreshPlain := "Refresh: " + refreshVal
+	classifierRight := rightLabelStyle.Render("Classifier: ") + dimText.Render(classifierVal)
+	classifierPlain := "Classifier: " + classifierVal
+	gap2 := max(1, contentW-len(refreshPlain)-len(classifierPlain)-2)
+	line2 := bgSp(gap2) + classifierRight + bgSp(2) + refreshRight
 
 	var extraLines []string
-	if m.app.CalibrateAnalyzing {
-		_ = dialSpinFrames
-		frame := dialSpinFrame()
-		extraLines = append(extraLines, sectionLabel.Render("  Calibration analyzing "+frame))
-	} else if m.app.CalibrateActive {
-		total := m.app.CalibrateUntil.Sub(m.app.CalibrateStartedAt)
-		elapsed := time.Since(m.app.CalibrateStartedAt)
-		remaining := time.Until(m.app.CalibrateUntil).Round(time.Second)
-		if remaining < 0 {
-			remaining = 0
-		}
-		pct := 0.0
-		if total > 0 {
-			pct = float64(elapsed) / float64(total)
-			if pct > 1 {
-				pct = 1
-			}
-		}
-		barW := contentW - 30
-		if barW < 10 {
-			barW = 10
-		}
-		filled := int(float64(barW) * pct)
-		bar := statusPass.Render(strings.Repeat("━", filled)) +
-			dimText.Render(strings.Repeat("─", barW-filled))
-		extraLines = append(extraLines,
-			sectionLabel.Render(" Calibrating ")+bar+
-				dimText.Render(fmt.Sprintf(" %s remaining", remaining)))
-	}
-	if m.app.SIEMGenerating {
-		_ = dialSpinFrames
-		frame := dialSpinFrame()
-		extraLines = append(extraLines, sectionLabel.Render("  SIEM: Generating Detections "+frame))
-	}
 	if m.app.CollectActive {
 		total := m.app.CollectUntil.Sub(m.app.CollectStartedAt)
 		elapsed := time.Since(m.app.CollectStartedAt)
@@ -203,7 +173,7 @@ func (m DashboardModel) renderHeader(w int) string {
 	}
 
 	content := line1 + "\n" + line2
-	headerH := 4
+	headerH := 4 // 2 content lines + top/bottom border
 	for _, extra := range extraLines {
 		content += "\n" + extra
 		headerH++
@@ -272,11 +242,10 @@ func (m DashboardModel) renderHostList(w, bodyH int) string {
 		seenW      = 6
 		processesW = 9
 		watchW     = 5
-		strongW    = 6
+		tunnelW    = 9
 		rolesW     = 5
-		activeW    = 6
 	)
-	fixedW := 6 + statusW + seenW + processesW + watchW + strongW + rolesW + activeW + 7*2
+	fixedW := 6 + statusW + seenW + processesW + watchW + tunnelW + rolesW + 6*2
 	hostNeed := 10
 	for i := range m.app.HostSummaries {
 		if n := len(strings.TrimSpace(m.app.HostSummaries[i].Host)); n > hostNeed {
@@ -285,15 +254,14 @@ func (m DashboardModel) renderHostList(w, bodyH int) string {
 	}
 	hostW := max(5, min(hostNeed, max(5, w-2-fixedW)))
 
-	header := fmt.Sprintf("  %-*s  %-*s  %-*s  %*s  %*s  %*s  %*s  %*s",
+	header := fmt.Sprintf("  %-*s  %-*s  %-*s  %*s  %*s  %*s  %*s",
 		hostW, "HOST",
 		statusW, "STATUS",
 		seenW, "SEEN",
 		processesW, "PROCESSES",
 		watchW, "WATCH",
-		strongW, "STRONG",
+		tunnelW, "TUNNELING",
 		rolesW, "ROLES",
-		activeW, "ACTIVE",
 	)
 	var lines []string
 	lines = append(lines, lgTextB.Render(header))
@@ -348,9 +316,8 @@ func (m DashboardModel) renderHostList(w, bodyH int) string {
 			applySelectBg(lgDim, sel).Render(fmt.Sprintf("%-*s", seenW, TruncateToWidth(seen, seenW))) + gap.Render("  ") +
 			applySelectBg(lgText, sel).Render(fmt.Sprintf("%*d", processesW, item.Processes)) + gap.Render("  ") +
 			applySelectBg(lgWatch, sel).Render(fmt.Sprintf("%*d", watchW, item.Watch)) + gap.Render("  ") +
-			applySelectBg(lgWarn, sel).Render(fmt.Sprintf("%*d", strongW, item.Strong)) + gap.Render("  ") +
-			applySelectBg(lgCyanB, sel).Render(fmt.Sprintf("%*d", rolesW, item.Roles)) + gap.Render("  ") +
-			applySelectBg(lgAlert, sel).Render(fmt.Sprintf("%*d", activeW, item.Active))
+			applySelectBg(lgWarn, sel).Render(fmt.Sprintf("%*d", tunnelW, item.Tunneling)) + gap.Render("  ") +
+			applySelectBg(lgCyanB, sel).Render(fmt.Sprintf("%*d", rolesW, item.Roles))
 
 		if sel {
 			rowStr = lgSelectBg.Width(w - 2).Render(rowStr)
@@ -378,7 +345,7 @@ func (m DashboardModel) renderProcessList(w, bodyH int) string {
 		pidW     = 7
 		roleW    = 16
 		ageW     = 5
-		stateW   = 7
+		stateW   = 15
 		minHostW = 5
 		minProcW = 8
 	)
@@ -447,9 +414,17 @@ func (m DashboardModel) renderProcessList(w, bodyH int) string {
 		if c.Proc != nil {
 			pid = c.Proc.Pid
 		}
-		role := normalizeDashboardRole(c.Role)
+		role := shared.RoleFamily(c.Role)
+		role = normalizeDashboardRole(role)
 		age := formatDashboardAge(dashboardCandidateAgeSeconds(c))
 		state := shared.CandidateState(c)
+		if strings.Contains(state, "Analyzing") {
+			// Display role = "analyzing" while the classifier is still
+			// stabilizing on a verdict. Replaces the old "-" placeholder so
+			// operators see explicit signal that work is in progress
+			// instead of an ambiguous dash.
+			role = "analyzing"
+		}
 
 		sel := i == selectedViewIdx
 

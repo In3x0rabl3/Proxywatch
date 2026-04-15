@@ -10,9 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"proxywatch/internal/calibration"
 	"proxywatch/internal/contour"
-	"proxywatch/internal/model"
+	"proxywatch/internal/detection/model"
 	"proxywatch/internal/shared"
 
 	"github.com/gdamore/tcell/v2"
@@ -1075,22 +1074,6 @@ func ContourCandidatesForSource(app *shared.AppState) []shared.Candidate {
 		return nil
 	}
 	source := strings.TrimSpace(app.ContourSource)
-
-	if app.CalibrationCollect != nil {
-		if snap, err := app.CalibrationCollect(); err == nil && snap != nil {
-			collected := calibration.SamplesFromSnapshot(snap, app.LocalHost, "all")
-			if source == "" || strings.EqualFold(source, "all") {
-				return collected
-			}
-			out := make([]shared.Candidate, 0, len(collected))
-			for _, c := range collected {
-				if strings.EqualFold(shared.DisplayHost(c.Host), source) {
-					out = append(out, c)
-				}
-			}
-			return out
-		}
-	}
 
 	if source == "" || strings.EqualFold(source, "all") {
 		return app.Candidates

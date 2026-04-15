@@ -16,10 +16,10 @@ const (
 	ModeInspect
 	ModeWhitelist
 	ModeCollect
-	ModeCalibration
+	ModeSIEM
 	ModeContour
 	ModeKeystore
-	ModeSIEM
+	ModeTraining
 )
 
 type HostSummary struct {
@@ -27,11 +27,10 @@ type HostSummary struct {
 	Status    string
 	FirstSeen time.Time
 	LastSeen  time.Time
-	Processes int
-	Watch     int
-	Strong    int
-	Roles     int
-	Active    int
+	Processes  int
+	Watch      int
+	Tunneling  int
+	Roles      int
 }
 
 type AppState struct {
@@ -118,55 +117,6 @@ type AppState struct {
 	CollectShowHelp         bool
 	CollectHelpIndex        int
 	CollectProgressLines    []string
-
-	CalibrateDuration      string
-	CalibrateProvider      string
-	CalibrateModel         string
-	CalibrateProfile       string
-	CalibrateOutput        string
-	CalibrateField         int
-	CalibrateEditing       bool
-	CalibrateEditCursor    int
-	CalibrateActive        bool
-	CalibrateAnalyzing     bool
-	CalibrateCancel        func()
-	CalibrateStartedAt     time.Time
-	CalibrateUntil         time.Time
-	CalibrateSamples       []Candidate
-	CalibrateProgressLines []string
-
-	CalibrateStatusText       string
-	CalibrateStatusUntil      time.Time
-	CalibrateStatusError      bool
-	CalibrateDecryptAttempted bool
-
-	CalibrateHostScope      string
-	CalibrateHostScopeOpts  []string
-	CalibrateHostScopeIndex int
-	CalibrateResetConfirm   bool
-	CalibrateResetDeadline  time.Time
-
-	CalibrateProfiles        []string
-	CalibrateProfileIndex    int
-	CalibrateAppliedProfile  string
-	CalibrateReportSummary   string
-	CalibrateReportPath      string
-	CalibrateReportTime      time.Time
-	CalibrateRecommendations []string
-	CalibrateReportLines     []string
-	CalibrateProfilePreview  []string // temporary preview when selecting a profile
-	CalibrateReportScroll    int
-	CalibrateReportMaxScroll int
-	CalibrateSampleEvery     time.Duration
-	CalibrateLastSample      time.Time
-
-	ShowCalibrateHelp    bool
-	CalibrateHelpIndex   int
-	ShowCalibrateMenu    bool
-	CalibrateMenuKind    string
-	CalibrateMenuTitle   string
-	CalibrateMenuOptions []string
-	CalibrateMenuIndex   int
 
 	ContourDashMode         int              // 0 = Scan, 1 = Contour
 	ContourNewRole          string           // Contour mode: "Server" or "Client"
@@ -266,41 +216,25 @@ type AppState struct {
 	KeystorePasswordInput  string // password being typed
 	KeystorePasswordSave   bool   // true=saving, false=unlocking
 
-	SIEMDebugLogPath     string
-	SIEMRulesJSONPath    string
-	SIEMSourceReport     string
-	SIEMSourceReports    []string
-	SIEMSourceIndex      int
-	SIEMProvider         string
-	SIEMModel            string
-	SIEMReportPath       string
-	SIEMExportPath       string
-	SIEMReportLines      []string
-	SIEMReportScroll     int
-	SIEMReportMaxScroll  int
-	SIEMField            int
-	SIEMEditing          bool
-	SIEMShowMenu         bool
-	SIEMShowHelp         bool
-	SIEMHelpIndex        int
-	SIEMMenuKind         string
-	SIEMMenuTitle        string
-	SIEMMenuOptions      []string
-	SIEMMenuIndex        int
-	SIEMProgressLines    []string
-	SIEMGenerating       bool
-	SIEMStartedAt        time.Time
-	SIEMStatusText       string
-	SIEMStatusUntil      time.Time
-	SIEMStatusError      bool
-	SIEMDecryptAttempted bool
-	StartSIEMGeneration  func(sourceReport, provider, model, outputReport, outputJSON string)
+	// SIEM dashboard state.
+	SiemSelectedIdx  int
+	SiemActiveTab    int // 0=Splunk 1=KQL 2=Sigma 3=YARA 4=Suricata
+	SiemShowHelp     bool
+	SiemStatusText   string
+	SiemStatusUntil  time.Time
+	SiemStatusError  bool
+	SiemListOffset   int
+	SiemGenerated      bool                // Generate button was pressed
+	SiemGeneratedAt    time.Time           // when the snapshot was taken
+	SiemGeneratedSet   []Candidate         // frozen control-* candidates at Generate time
+	SiemField          int                 // 0=Action, 1=Output
+	SiemOutputPath     string              // last-used / default output path
+	SiemLastExportPath string              // most recent successful export path
 
-	AutoCalibrateInterval time.Duration
-	AutoCalibrateLastRun  time.Time
-	AutoCalibrateEnabled  bool
-
-	CalibrationCollect func() (*Snapshot, error)
+	// Legacy fields retained for the HTTP export endpoints + tests.
+	SiemSelectedKeys   map[string]bool // CandidateKey → checked
+	SiemEnabledFormats [5]bool         // Splunk, KQL, Sigma, YARA, Suricata
+	SiemRoleFilter     string          // "", "control", "pivot", "listener", "outbound"
 
 	PrevCandidateKeys map[string]string // key -> role from last refresh
 
@@ -324,6 +258,36 @@ type AppState struct {
 	InspectScroll            int
 	InspectMaxScroll         int
 	InspectSectionStarts     []int
+	InspectEvidenceCache     []string  // cached evidence lines
+	InspectEvidenceCacheKey  string    // candidate key for cache validity
+	InspectEvidenceCacheTime int64     // unix timestamp of cache
+	InspectShowAllSignals    bool      // 'x' toggle: show all signals in evidence
+
+	// Training dashboard state.
+	TrainingDashboardActive bool
+	TrainingBufferSize      int
+	TrainingModelVersion    string
+	TrainingLastError       string
+
+	// Training control plane state.
+	TrainingField        int
+	TrainingShowHelp     bool
+	TrainingAutoRetrain  bool      // mirrors shared.AutoRetrainEnabled
+	TrainingRetraining   bool      // retrain in progress
+	TrainingRetrainStart time.Time
+	TrainingMetricsCache interface{} // *inference.ModelMetrics (avoid import cycle)
+	TrainingOrchestrator interface{} // *training.Orchestrator
+	TrainingLearner      interface{} // *inference.ContinuousLearner
+	TrainingSampleMode   bool
+	TrainingSampleIndex  int
+	TrainingSampleCount    int       // count of low-confidence samples
+	StartTrainingRetrain  func()    // wired callback for async retrain
+	TrainingResetConfirm  bool      // double-confirm for baseline reset
+	TrainingResetDeadline time.Time // confirmation window
+	MLClassifierPrimary   bool      // true if ML drives role assignment, false if shadow
+	MLPrimarySource       *bool     // live pointer to detection.MLPrimary for tick sync
+	TrainingBaselineIndex int       // selected index in baseline list
+	TrainingBaselineList  []string  // cached baseline display names
 }
 
 type Scanner interface {
@@ -379,6 +343,10 @@ func (s *ScannerAdapter) Refresh(app *AppState) {
 	cands = FilterProxywatchCandidates(cands)
 	ApplyIORates(cands, now, &s.LastIO)
 	cands = ApplyCandidateLinger(cands, now, s.LingerFor, &s.LingerCache)
+	// Post-linger: correlate exited children with live parents.
+	// Lingered children now retain connection data, so we can detect
+	// tunnel relay patterns even after the child exits.
+	AggregateLingerChildEvidence(cands, now)
 	// Keep role/score filtering authoritative after linger rehydrates stale rows.
 	cands = ApplyScoreAndRoleFilters(cands, opts.MinScore, opts.RoleFilter)
 	if app != nil {
@@ -486,7 +454,25 @@ func ApplyScoreAndRoleFilters(cands []Candidate, minScore int, roleFilter map[st
 	}
 	filtered := make([]Candidate, 0, len(cands))
 	for _, c := range cands {
-		if minScore > 0 && c.Score < minScore {
+		// Control roles, exited processes, and processes still in the
+		// analyzing phase bypass the MinScore filter. During the first
+		// 30 seconds we don't yet know if a process is suspicious —
+		// filtering by score is premature.
+		wasTunneling := false
+		if c.Proc != nil {
+			if _, ok := TunnelingSeen[c.Proc.Pid]; ok {
+				wasTunneling = true
+			}
+			// Also check parent — child tunnel handlers inherit parent's status
+			if !wasTunneling && c.Proc.ParentPid > 0 {
+				if _, ok := TunnelingSeen[c.Proc.ParentPid]; ok {
+					wasTunneling = true
+				}
+			}
+		}
+		scoreExempt := IsControlRole(c.Role) || c.Exited ||
+			c.SeenSeconds < AnalyzingMinSeconds || wasTunneling
+		if minScore > 0 && c.Score < minScore && !scoreExempt {
 			continue
 		}
 		if !RoleMatchesFilter(c.Role, roleFilter) {

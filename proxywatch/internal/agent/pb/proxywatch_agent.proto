@@ -90,6 +90,10 @@ message Candidate {
   string delegated_owner = 28;
   bool raw_socket = 29;
   repeated RawSocketConn raw_conns = 30;
+  repeated string named_pipes = 31;
+  bool exited = 32;
+  int32 beacon_interval_ms = 33;
+  double beacon_jitter = 34;
 }
 
 message CandidateEnvelope {
@@ -98,15 +102,50 @@ message CandidateEnvelope {
   repeated Candidate candidates = 3;
 }
 
+message TrainingRecord {
+  int64 timestamp_unix = 1;
+  string process_key = 2;
+  string process_name = 3;
+  repeated double features = 4;
+  repeated string signals = 5;
+  string rule_role = 6;
+  int32 rule_score = 7;
+  string operator_label = 8;
+  string experience_role = 9;
+  int32 experience_observations = 10;
+  double experience_stability = 11;
+  bool strong_evidence = 12;
+  bool traffic_verified = 13;
+}
+
+message TrainingBatch {
+  string host_id = 1;
+  string schema_hash = 2;
+  int64 batch_sequence = 3;
+  repeated TrainingRecord records = 4;
+}
+
+message ModelArtifact {
+  string version = 1;
+  string schema_hash = 2;
+  bytes model_json = 3;
+  bytes manifest_json = 4;
+  string promotion_reason = 5;
+  int64 trained_at_unix = 6;
+  int64 dataset_size = 7;
+}
+
 message ClientMessage {
   CandidateEnvelope envelope = 1;
   CommandResponse command_response = 2;
+  TrainingBatch training_batch = 3;
 }
 
 message ServerCommand {
   string request_id = 1;
   string type = 2;
   int32 pid = 3;
+  ModelArtifact model = 4;
 }
 
 message CommandResponse {

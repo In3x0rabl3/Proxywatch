@@ -666,7 +666,6 @@ func renderServiceMatrix(probe *contour.ProbeSummary) string {
 	const nameW = 11
 	const statusW = 12
 	const methodW = 15
-	const keyW = 4
 
 	var matrixRows []string
 

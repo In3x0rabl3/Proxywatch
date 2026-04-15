@@ -185,7 +185,8 @@ func keystoreFieldVisible(field int) bool {
 		keystoreFieldMethod, keystoreFieldNew,
 		keystoreFieldBuildkiteToken, keystoreFieldAWSAccessKey, keystoreFieldAWSSecretKey,
 		keystoreFieldAzureClientID, keystoreFieldAzureClientSecret, keystoreFieldGCPServiceKey,
-		keystoreFieldSlackBotToken, keystoreFieldFirebaseKey, keystoreFieldTeamsAuth:
+		keystoreFieldSlackBotToken, keystoreFieldDiscordBotToken, keystoreFieldTelegramBotKey,
+		keystoreFieldFirebaseKey, keystoreFieldTeamsAuth, keystoreFieldGitLabToken:
 		return false
 	}
 	return field >= keystoreFieldOpenAIKey && field <= keystoreFieldMax
@@ -252,16 +253,7 @@ func keystoreFieldEnvKey(field int) (string, bool) {
 	}
 }
 
-func siemFieldEditable(field int) bool {
-	switch field {
-	case siemFieldReportOutput, siemFieldJSONOutput:
-		return true
-	default:
-		return false
-	}
-}
-
-func nonEmptySIEMValue(value, fallback string) string {
+func nonEmptyValue(value, fallback string) string {
 	value = strings.TrimSpace(value)
 	if value != "" {
 		return value
@@ -289,7 +281,7 @@ type roleSortMenuChoice struct {
 
 func roleSortMenuChoices() []roleSortMenuChoice {
 	var choices []roleSortMenuChoice
-	for _, r := range []string{"recommended", "all", "control-session", "control-beacon", "control-pivot", "control-tunnel", "analyzing", "listen", "outbound"} {
+	for _, r := range []string{"recommended", "all", "control-channel", "control-pivot", "listener", "outbound"} {
 		choices = append(choices, roleSortMenuChoice{kind: "role", value: r})
 	}
 	for _, s := range []string{"default", "host", "role", "age", "state", "pid", "process"} {

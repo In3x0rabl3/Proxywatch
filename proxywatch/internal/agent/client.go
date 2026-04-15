@@ -10,11 +10,12 @@ import (
 	"sync"
 	"time"
 
+	"proxywatch/internal/agent/auth"
 	"proxywatch/internal/agent/pb"
 	"proxywatch/internal/detection"
 	"proxywatch/internal/keystore"
 	"proxywatch/internal/shared"
-	"proxywatch/internal/telemetry"
+	"proxywatch/internal/detection/telemetry"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -36,6 +37,7 @@ var (
 
 func RunClientLoop(ctx context.Context, opts ClientOptions) error {
 	opts = normalizeClientOptions(opts)
+	clientState.setIdentity(opts.HostID, opts.Addr)
 	cache := shared.ClassifierCache{}
 	lastIO := map[int]shared.IOSample{}
 
@@ -50,7 +52,7 @@ func RunClientLoop(ctx context.Context, opts ClientOptions) error {
 		if isPermanentClientError(err) {
 			return err
 		}
-		fmt.Println("agent error:", err)
+		shared.LogError("agent", "client error: %v", err)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -113,20 +115,28 @@ func runClientOnce(
 			if cmd == nil {
 				continue
 			}
-			if cmd.Type == "kill" && cmd.Pid > 0 {
-				killErr := telemetry.KillProcess(int(cmd.Pid))
-				resp := &pb.CommandResponse{
-					RequestId: cmd.RequestId,
-					Success:   killErr == nil,
+			switch cmd.Type {
+			case "kill":
+				if cmd.Pid > 0 {
+					killErr := telemetry.KillProcess(int(cmd.Pid))
+					resp := &pb.CommandResponse{
+						RequestId: cmd.RequestId,
+						Success:   killErr == nil,
+					}
+					if killErr != nil {
+						resp.Error = killErr.Error()
+					}
+					select {
+					case sendCh <- &pb.ClientMessage{CommandResponse: resp}:
+					case <-ctx.Done():
+						recvDone <- ctx.Err()
+						return
+					}
 				}
-				if killErr != nil {
-					resp.Error = killErr.Error()
-				}
-				select {
-				case sendCh <- &pb.ClientMessage{CommandResponse: resp}:
-				case <-ctx.Done():
-					recvDone <- ctx.Err()
-					return
+			case "model_push":
+				if cmd.Model != nil && ModelPushHandler != nil {
+					pushErr := ModelPushHandler(cmd.Model)
+					shared.LogInfo("agent", "model push received: version=%s err=%v", cmd.Model.Version, pushErr)
 				}
 			}
 		}
@@ -158,7 +168,7 @@ func runClientOnce(
 				continue
 			}
 
-			cands := classifier.Classify(snap, shared.ClassifyOptions{
+			cands := detection.Classify(snap, shared.ClassifyOptions{
 				MinScore:    opts.MinScore,
 				RoleFilter:  nil,
 				Incremental: opts.Incremental,
@@ -180,10 +190,13 @@ func runClientOnce(
 				cands[i].Host = opts.HostID
 			}
 
+			clientState.setLastClassified(now, cands)
+
 			env := ToEnvelope(opts.HostID, now, cands)
 			msg := &pb.ClientMessage{Envelope: env}
 			select {
 			case sendCh <- msg:
+				clientState.setLastSent(time.Now().UTC())
 			case <-ctx.Done():
 				return nil
 			}
@@ -201,7 +214,7 @@ func openSecureStream(
 		token = strings.TrimSpace(keystore.RuntimeValue("PROXYWATCH_AGENT_TOKEN"))
 	}
 	if token == "" {
-		token = strings.TrimSpace(readTokenFile(agentTokenPath()))
+		token = strings.TrimSpace(auth.ReadTokenFile(auth.AgentTokenPath()))
 	}
 	if tokenOverride != "" {
 		values := keystore.ValuesFromRuntime()
@@ -209,10 +222,10 @@ func openSecureStream(
 			values["PROXYWATCH_AGENT_TOKEN"] = token
 			keystore.ApplyToRuntime(values)
 		}
-		_ = writeFileAtomic(agentTokenPath(), []byte(token+"\n"), tlsPrivateFileMode)
+		_ = auth.WriteFileAtomic(auth.AgentTokenPath(), []byte(token+"\n"), auth.TLSPrivateFileMode)
 	}
 
-	primaryTLS, err := AgentTLSConfig()
+	primaryTLS, err := auth.AgentTLSConfig()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -221,7 +234,7 @@ func openSecureStream(
 		return conn, stream, nil
 	}
 
-	bootstrapTLS, bootstrapToken, bootstrapErr := loadBootstrapClientTLS()
+	bootstrapTLS, bootstrapToken, bootstrapErr := auth.LoadBootstrapClientTLS()
 	if token == "" && bootstrapToken != "" {
 		token = bootstrapToken
 	}
@@ -238,7 +251,7 @@ func openSecureStream(
 		pinnedErr    error
 		enrollErr    error
 	)
-	pinnedErr = dialWithPinnedOrTOFU(func(tlsCfg *tls.Config) error {
+	pinnedErr = auth.DialWithPinnedOrTOFU(func(tlsCfg *tls.Config) error {
 		var err error
 		pinnedConn, pinnedStream, err = dialStreamWithAuth(ctx, addr, tlsCfg, token)
 		return err
@@ -250,7 +263,7 @@ func openSecureStream(
 	if token != "" && shouldAttemptTokenEnroll(pinnedErr) {
 		enrollErr = enrollTrustWithToken(ctx, addr, token)
 		if enrollErr == nil {
-			pinnedErr = dialWithPinnedOrTOFU(func(tlsCfg *tls.Config) error {
+			pinnedErr = auth.DialWithPinnedOrTOFU(func(tlsCfg *tls.Config) error {
 				var err error
 				pinnedConn, pinnedStream, err = dialStreamWithAuth(ctx, addr, tlsCfg, token)
 				return err
@@ -265,7 +278,7 @@ func openSecureStream(
 		return nil, nil, fmt.Errorf(
 			"%w: configure PROXYWATCH_AGENT_TOKEN in keystore or provide bootstrap at %s",
 			errAgentTokenMissing,
-			agentBootstrapPath(),
+			auth.AgentBootstrapPath(),
 		)
 	}
 
@@ -276,23 +289,23 @@ func openSecureStream(
 				errAgentTrustNotEnrolled,
 				addr,
 				enrollErr,
-				agentBootstrapPath(),
-				agentTrustPath(addr),
+				auth.AgentBootstrapPath(),
+				auth.AgentTrustPath(addr),
 			)
 		}
 		return nil, nil, fmt.Errorf(
 			"%w for %s: no bootstrap bundle at %s and no trust pin at %s; copy bootstrap.json from the server or set a valid token to auto-enroll trust",
 			errAgentTrustNotEnrolled,
 			addr,
-			agentBootstrapPath(),
-			agentTrustPath(addr),
+			auth.AgentBootstrapPath(),
+			auth.AgentTrustPath(addr),
 		)
 	}
 
 	if bootstrapErr != nil {
-		return nil, nil, fmt.Errorf("%v; bootstrap trust bundle unavailable (%s): %v; pinned trust (%s) failed: %v", primaryErr, agentBootstrapPath(), bootstrapErr, agentTrustPath(addr), pinnedErr)
+		return nil, nil, fmt.Errorf("%v; bootstrap trust bundle unavailable (%s): %v; pinned trust (%s) failed: %v", primaryErr, auth.AgentBootstrapPath(), bootstrapErr, auth.AgentTrustPath(addr), pinnedErr)
 	}
-	return nil, nil, fmt.Errorf("%v; bootstrap mode failed (%s); pinned trust (%s) failed: %v", primaryErr, agentBootstrapPath(), agentTrustPath(addr), pinnedErr)
+	return nil, nil, fmt.Errorf("%v; bootstrap mode failed (%s); pinned trust (%s) failed: %v", primaryErr, auth.AgentBootstrapPath(), auth.AgentTrustPath(addr), pinnedErr)
 }
 
 func shouldAttemptTokenEnroll(err error) bool {
@@ -323,7 +336,7 @@ func enrollTrustWithToken(ctx context.Context, addr, token string) error {
 	if token == "" {
 		return errors.New("missing token for enrollment")
 	}
-	clientNonce, err := randomNonceBase64(24)
+	clientNonce, err := auth.RandomNonceBase64(24)
 	if err != nil {
 		return err
 	}
@@ -331,7 +344,7 @@ func enrollTrustWithToken(ctx context.Context, addr, token string) error {
 	req := &pb.EnrollRequest{
 		ClientNonce: clientNonce,
 		ClientUnix:  clientUnix,
-		ClientProof: buildEnrollClientProof(token, clientNonce, clientUnix),
+		ClientProof: auth.BuildEnrollClientProof(token, clientNonce, clientUnix),
 	}
 	tlsCfg := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
@@ -340,7 +353,7 @@ func enrollTrustWithToken(ctx context.Context, addr, token string) error {
 	conn, err := grpc.NewClient(
 		addr,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
-		grpc.WithDefaultCallOptions(grpc.ForceCodec(JSONCodec())),
+		grpc.WithDefaultCallOptions(grpc.ForceCodec(auth.JSONCodec())),
 	)
 	if err != nil {
 		return err
@@ -357,14 +370,14 @@ func enrollTrustWithToken(ctx context.Context, addr, token string) error {
 		return errors.New("empty enrollment response")
 	}
 	serverPin := strings.ToLower(strings.TrimSpace(resp.ServerFingerprint))
-	if !validFingerprintHex(serverPin) {
+	if !auth.ValidFingerprintHex(serverPin) {
 		return errors.New("invalid server fingerprint from enrollment")
 	}
-	expectedProof := buildEnrollServerProof(token, clientNonce, clientUnix, resp.ServerNonce, serverPin)
-	if !constantTimeHexEqual(strings.TrimSpace(resp.ServerProof), expectedProof) {
+	expectedProof := auth.BuildEnrollServerProof(token, clientNonce, clientUnix, resp.ServerNonce, serverPin)
+	if !auth.ConstantTimeHexEqual(strings.TrimSpace(resp.ServerProof), expectedProof) {
 		return errors.New("invalid server enrollment proof")
 	}
-	return savePinnedServerFingerprint(addr, serverPin)
+	return auth.SavePinnedServerFingerprint(addr, serverPin)
 }
 
 func isPermanentClientError(err error) bool {
@@ -398,7 +411,7 @@ func dialStreamWithAuth(
 ) (*grpc.ClientConn, pb.ProxyWatchAgent_StreamCandidatesClient, error) {
 	conn, err := grpc.NewClient(
 		addr,
-		SecureDialOptionsWithToken(tlsCfg, token)...,
+		auth.SecureDialOptionsWithToken(tlsCfg, token)...,
 	)
 	if err != nil {
 		return nil, nil, err

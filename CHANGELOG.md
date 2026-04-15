@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-04-15
+
+### Added
+- **Time-lingered control-pivot role promotion**: new `PivotUntil` runtime map (in `shared/classify.go`) plus `ApplyPivotLinger` (in `detection/scoring/child_tunnel.go`). When a process emits `pivot-non-loopback-internal` in a relay context (C1: already a control role; C2: owns listener + has inbound; C3: ancestor in the process tree owns listener + has inbound), the process is stamped into `PivotUntil` for 60 seconds and held at `role=control-pivot` for the window — regardless of what the ML model's committed role would otherwise hold. After the window, the role reverts naturally.
+- **Multi-level parent-chain walk** for the relay-context check: Windows OpenSSH's two-level privsep tree (`sshd_main → sshd_privsep → sshd_session`) now resolves correctly to the listener ancestor even when the intermediate privsep helper is filtered out of the candidate slice. The walker uses `snap.Processes` (from telemetry) up to 4 levels deep.
+- **Enriched pivot evidence**: new `describePivotEvidence` composer. When a process is promoted via `PivotUntil`, the reason string now includes the exact TCP relay targets (`ip:port`, deduped, capped at 3 + `+N more`), named pipe names (prefix-stripped for legibility, same cap), and a dedicated `"SMB admin-share relay (port 445)"` flag when the `pivot-admin-share-smb` signal is present. Visible in the Inspector's Evidence panel.
+- **Pre-existing tunnel/session detection** at process first-observation: a process seen for the first time with both external + internal ESTABLISHED connections gets a +25 score boost (and +20 more for long-lived externals on non-benign clients), gated on proxywatch uptime exceeding `StartupGracePeriod` so service restarts don't false-flag everything as pre-existing.
+- **Online verification signals** (`FOnlineKnownBenign` / `FOnlineKnownMalicious`, features 120–121) — Authenticode OCSP trust hints populated when `PROXYWATCH_ONLINE_VERIFY=live` on Windows, with pre-populated cache support across all platforms. Schema bump from 120 → 122 features; existing trained models are invalidated and the continuous learner retrains from its buffer.
+- **Training view** (Dashboard → Training): live ML training data, feature schema, role predictions, model maturity, and retrain timing.
+
+### Changed
+- **Tunneling state gate is strict real-time**: `CandidateState` returns `"tunneling"` only when the process is control-channel or control-pivot AND (IO ≥ 512 B/s on internal conn OR a fresh internal conn arrival within the 30s conn-recency window). Removed the 30s `TunnelingSeen` linger that was previously pinning tunneling state ON for any process with tunnel topology — rank.go stamps `TunnelingSeen` every cycle from topology alone, which made the linger stick indefinitely. State now reflects actual byte movement.
+- **Restored pre-refactor behavior for sshd-like SOCKS forwarders**: the role-escalation path at `rank.go:1670` now accepts `role=outbound` in addition to `control-channel/listen/listener` when both `tunnelingRecent` (ActiveProxying now or `TunnelingSeen` within 60s) and `pivotRecent` (pivot-non-loopback-internal now or `PivotInternalSeen` within 60s) hold. Fixes the regression where sshd children stayed at `outbound` during active SOCKS forwarding because they couldn't reach `control-channel` on their own (no listener, single target/port below `reverseTunnelEligible` threshold).
+- **Detection pipeline restructured into typed subpackages**: `internal/detection/` now contains `behavior/` (signal emitters per role), `features/` (ML feature extraction), `gbdt/` (LightGBM predictor), `ml/` (learner + training), `model/` (role commit + calibration + experience), `output/` (debug API + emission), `scoring/` (rank + classifier helpers), and `telemetry/` (process/network/raw-socket enumeration). The previous flat `internal/detection/*.go` layout is gone.
+- **`internal/contour/` restructured** into `api/`, `probe/`, `tunnel/` subpackages with thin re-export shims in the top-level `contour.go` and `reexport.go` so external callers don't break.
+- **`internal/agent/` split** into `auth/` (bootstrap + TLS + trust), `convert.go`, `debug.go`, and generated protobuf code. Removed stale enrollment and trust-runtime shims.
+- **`internal/shared/` expanded** with dedicated files: `display.go`, `distinguishing.go`, `dns_cache.go`, `eventlog.go`, `exe_hash.go`, `heuristics.go`, `online_evidence.go`, `operator_labels.go`, `publisher_domains.go`, `roles.go`, `signature*.go`, `state.go`, `vendor_fp_shape.go`, `verifier_pkg_*.go`, `verifier_publisher_dns.go`. Replaces the previous omnibus files.
+- **ML is the primary role classifier** when the predictor is loaded and qualified via shadow agreement + prediction volume. Before qualification, ML runs shadow-only and rank.go's topology decision stands. Signal-based overrides (Cases 1/2/3 in `classifier.go`) gate strictly on `mlLowConfidence < 0.80` — a high-confidence ML prediction outweighs single-heuristic topology flips, so `msedgewebview2`-style cases (ML 99% outbound, topology control-channel) stop flipping.
+
+### Removed
+- **Tier A-E dead code cleanup**: ~96 unreachable functions, helpers, and scaffolding verified dead via multi-platform `deadcode` + cross-reference grep + function-variable wiring audit + external-consumer check + reflective-usage check. Deletions span `internal/calibration/{ai_integration,core,learning,reporting,sampling,tuning_normalization}.go`, `internal/contour/` tunnel/probe/deaddrop subsystems, `internal/detection/{delegated,output,rank*}.go`, `internal/model/{analyze,decide,egress,experience,feedback,model,patterns,quality,runtime}.go`, `internal/agent/{auth,auth_bootstrap,enroll,pb_convert,tls_runtime,trust_runtime}.go`, `internal/telemetry/*` platform stubs consolidated under `detection/telemetry/`, `internal/ui/` orphaned SIEM and training helpers, `internal/siem/*` file-local leftovers, `internal/shared/` LOLBin/MITRE/HTTP helpers with no remaining callers. Build-tag platform shims preserved (Tier F).
+
+### Fixed
+- **sshd parent-child SOCKS detection regression**: the cleanup refactor had rewritten `CandidateState` to gate tunneling on role ∈ {control-channel, control-pivot}, which locked out sshd children (they stay at `role=outbound`). Restored via the `PivotUntil` promotion path.
+- **Botched refactor artifact** at `rank.go:968-971`: orphaned `c.ActiveProxying = true` line immediately overwritten on the next line, a cleanup merge conflict remnant.
+- **Role assignment after ML override**: the ML model's committed-role hold (kicks in at ≥30 observations with benign/benign suggested/committed) was silently reverting control-pivot promotions. The pivot linger enforcement now runs *after* `model.DecideRole` via `scoring.ApplyPivotLinger(candidates, snap.Processes)` in `classifier.go`, so held benign roles can't un-promote an active pivot.
+
+### Code Quality
+- `go build ./... && GOOS=windows go build ./... && GOOS=darwin go build ./...` all clean.
+- `go vet ./...` clean.
+- Live end-to-end verification on Windows agent 172.16.1.2 via `proxychains4 -f /etc/proxychains4.conf nxc ssh 172.16.1.2` (burst) and `nmap -sT -Pn -p 1-400 172.16.1.2 -T4` (sustained): sshd child correctly flips `outbound → control-pivot` + `state=tunneling` during flow, holds control-pivot through brief idle dips via the 60s linger, reverts naturally. cheerful_glove, beacon-j, session.exe, liquid_mezzanine, system pid 4 retained their existing classifications; svchost/lsass/wininit/spoolsv/explorer stayed `outbound/watch` with no false promotions.
+
 ## [1.0.5] - 2026-04-03
 
 ### Added

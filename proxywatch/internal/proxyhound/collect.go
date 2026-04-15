@@ -649,10 +649,8 @@ func roleKindPrefix(role string) string {
 		return "Tunnel"
 	case "control-pivot":
 		return "Pivot"
-	case "control-session":
-		return "Session"
-	case "control-beacon":
-		return "Beacon"
+	case "control-channel":
+		return "Channel"
 	case "listen":
 		return "Listener"
 	case "outbound":
@@ -668,10 +666,8 @@ func roleLabelFromPrefix(prefix string) string {
 		return "control-tunnel"
 	case "Pivot":
 		return "control-pivot"
-	case "Session":
-		return "control-session"
-	case "Beacon":
-		return "control-beacon"
+	case "Channel":
+		return "control-channel"
 	case "Listener":
 		return "listener"
 	case "Outbound":

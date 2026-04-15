@@ -26,155 +26,21 @@ func PutStringStyle(s tcell.Screen, x, y int, text string, st tcell.Style) {
 	}
 }
 
-// PutOverlayStringStyle draws only non-space glyphs so existing background
-// content remains visible under overlay text.
-func PutOverlayStringStyle(s tcell.Screen, x, y int, text string, st tcell.Style) {
-	sw, sh := s.Size()
-	if y < 0 || y >= sh || sw <= 0 {
-		return
-	}
-	for i, r := range text {
-		if r == ' ' {
-			continue
-		}
-		cx := x + i
-		if cx < 0 || cx >= sw {
-			continue
-		}
-		s.SetContent(cx, y, r, nil, st)
-	}
-}
-
-// OverlayState groups the pointer fields common to every workflow overlay
-// (help panel, selection menu) so a single generic handler can drive them all.
-type OverlayState struct {
-	ShowHelp    *bool
-	ShowMenu    *bool
-	HelpIndex   *int
-	MenuIndex   *int
-	MenuOptions *[]string
-	MenuKind    *string
-	MenuTitle   *string
-	HelpOptions func() []string
-	ApplyMenu   func(*shared.AppState)
-}
-
 // AnyOverlayOpen returns true when any workflow has a help or menu overlay visible.
 func AnyOverlayOpen(app *shared.AppState) bool {
-	return app.ShowCalibrateHelp || app.ShowCalibrateMenu ||
-		app.ContourShowHelp || app.ContourShowMenu ||
-		app.SIEMShowHelp || app.SIEMShowMenu ||
+	return app.ContourShowHelp || app.ContourShowMenu ||
 		app.KeystoreShowHelp ||
 		app.WhitelistShowHelp ||
 		app.ShowInspectMenu
 }
 
-// HandleOverlayKey is the generic overlay key handler shared by all workflow
-// modes. It handles quit, ?, Escape, help navigation, and menu navigation.
-func HandleOverlayKey(app *shared.AppState, tev *tcell.EventKey, ov OverlayState, requestQuit func(*shared.AppState) bool) bool {
-	if tev.Rune() == 'q' {
-		return requestQuit(app)
-	}
-	if tev.Rune() == '?' {
-		if *ov.ShowHelp {
-			*ov.ShowHelp = false
-		} else {
-			*ov.ShowMenu = false
-			*ov.ShowHelp = true
-			*ov.HelpIndex = 0
-		}
-		return false
-	}
-	if tev.Key() == tcell.KeyEscape {
-		if *ov.ShowHelp {
-			*ov.ShowHelp = false
-		} else {
-			*ov.ShowMenu = false
-		}
-		return false
-	}
-	if *ov.ShowHelp {
-		maxIdx := len(ov.HelpOptions()) - 1
-		switch tev.Key() {
-		case tcell.KeyUp:
-			if *ov.HelpIndex > 0 {
-				*ov.HelpIndex--
-			}
-		case tcell.KeyDown:
-			if *ov.HelpIndex < max(0, maxIdx) {
-				*ov.HelpIndex++
-			}
-		}
-		return false
-	}
-	if !*ov.ShowMenu || len(*ov.MenuOptions) == 0 {
-		return false
-	}
-	switch tev.Key() {
-	case tcell.KeyUp:
-		if *ov.MenuIndex > 0 {
-			*ov.MenuIndex--
-		}
-	case tcell.KeyDown:
-		if *ov.MenuIndex < len(*ov.MenuOptions)-1 {
-			*ov.MenuIndex++
-		}
-	case tcell.KeyEnter:
-		ov.ApplyMenu(app)
-		*ov.ShowMenu = false
-	}
-	return false
-}
-
-// OpenWorkflowMenu is the generic menu opener shared by all workflow modes.
-func OpenWorkflowMenu(kind, title string, options []string, selected int, showHelp, showMenu *bool, menuKind, menuTitle *string, menuOptions *[]string, menuIndex *int) {
-	if len(options) == 0 {
-		return
-	}
-	if showHelp != nil {
-		*showHelp = false
-	}
-	*showMenu = true
-	*menuKind = kind
-	*menuTitle = title
-	*menuOptions = options
-	if selected < 0 {
-		selected = 0
-	}
-	if selected >= len(options) {
-		selected = len(options) - 1
-	}
-	*menuIndex = selected
-}
-
-// CycleField moves a field index up or down with wrap-around.
-func CycleField(field *int, minField, maxField int, up bool) {
-	if up {
-		if *field > minField {
-			*field--
-		} else {
-			*field = maxField
-		}
-	} else {
-		if *field < maxField {
-			*field++
-		} else {
-			*field = minField
-		}
-	}
-}
-
 // RoleStyle returns the display style for a candidate role.
 func RoleStyle(role string) tcell.Style {
-	switch role {
-	case "control-session", "control-beacon":
+	switch shared.RoleFamily(role) {
+	case "control-channel":
 		return StyleSession
 	case "control-pivot":
 		return StylePivot
-	case "control-tunnel":
-		return StyleTunnel
-	case "analyzing":
-		return StyleDim
 	default:
 		return StyleTextB
 	}
@@ -182,14 +48,14 @@ func RoleStyle(role string) tcell.Style {
 
 // StateStyle returns the display style for a candidate state.
 func StateStyle(state string) tcell.Style {
-	switch state {
-	case "active":
+	switch {
+	case state == "tunneling":
 		return StyleAlertB
-	case "strong":
-		return StyleWarn
-	case "exited":
+	case strings.Contains(state, "Analyzing"):
 		return StyleDim
-	default:
+	case state == "exited":
+		return StyleDim
+	default: // "watch"
 		return StyleWatch
 	}
 }
@@ -623,7 +489,7 @@ var CollectDurations = []string{"30s", "1m", "5m"}
 func SafeRolePreset(app *shared.AppState) string {
 	p := strings.TrimSpace(app.RolePreset)
 	if p == "" {
-		return "recommended"
+		return "all"
 	}
 	return p
 }
@@ -679,7 +545,7 @@ func DashboardMenuHelpOptions() []string {
 		"ESC          Exit host process view",
 		"",
 		"[Workflows]",
-		"1            Calibration",
+		"1            Model",
 		"2            Contour",
 		"3            ProxyHound",
 		"4            SIEM",
@@ -692,28 +558,6 @@ func DashboardMenuHelpOptions() []string {
 		"c            Role + sort menu",
 		"x            Remove disconnected host",
 		"?            Close this menu",
-		"q            Quit",
-	}
-}
-
-func CalibrationMenuHelpOptions() []string {
-	return []string{
-		"[Navigation]",
-		"UP/DOWN      Move field",
-		"TAB/BTAB     Next / prev field",
-		"LEFT/RIGHT   Cycle workflows",
-		"0-6          Jump to workflow",
-		"",
-		"[Editing]",
-		"ENTER        Edit / open / apply",
-		"BACKSPACE    Delete while editing",
-		"",
-		"[Report]",
-		"PGUP/PGDN    Scroll report page",
-		"[ / ]        Scroll report line",
-		"",
-		"?            Close this menu",
-		"ESC          Back to dashboard",
 		"q            Quit",
 	}
 }
@@ -784,18 +628,23 @@ func KeystoreMenuHelpOptions() []string {
 
 func SiemMenuHelpOptions() []string {
 	return []string{
-		"[Navigation]",
-		"UP/DOWN      Move field",
+		"[Scope]",
+		"SIEM snapshots every control-* process and writes",
+		"detections in all five platforms (Splunk KQL Sigma YARA Suricata)",
+		"to the Output path as a single JSON bundle.",
+		"",
+		"[Keys]",
+		"g / G        Generate & export",
+		"ENTER        Same as g (from any focused row)",
+		"UP/DOWN      Move between Output and Action",
+		"TAB / BTAB   Same as UP/DOWN",
 		"LEFT/RIGHT   Cycle workflows",
 		"0-6          Jump to workflow",
 		"",
-		"[Editing]",
-		"ENTER        Edit / open / run",
-		"BACKSPACE    Delete while editing",
-		"",
-		"[Report]",
-		"PGUP/PGDN    Scroll report page",
-		"[ / ]        Scroll report line",
+		"[Scroll]",
+		"PGUP/PGDN    Scroll detections panel",
+		"[ / ]        Scroll line",
+		"HOME/END     Jump to top/bottom",
 		"",
 		"?            Close this menu",
 		"ESC          Back to dashboard",
@@ -841,13 +690,11 @@ func InspectorMenuOptions() []string {
 }
 
 func NormalizeDashboardRole(role string) string {
-	role = strings.ToLower(strings.TrimSpace(role))
-	switch role {
-	case "control-session", "control-beacon", "control-pivot", "control-tunnel", "analyzing", "listen", "outbound":
-		return role
-	default:
+	f := shared.RoleFamily(role)
+	if f == "other" {
 		return "outbound"
 	}
+	return f
 }
 
 func ClampIndex(idx, n int) int {
@@ -882,38 +729,27 @@ func SortedCandidates(cands []shared.Candidate, preset string) []shared.Candidat
 		return c.Proc.Pid
 	}
 	stateOf := func(c shared.Candidate) string {
-		if c.ActiveProxying {
-			return "active"
-		}
-		if c.StrongEvidence {
-			return "strong"
-		}
-		return "watch"
+		return shared.CandidateState(c)
 	}
 	ageOf := func(c shared.Candidate) int {
 		return DashboardCandidateAgeSeconds(c)
 	}
 	// rolePriority returns a sort rank: lower = higher threat = sorted first.
-	// control-tunnel(0) > control-pivot(1) > control-beacon(2) > control-session(3) >
-	// listen(4) > outbound(5) > unknown(6)
+	// control-pivot(0) > control-channel(1) >
+	// listener(4) > outbound(5) > unknown(6)
 	rolePriority := func(c shared.Candidate) int {
-		switch strings.ToLower(c.Role) {
-		case "control-tunnel":
-			return 0
+		r := NormalizeDashboardRole(c.Role)
+		switch r {
 		case "control-pivot":
+			return 0
+		case "control-channel":
 			return 1
-		case "control-beacon":
-			return 2
-		case "control-session":
-			return 3
-		case "analyzing":
+		case "listener":
 			return 4
-		case "listen":
-			return 5
 		case "outbound":
-			return 6
+			return 5
 		default:
-			return 7
+			return 6
 		}
 	}
 
@@ -921,14 +757,23 @@ func SortedCandidates(cands []shared.Candidate, preset string) []shared.Candidat
 	sort.SliceStable(view, func(i, j int) bool {
 		a, b := view[i], view[j]
 		switch presetLower {
+		case "role":
+			// Sort by role priority — group all beacons together, all sessions
+			// together, etc. Exited processes stay with their role group.
+			pa, pb := rolePriority(a), rolePriority(b)
+			if pa != pb {
+				return pa < pb
+			}
+			// Within same role, live above exited.
+			if a.Exited != b.Exited {
+				return !a.Exited && b.Exited
+			}
 		case "host":
 			if hostOf(a) != hostOf(b) {
 				return hostOf(a) < hostOf(b)
 			}
-		case "role":
-			pa, pb := rolePriority(a), rolePriority(b)
-			if pa != pb {
-				return pa < pb
+			if a.Exited != b.Exited {
+				return !a.Exited && b.Exited
 			}
 		case "age":
 			if ageOf(a) != ageOf(b) {
@@ -947,11 +792,14 @@ func SortedCandidates(cands []shared.Candidate, preset string) []shared.Candidat
 				return nameOf(a) < nameOf(b)
 			}
 		default:
+			// Default sort: live above exited, then by threat priority.
+			if a.Exited != b.Exited {
+				return !a.Exited && b.Exited
+			}
 			return lessByDefault(a, b)
 		}
 		// When the primary sort key is equal, use secondary sort
-		// (process name then PID) instead of lessByDefault which
-		// would override the user's chosen sort with role priority.
+		// (process name then PID).
 		if nameOf(a) != nameOf(b) {
 			return nameOf(a) < nameOf(b)
 		}

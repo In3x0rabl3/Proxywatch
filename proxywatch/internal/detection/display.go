@@ -1,98 +1,34 @@
-package classifier
+package detection
 
 import (
-	"strings"
 	"time"
 
+	"proxywatch/internal/detection/scoring"
 	"proxywatch/internal/shared"
 )
 
 const (
-	stableDisplayMinScans = 2
-	stableDisplayResetGap = 2 * time.Second
+	// Minimum scoring cycles before a process appears in the dashboard.
+	// Set to 1 so processes show on the first scan — the role filter
+	// already excludes uninteresting processes.
+	minDisplayObservations = 1
 )
 
-func shouldDisplayCandidate(c *shared.Candidate, now time.Time) bool {
+// shouldDisplayCandidate returns true when a process has been observed
+// enough times to be worth showing. Prevents transient system processes
+// (service workers, update checks) from popping up for a single frame.
+func shouldDisplayCandidate(c *shared.Candidate, _ time.Time) bool {
 	if c == nil || c.Proc == nil {
 		return false
 	}
 
-	hist := getHistory(historyPIDForCandidate(c), now)
-	if (c.Role == "control-session" || c.Role == "control-beacon") && shouldDelayWeakSession(c) {
-		if !hist.LastDisplayEval.IsZero() && now.Sub(hist.LastDisplayEval) > stableDisplayResetGap {
-			hist.DisplayStreak = 0
-		}
-		hist.LastDisplayEval = now
-		hist.DisplayStreak++
-		return hist.DisplayStreak >= stableDisplayMinScans
-	}
-	if shared.IsControlRole(c.Role) {
-		hist.DisplayStreak = 0
-		hist.LastDisplayEval = now
+	// Exited/lingering processes always show.
+	if c.Exited {
 		return true
 	}
 
-	// Keep high-signal process views responsive.
-	if c.Score >= 55 || c.ActiveProxying || c.DelegatedEgress || c.DelegatedStrong {
-		hist.DisplayStreak = 0
-		hist.LastDisplayEval = now
-		return true
-	}
-	if shouldShowImmediateUserEgress(c) {
-		hist.DisplayStreak = 0
-		hist.LastDisplayEval = now
-		return true
-	}
-
-	if !hist.LastDisplayEval.IsZero() && now.Sub(hist.LastDisplayEval) > stableDisplayResetGap {
-		hist.DisplayStreak = 0
-	}
-	hist.LastDisplayEval = now
+	// Require a few observations before displaying.
+	hist := scoring.GetHistory(scoring.HistoryPIDForCandidate(c), time.Now())
 	hist.DisplayStreak++
-	return hist.DisplayStreak >= stableDisplayMinScans
-}
-
-func shouldDelayWeakSession(c *shared.Candidate) bool {
-	if c == nil {
-		return false
-	}
-	if c.DelegatedStrong || c.StrongEvidence || c.ActiveProxying {
-		return false
-	}
-	if c.OutInternal > 0 {
-		return false
-	}
-	// Mature control channels are likely real sessions; show immediately.
-	if c.ControlDurationSeconds >= 20 {
-		return false
-	}
-	return true
-}
-
-func shouldShowImmediateUserEgress(c *shared.Candidate) bool {
-	if c == nil || c.Proc == nil {
-		return false
-	}
-	if shared.IsLikelyBenignControlClient(c.Proc) {
-		return false
-	}
-	if c.OutTotal <= 0 && !c.DelegatedEgress {
-		return false
-	}
-
-	path := shared.NormalizeExePath(c.Proc.ExePath)
-	if path == "" {
-		return false
-	}
-	if strings.HasPrefix(path, "c:/users/") ||
-		strings.HasPrefix(path, "/home/") ||
-		strings.Contains(path, "/downloads/") ||
-		strings.Contains(path, "/desktop/") ||
-		strings.Contains(path, "/appdata/local/temp/") ||
-		strings.Contains(path, "/appdata/roaming/") ||
-		strings.Contains(path, "/tmp/") ||
-		strings.Contains(path, "/var/tmp/") {
-		return true
-	}
-	return false
+	return hist.DisplayStreak >= minDisplayObservations
 }

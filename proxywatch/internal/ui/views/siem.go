@@ -2,7 +2,8 @@ package views
 
 import (
 	"fmt"
-	"proxywatch/internal/ui/platform"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,19 +12,33 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/gdamore/tcell/v2"
 
-	"proxywatch/internal/calibration"
 	"proxywatch/internal/shared"
-	"proxywatch/internal/siem"
+	"proxywatch/internal/ui/platform"
 )
 
+// SIEMPlatforms lists the five detection rule formats exported in every
+// generated JSON bundle.
+var SIEMPlatforms = []string{"Splunk", "KQL", "Sigma", "YARA", "Suricata"}
+
+// SIEMRoleFilters retained for legacy callers — TUI pins to control-* only.
+var SIEMRoleFilters = []string{"", "control", "pivot", "listener", "outbound"}
+
+// Setup form fields, ordered to match their visual layout (Output above
+// Action) so UP/DOWN navigation feels natural.
+const (
+	siemFieldOutput = iota
+	siemFieldAction
+)
+
+const siemFieldMax = siemFieldAction
+
 type SIEMModel struct {
-	app            *shared.AppState
-	viewport       viewport.Model
-	width          int
-	height         int
-	ready          bool
-	contentKey     uint64
-	dynamicReportH int
+	app        *shared.AppState
+	viewport   viewport.Model
+	width      int
+	height     int
+	ready      bool
+	contentKey uint64
 }
 
 func NewSIEMModel(app *shared.AppState) SIEMModel {
@@ -51,11 +66,8 @@ func (m SIEMModel) Update(msg tea.Msg) (SIEMModel, tea.Cmd) {
 			return m, nil
 		}
 
-		// Number key workflow jumping.
-		if !m.app.SIEMEditing {
-			if jumpToWorkflow(m.app, tev.Rune()) {
-				return m, nil
-			}
+		if jumpToWorkflow(m.app, tev.Rune()) {
+			return m, nil
 		}
 
 		switch tev.Key() {
@@ -69,7 +81,7 @@ func (m SIEMModel) Update(msg tea.Msg) (SIEMModel, tea.Cmd) {
 			}
 		}
 
-		if m.ready && !m.app.SIEMShowMenu && !m.app.SIEMShowHelp && !m.app.SIEMEditing {
+		if m.ready && !m.app.SiemShowHelp {
 			if m.handleScroll(tev) {
 				return m, nil
 			}
@@ -116,11 +128,8 @@ func (m *SIEMModel) handleScroll(tev *tcell.EventKey) bool {
 func (m SIEMModel) View() string {
 	w := m.width
 	h := m.height
-	if w <= 0 {
-		w = 80
-	}
-	if h <= 0 {
-		h = 24
+	if w <= 0 || h <= 0 {
+		return ""
 	}
 
 	var sections []string
@@ -131,31 +140,24 @@ func (m SIEMModel) View() string {
 	for _, s := range sections {
 		used += lipgloss.Height(s)
 	}
-	m.dynamicReportH = h - used
-	if m.dynamicReportH < 4 {
-		m.dynamicReportH = 4
+	reportH := h - used
+	if reportH < 4 {
+		reportH = 4
 	}
-
-	sections = append(sections, m.renderReportPanel())
+	sections = append(sections, m.renderReportPanel(reportH))
 
 	view := lipgloss.JoinVertical(lipgloss.Left, sections...)
 
-	if m.app.SIEMShowMenu {
-		view = overlayCenter(view, renderMenuPanel(
-			m.app.SIEMMenuTitle,
-			m.app.SIEMMenuOptions,
-			m.app.SIEMMenuIndex,
-			"", w), w, h)
-	}
-	if m.app.SIEMShowHelp {
+	if m.app.SiemShowHelp {
 		view = overlayCenter(view, renderHelpPanel("SIEM Menu", siemMenuHelpOptions(), w), w, h)
 	}
 	if m.app.ShowQuitConfirm && m.app.QuitConfirmDeadline.After(time.Now()) {
-		quitPanel := renderQuitConfirm(m.app.QuitConfirmDeadline, w)
-		view = overlayCenter(view, quitPanel, w, m.height)
+		view = overlayCenter(view, renderQuitConfirm(m.app.QuitConfirmDeadline, w), w, h)
 	}
 	return view
 }
+
+// ── header ──────────────────────────────────────────────────────────────────
 
 func (m SIEMModel) renderHeader() string {
 	w := m.width
@@ -168,66 +170,90 @@ func (m SIEMModel) renderHeader() string {
 	gap := max(1, contentW-len(helpPlain)-len(utcPlain))
 	line := dimText.Render(helpPlain) + bgSp(gap) +
 		rightLabelStyle.Render("UTC: ") + sectionLabel.Render(time.Now().UTC().Format(UTCTimeFormat))
-
-	content := line
-	h := 3
-	if m.app.SIEMStatusError && m.app.SIEMStatusText != "" &&
-		time.Now().Before(m.app.SIEMStatusUntil) {
-		content += "\n" + statusFail.Render("  "+m.app.SIEMStatusText)
-		h++
-	}
-	return renderPanel(w, h, "SIEM", "proxywatch", "", content)
+	return renderPanel(w, 3, "SIEM", "proxywatch", "", line)
 }
 
-func (m SIEMModel) headerHeight() int {
-	if m.app.SIEMStatusError && m.app.SIEMStatusText != "" &&
-		time.Now().Before(m.app.SIEMStatusUntil) {
-		return 4
-	}
-	return 3
-}
-
-func (m SIEMModel) setupHeight() int {
-	h := 7
-	if len(m.app.SIEMSourceReports) == 0 {
-		h++
-	}
-	return h
-}
+// ── setup: Output + Action only, proxyhound-style ──────────────────────────
 
 func (m SIEMModel) renderSetup() string {
-	_ = calibration.DetectProviderAccess()
-	provider := calibration.ProviderLabel(m.app.SIEMProvider)
-
-	sourceValue := "(none found)"
-	if len(m.app.SIEMSourceReports) > 0 {
-		selected := nonEmptySIEMValue(m.app.SIEMSourceReport, m.app.SIEMSourceReports[0])
-		sourceValue = fmt.Sprintf("%s (%d found)", selected, len(m.app.SIEMSourceReports))
-	}
-
-	genLabel := platform.IconPlay + " Build SIEM detections"
-	if m.app.SIEMGenerating {
-		genLabel = fmt.Sprintf(platform.IconStop+" Stop generation (%s elapsed)", spinnerElapsed(m.app.SIEMStartedAt))
-	}
-
-	rows := []FormRow{
-		{Field: siemFieldProvider, Label: "Provider", Value: provider},
-		{Field: siemFieldModel, Label: "Model", Value: nonEmptySIEMValue(m.app.SIEMModel, calibration.DefaultModel(m.app.SIEMProvider))},
-		{Field: siemFieldSourceReport, Label: "Profile", Value: sourceValue},
-		{Field: siemFieldJSONOutput, Label: "Output", Value: nonEmptySIEMValue(m.app.SIEMExportPath, siem.DefaultSIEMJSONPath()), Editable: true},
-		{Field: siemFieldGenerate, Label: "Generate", Value: genLabel},
-	}
-
-	if len(m.app.SIEMSourceReports) == 0 {
-		rows = append(rows, FormRow{Field: siemFieldCalibrate, Label: "Calibrate", Value: "Open Calibration"})
-	}
-
 	w := m.width
 	if w <= 0 {
 		w = 80
 	}
-	return renderSetupPanel("SETUP", rows, m.app.SIEMField, m.app.SIEMEditing, w)
+
+	if strings.TrimSpace(m.app.SiemOutputPath) == "" {
+		m.app.SiemOutputPath = defaultSIEMOutputPath(m.app)
+	}
+
+	action := platform.IconPlay + " Generate & Export"
+
+	field := m.app.SiemField
+	if field < 0 || field > siemFieldMax {
+		field = siemFieldAction
+	}
+
+	rows := []FormRow{
+		{Field: siemFieldOutput, Label: "Output", Value: m.app.SiemOutputPath, Editable: true},
+		{Field: siemFieldAction, Label: "Action", Value: action},
+	}
+	return renderSetupPanel("SETUP", rows, field, false, w)
 }
+
+// defaultSIEMOutputPath is the view-side mirror of the keys-package helper
+// of the same name. Duplicated (lowercase, unexported) to avoid a views→keys
+// import cycle.
+func defaultSIEMOutputPath(app *shared.AppState) string {
+	if p := strings.TrimSpace(app.SiemOutputPath); p != "" {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "."
+	}
+	host := shared.DisplayHost(app.LocalHost)
+	if host == "" || host == "local" {
+		host = shared.DefaultHostID("local")
+	}
+	return filepath.Join(home, ".proxywatch", "siem",
+		fmt.Sprintf("siem-%s.json", host))
+}
+
+// ── report panel ────────────────────────────────────────────────────────────
+
+func (m SIEMModel) renderReportPanel(reportH int) string {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	right := ""
+	if m.app.SiemGenerated {
+		right = fmt.Sprintf("%d detection%s", len(m.app.SiemGeneratedSet), plural(len(m.app.SiemGeneratedSet)))
+	}
+	opts := ReportPanelOpts{
+		Title:       "DETECTIONS",
+		RightLabel:  right,
+		Width:       w,
+		Height:      reportH,
+		StatusText:  m.app.SiemStatusText,
+		StatusError: m.app.SiemStatusError,
+		StatusUntil: m.app.SiemStatusUntil,
+	}
+	if m.ready {
+		opts.Content = m.viewport.View()
+		total := m.viewport.TotalLineCount()
+		visible := m.viewport.VisibleLineCount()
+		opts.ScrollTotal = total
+		opts.ScrollVisible = visible
+		opts.ScrollTop = m.viewport.YOffset + 1
+		opts.ScrollBottom = m.viewport.YOffset + visible
+		if opts.ScrollBottom > total {
+			opts.ScrollBottom = total
+		}
+	}
+	return renderReportPanel(opts)
+}
+
+// ── viewport lifecycle ──────────────────────────────────────────────────────
 
 func (m *SIEMModel) InitViewport() {
 	if m.width <= 0 || m.height <= 0 {
@@ -244,13 +270,18 @@ func (m *SIEMModel) InitViewport() {
 	if reportH < 4 {
 		reportH = 4
 	}
+	reportW := m.width - 2
+	vpH := reportH - 2
+	if vpH < 2 {
+		vpH = 2
+	}
 	if !m.ready {
-		m.viewport = viewport.New(m.width-4, reportH-2)
+		m.viewport = viewport.New(reportW, vpH)
 		m.viewport.Style = lipgloss.NewStyle()
 		m.ready = true
 	} else {
-		m.viewport.Width = m.width - 4
-		m.viewport.Height = reportH - 2
+		m.viewport.Width = reportW
+		m.viewport.Height = vpH
 	}
 }
 
@@ -266,341 +297,122 @@ func (m *SIEMModel) RefreshContent() {
 	}
 }
 
+// ── content ─────────────────────────────────────────────────────────────────
+//
+// Display model is intentionally minimal: nothing before Action runs, and
+// after Action runs a single summary line + a plain table. No badges, no
+// per-detection cards, no per-format checkmarks — every row exports every
+// platform so listing them is noise.
+
 func (m SIEMModel) buildContent() string {
-	m.app.ProgressMu.Lock()
-	progressLines := append([]string(nil), m.app.SIEMProgressLines...)
-	m.app.ProgressMu.Unlock()
-
-	if m.app.SIEMGenerating && len(progressLines) == 0 {
-		_ = dotSpinFrames
-		frame := dotSpinFrame()
-		spinner := lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Render(frame)
-		return "  " + spinner + " " + sectionLabel.Render("Starting generation...")
+	if !m.app.SiemGenerated {
+		return ""
 	}
-	if m.app.SIEMGenerating && len(progressLines) > 0 {
-		var out []string
-		plines := progressLines
-		for i, line := range plines {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "[*]") {
-				task := strings.TrimSpace(strings.TrimPrefix(trimmed, "[*]"))
-				if i == len(plines)-1 {
-					_ = dotSpinFrames
-					frame := dotSpinFrame()
-					spinner := lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Render(frame)
-					out = append(out, "  "+spinner+" "+sectionLabel.Render(task))
-				} else {
-					out = append(out, statusPass.Render("  ● ")+bodyText.Render(task))
-				}
-			} else if strings.HasPrefix(trimmed, "[+]") {
-				task := strings.TrimSpace(strings.TrimPrefix(trimmed, "[+]"))
-				out = append(out, statusPass.Render("  ● ")+bodyText.Render(task))
-			} else if strings.HasPrefix(trimmed, "[-]") {
-				task := strings.TrimSpace(strings.TrimPrefix(trimmed, "[-]"))
-				out = append(out, statusFail.Render("  ✗ ")+statusFail.Render(task))
-			} else {
-				out = append(out, "    "+bodyText.Render(trimmed))
-			}
-		}
-		return strings.Join(out, "\n")
+	if len(m.app.SiemGeneratedSet) == 0 {
+		return "  No control-* processes were observed at generate time."
 	}
 
-	if len(m.app.SIEMReportLines) > 0 {
-		return m.buildStyledReport()
+	count := len(m.app.SiemGeneratedSet)
+	rules := count * len(SIEMPlatforms)
+	dest := strings.TrimSpace(m.app.SiemLastExportPath)
+	if dest == "" {
+		dest = m.app.SiemOutputPath
 	}
+	ts := m.app.SiemGeneratedAt.UTC().Format("2006-01-02 15:04:05 UTC")
 
-	return inspValue.Render("No SIEM report has been generated yet.") + "\n" +
-		dimText.Render("Select a source report and run Build SIEM detections.") + "\n" +
-		func() string {
-			if len(m.app.SIEMSourceReports) == 0 {
-				return statusFail.Render("No calibration reports found. Run Calibration first.")
-			}
-			return ""
-		}()
+	var b strings.Builder
+	b.WriteString("  ")
+	b.WriteString(bodyText.Render(fmt.Sprintf(
+		"%d detection%s · %d rules · %s",
+		count, plural(count), rules, ts)))
+	b.WriteByte('\n')
+	b.WriteString("  ")
+	b.WriteString(dimText.Render(shortenHome(dest)))
+	b.WriteString("\n\n")
+
+	b.WriteString(m.renderTable())
+	return b.String()
 }
 
-func (m SIEMModel) buildStyledReport() string {
-	// Severity styles
-	sevCritical := lipgloss.NewStyle().Foreground(colorAlert).Bold(true)
-	sevHigh := lipgloss.NewStyle().Foreground(colorAlert)
-	sevMed := lipgloss.NewStyle().Foreground(colorWarn).Bold(true)
-	sevLow := lipgloss.NewStyle().Foreground(colorDim)
-	// Structural styles
-	frameStyle := lipgloss.NewStyle().Foreground(colorFrame)
-	accentBold := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	queryStyle := lipgloss.NewStyle().Foreground(colorMuted)
-	bulletStyle := lipgloss.NewStyle().Foreground(colorCyan)
-	numStyle := lipgloss.NewStyle().Foreground(colorAccent)
+func (m SIEMModel) renderTable() string {
+	const (
+		nameW    = 28
+		pidW     = 6
+		roleW    = 18
+		channelW = 22
+	)
+	var b strings.Builder
 
-	var out []string
+	header := fmt.Sprintf("  %-*s  %-*s  %-*s  %-*s  %s",
+		nameW, "PROCESS", pidW, "PID", roleW, "ROLE", channelW, "CHANNEL", "TOP SIGNAL")
+	b.WriteString(dimText.Render(header))
+	b.WriteByte('\n')
 
-	for _, line := range m.app.SIEMReportLines {
-		trimmed := strings.TrimSpace(line)
-
-		// Empty lines pass through for spacing
-		if trimmed == "" {
-			out = append(out, "")
-			continue
-		}
-
-		// ═══ Double-line borders (header)
-		if len(trimmed) > 2 && trimmed == strings.Repeat("\u2550", len(trimmed)) {
-			out = append(out, frameStyle.Render(line))
-			continue
-		}
-
-		// Section headers: "  SUMMARY", "  KEY FINDINGS", "  DEFENDER NOTES", "  SIEM DETECTION REPORT"
-		if isSIEMSectionHeader(trimmed) {
-			out = append(out, accentBold.Render(line))
-			continue
-		}
-
-		// Section underlines: lines that are only ─ characters (after trim and leading spaces)
-		stripped := strings.TrimSpace(trimmed)
-		if len(stripped) > 1 && stripped == strings.Repeat("\u2500", len(stripped)) {
-			out = append(out, frameStyle.Render(line))
-			continue
-		}
-
-		// Box drawing: lines starting with box chars ┌ ┐ └ ┘ │
-		if isSIEMBoxLine(trimmed) {
-			// Check for severity title lines inside boxes: "│  ▲ CRITICAL", "│  ● HIGH", etc.
-			if strings.Contains(trimmed, "\u25b2") && strings.Contains(trimmed, "CRITICAL") {
-				styled := styleSIEMCardLine(line, sevCritical, frameStyle)
-				out = append(out, styled)
-				continue
+	for _, c := range m.app.SiemGeneratedSet {
+		name := "(unknown)"
+		pid := 0
+		if c.Proc != nil {
+			if strings.TrimSpace(c.Proc.Name) != "" {
+				name = c.Proc.Name
 			}
-			if strings.Contains(trimmed, "\u25cf") && strings.Contains(trimmed, "HIGH") {
-				styled := styleSIEMCardLine(line, sevHigh, frameStyle)
-				out = append(out, styled)
-				continue
-			}
-			if strings.Contains(trimmed, "\u25c6") && strings.Contains(trimmed, "MEDIUM") {
-				styled := styleSIEMCardLine(line, sevMed, frameStyle)
-				out = append(out, styled)
-				continue
-			}
-			if strings.Contains(trimmed, "\u25cb") && (strings.Contains(trimmed, "LOW") || strings.Contains(trimmed, "\u2014")) {
-				styled := styleSIEMCardLine(line, sevLow, frameStyle)
-				out = append(out, styled)
-				continue
-			}
-
-			// Query lines inside cards (├─ Splunk:, └─ KQL:, etc.)
-			if strings.Contains(trimmed, "Splunk:") || strings.Contains(trimmed, "KQL:") ||
-				strings.Contains(trimmed, "ESQL:") || strings.Contains(trimmed, "Sigma:") ||
-				strings.Contains(trimmed, "Suricata:") || strings.Contains(trimmed, "YARA:") {
-				out = append(out, styleSIEMQueryLine(line, queryStyle, frameStyle))
-				continue
-			}
-
-			// Signal bullet lines inside cards
-			if strings.Contains(trimmed, "\u2022") { // •
-				out = append(out, styleSIEMBulletInBox(line, bulletStyle, frameStyle))
-				continue
-			}
-
-			// Label lines: Role:, Severity:, Processes:, MITRE:, Tactics:, Description:, Signals:, Queries:
-			if isSIEMFieldLine(trimmed) {
-				out = append(out, styleSIEMFieldLine(line, frameStyle))
-				continue
-			}
-
-			// Default box content
-			out = append(out, styleSIEMBoxContent(line, frameStyle))
-			continue
+			pid = c.Proc.Pid
 		}
-
-		// Stats subtitle in header (detections | candidates | ...)
-		if strings.Contains(trimmed, "detections") && strings.Contains(trimmed, "|") && strings.Contains(trimmed, "candidates") {
-			out = append(out, inspValue.Render(line))
-			continue
+		role := c.Role
+		channel := "—"
+		if c.ControlChannel != nil && c.ControlChannel.RemoteAddress != "" {
+			channel = fmt.Sprintf("%s:%d",
+				c.ControlChannel.RemoteAddress, c.ControlChannel.RemotePort)
 		}
-
-		// Bullet points outside cards (key findings)
-		if strings.HasPrefix(trimmed, "\u2022") { // •
-			out = append(out, bulletStyle.Render(line))
-			continue
+		topSig := "—"
+		if len(c.Signals) > 0 {
+			topSig = c.Signals[0]
 		}
-
-		// Numbered notes: "  1. ..."
-		if len(trimmed) > 2 && trimmed[0] >= '1' && trimmed[0] <= '9' && strings.Contains(trimmed[:3], ".") {
-			dotIdx := strings.Index(trimmed, ".")
-			if dotIdx > 0 && dotIdx < 3 {
-				prefix := line[:strings.Index(line, trimmed)+dotIdx+1]
-				rest := line[strings.Index(line, trimmed)+dotIdx+1:]
-				out = append(out, numStyle.Render(prefix)+bodyText.Render(rest))
-				continue
-			}
-		}
-
-		// Default: body text
-		out = append(out, bodyText.Render(line))
+		row := fmt.Sprintf("  %-*s  %-*d  %-*s  %-*s  %s",
+			nameW, truncStr(name, nameW),
+			pidW, pid,
+			roleW, truncStr(role, roleW),
+			channelW, truncStr(channel, channelW),
+			truncStr(topSig, 40))
+		b.WriteString(bodyText.Render(row))
+		b.WriteByte('\n')
 	}
-
-	if len(out) == 0 {
-		return dimText.Render("  No detections generated.")
-	}
-
-	return strings.Join(out, "\n")
+	return b.String()
 }
 
-// isSIEMSectionHeader returns true for section title lines in the report.
-func isSIEMSectionHeader(trimmed string) bool {
-	headers := []string{
-		"SIEM DETECTION REPORT",
-		"SUMMARY",
-		"KEY FINDINGS",
-		"DEFENDER NOTES",
+func plural(n int) string {
+	if n == 1 {
+		return ""
 	}
-	for _, h := range headers {
-		if trimmed == h {
-			return true
-		}
+	return "s"
+}
+
+func shortenHome(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if strings.HasPrefix(p, home) {
+		return "~" + strings.TrimPrefix(p, home)
+	}
+	return p
+}
+
+func truncStr(s string, w int) string {
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	if w <= 1 {
+		return s[:w]
+	}
+	return s[:w-1] + "…"
+}
+
+// HandleSIEMKey is wired by the ui package at startup.
+var HandleSIEMKey func(*shared.AppState, *tcell.EventKey) bool
+
+func handleSIEMKey(app *shared.AppState, tev *tcell.EventKey) bool {
+	if HandleSIEMKey != nil {
+		return HandleSIEMKey(app, tev)
 	}
 	return false
-}
-
-// isSIEMBoxLine returns true if a line begins with a Unicode box-drawing character.
-func isSIEMBoxLine(trimmed string) bool {
-	if trimmed == "" {
-		return false
-	}
-	for _, r := range trimmed {
-		switch r {
-		case '\u250c', '\u2510', '\u2514', '\u2518', '\u2502', '\u2500', '\u251c', '\u2524':
-			return true
-		}
-		// Skip leading whitespace
-		if r == ' ' {
-			continue
-		}
-		return false
-	}
-	return false
-}
-
-// styleSIEMCardLine styles a severity title line inside a card box.
-// It colors the box characters in frame color and the content in severity color.
-func styleSIEMCardLine(line string, sevStyle, frameStyle lipgloss.Style) string {
-	// Find the │ prefix and style it separately
-	idx := strings.Index(line, "\u2502")
-	if idx < 0 {
-		return sevStyle.Render(line)
-	}
-	prefix := line[:idx+len("\u2502")]
-	rest := line[idx+len("\u2502"):]
-	return frameStyle.Render(prefix) + sevStyle.Render(rest)
-}
-
-// styleSIEMQueryLine styles query lines (├─ Splunk: ...) inside cards.
-func styleSIEMQueryLine(line string, qStyle, frameStyle lipgloss.Style) string {
-	idx := strings.Index(line, "\u2502")
-	if idx < 0 {
-		return qStyle.Render(line)
-	}
-	prefix := line[:idx+len("\u2502")]
-	rest := line[idx+len("\u2502"):]
-	return frameStyle.Render(prefix) + qStyle.Render(rest)
-}
-
-// styleSIEMBulletInBox styles bullet lines inside card boxes.
-func styleSIEMBulletInBox(line string, bStyle, frameStyle lipgloss.Style) string {
-	idx := strings.Index(line, "\u2502")
-	if idx < 0 {
-		return bStyle.Render(line)
-	}
-	prefix := line[:idx+len("\u2502")]
-	rest := line[idx+len("\u2502"):]
-	return frameStyle.Render(prefix) + bStyle.Render(rest)
-}
-
-// isSIEMFieldLine returns true for labeled field lines inside detection cards.
-func isSIEMFieldLine(trimmed string) bool {
-	// After stripping the │ prefix, check for field labels
-	after := trimmed
-	if idx := strings.Index(after, "\u2502"); idx >= 0 {
-		after = strings.TrimSpace(after[idx+len("\u2502"):])
-	}
-	fields := []string{"Role:", "Severity:", "Processes:", "MITRE:", "Tactics:", "Description:", "Signals:", "Queries:"}
-	for _, f := range fields {
-		if strings.HasPrefix(after, f) {
-			return true
-		}
-	}
-	return false
-}
-
-// styleSIEMFieldLine styles field label lines inside detection cards.
-func styleSIEMFieldLine(line string, frameStyle lipgloss.Style) string {
-	idx := strings.Index(line, "\u2502")
-	if idx < 0 {
-		return dimText.Render(line)
-	}
-	prefix := line[:idx+len("\u2502")]
-	rest := line[idx+len("\u2502"):]
-	return frameStyle.Render(prefix) + dimText.Render(rest)
-}
-
-// styleSIEMBoxContent styles generic content inside box lines, coloring the
-// box character in frame color and the rest as body text.
-func styleSIEMBoxContent(line string, frameStyle lipgloss.Style) string {
-	// Handle pure border lines (┌───┐, └───┘)
-	trimmed := strings.TrimSpace(line)
-	if len(trimmed) > 0 {
-		first := []rune(trimmed)[0]
-		if first == '\u250c' || first == '\u2514' {
-			return frameStyle.Render(line)
-		}
-	}
-	// Lines starting with │
-	idx := strings.Index(line, "\u2502")
-	if idx < 0 {
-		return bodyText.Render(line)
-	}
-	prefix := line[:idx+len("\u2502")]
-	rest := line[idx+len("\u2502"):]
-	return frameStyle.Render(prefix) + bodyText.Render(rest)
-}
-
-func (m SIEMModel) renderReportPanel() string {
-	w := m.width
-	if w <= 0 {
-		w = 80
-	}
-	reportH := m.dynamicReportH
-	if reportH <= 0 {
-		reportH = m.height - m.headerHeight() - m.setupHeight()
-	}
-	if reportH < 4 {
-		reportH = 4
-	}
-
-	panelTitle := "DISPLAY"
-	if m.app.SIEMGenerating {
-		panelTitle = "GENERATING"
-	}
-
-	opts := ReportPanelOpts{
-		Title:       panelTitle,
-		RightLabel:  "",
-		Width:       w,
-		Height:      reportH,
-		StatusText:  m.app.SIEMStatusText,
-		StatusError: m.app.SIEMStatusError,
-		StatusUntil: m.app.SIEMStatusUntil,
-	}
-	if m.ready {
-		opts.Content = m.viewport.View()
-		total := m.viewport.TotalLineCount()
-		visible := m.viewport.VisibleLineCount()
-		opts.ScrollTotal = total
-		opts.ScrollVisible = visible
-		opts.ScrollTop = m.viewport.YOffset + 1
-		opts.ScrollBottom = m.viewport.YOffset + visible
-		if opts.ScrollBottom > total {
-			opts.ScrollBottom = total
-		}
-	}
-	return renderReportPanel(opts)
 }

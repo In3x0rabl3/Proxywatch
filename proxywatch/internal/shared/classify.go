@@ -50,9 +50,25 @@ type ProcHistory struct {
 	LastRoleChange  time.Time
 	LastLoopRatio   float64
 	ShapeSamples    int
+	MemSamples      []uint64 // rolling window of working set values (max 20)
+
+	// RoleStableStreak: consecutive scan cycles the role has been the same.
+	// Used by CandidateState to exit Analyzing dynamically — once the role
+	// has stabilized across N cycles, the process is "known enough" to
+	// commit a display role instead of showing Analyzing.
+	//
+	// NOT persisted (json:"-"): the streak is intentionally session-scoped
+	// so every scanner restart gives operators a visible Analyzing ramp,
+	// even for long-running processes with lots of historical data.
+	RoleStableStreak int `json:"-"`
 }
 
+// ModelGeneration increments every time the model is reset.
+// Processes with a stale generation re-enter analyzing state.
+var ModelGeneration int
+
 type ProcessBehavior struct {
+	Generation int `json:"generation"` // model generation when observations started
 	LastSeen               time.Time      `json:"last_seen"`
 	Observations           int            `json:"observations"`
 	SuspiciousObservations int            `json:"suspicious_observations"`
@@ -130,6 +146,11 @@ var (
 	InboundBurstLast            = make(map[int]time.Time)
 	InboundBurstCount           = make(map[int]int)
 	BeaconSeen                  = make(map[int]time.Time)
+	TunnelingSeen               = make(map[int]time.Time)
+	TunnelActivitySeen          = make(map[int]time.Time) // short-lived: tracks recent tunnel IO for state display
+	PivotInternalSeen           = make(map[int]time.Time) // tracks recent pivot-non-loopback-internal signal for temporal pivot escalation
+	PivotUntil                  = make(map[int]time.Time) // PID → expiry; while now < expiry, role is forced to control-pivot (SOCKS-forwarding linger)
+	SMBPipeSeen                 = make(map[int]time.Time)
 	LocalTransportLast          = make(map[int]time.Time)
 	ParentChildFreq             = make(map[string]int)
 	RareTupleCount              = make(map[string]int)
@@ -166,6 +187,16 @@ var (
 	IOBurstHistory = make(map[int]*IOBurstTracker)
 	// ConnCountHistory tracks recent connection counts per PID for oscillation detection.
 	ConnCountHistory = make(map[int]*ConnCountTracker)
+
+	// ProxywatchStartedAt is set when proxywatch initializes. Used to gate the
+	// "process first observed with pre-existing connections" detection — when
+	// proxywatch itself just started (e.g., after a state reset or service
+	// restart), every existing process appears as "first observed", which
+	// would otherwise trigger the pre-existing-tunnel boost on every running
+	// process. The boost is only applied for processes that appear AFTER
+	// proxywatch has been observing the system for at least StartupGracePeriod.
+	ProxywatchStartedAt = time.Now()
+	StartupGracePeriod  = 60 * time.Second
 )
 
 // IOBurstTracker records recent IO rates to detect sleep→burst patterns.
@@ -186,18 +217,21 @@ type ConnCountTracker struct {
 
 func RolePriority(role string) int {
 	switch role {
-	case "control-tunnel":
-		return 100
 	case "control-pivot":
-		return 95
-	case "control-session", "control-beacon":
+		return 100
+	case "control-channel":
 		return 90
-	case "analyzing":
-		return 70
-	case "listen":
+	case "listener", "listen":
 		return 60
 	case "outbound":
 		return 20
+	// Legacy aliases — map to equivalent new role priority.
+	case "control-tunnel", "tunnel":
+		return 100 // → control-pivot
+	case "control-session", "control-beacon", "smb-pipe":
+		return 90
+	case "analyzing":
+		return 20 // → outbound (analyzing removed)
 	default:
 		return 0
 	}
@@ -205,57 +239,29 @@ func RolePriority(role string) int {
 
 func RoleFamily(role string) string {
 	switch role {
-	case "control-session", "control-beacon", "control-pivot", "control-tunnel", "listen", "outbound", "analyzing":
+	case "control-channel", "control-pivot":
 		return role
-	// Legacy aliases.
-	case "control-channel":
-		return "control-session"
-	case "tunnel":
-		return "control-tunnel"
+	case "listener", "listen":
+		return "listener"
+	case "outbound":
+		return "outbound"
+	// Legacy aliases — map old internal roles to new taxonomy.
+	case "control-session", "control-beacon":
+		return "control-channel"
+	case "control-tunnel", "tunnel":
+		return "control-pivot"
 	case "smb-pipe":
 		return "control-pivot"
+	case "analyzing":
+		return "outbound"
 	default:
 		return "other"
 	}
 }
 
-// MITRETechniques returns the ATT&CK technique IDs associated with a role.
-func MITRETechniques(role string) []string {
-	switch role {
-	case "control-session", "control-beacon":
-		return []string{"T1071", "T1090", "T1573"}
-	case "control-tunnel":
-		return []string{"T1572", "T1090", "T1573"}
-	case "control-pivot":
-		return []string{"T1572", "T1021.002", "T1570", "T1090"}
-	case "listen":
-		return []string{"T1090", "T1571"}
-	case "outbound":
-		return []string{"T1071"}
-	default:
-		return nil
-	}
-}
-
-// MITRETactics returns the ATT&CK tactic names associated with a role family.
-func MITRETactics(role string) []string {
-	switch role {
-	case "control-tunnel", "control-pivot":
-		return []string{"Command and Control", "Lateral Movement"}
-	case "control-session", "control-beacon":
-		return []string{"Command and Control"}
-	case "listen":
-		return []string{"Command and Control", "Persistence"}
-	case "outbound":
-		return []string{"Command and Control"}
-	default:
-		return nil
-	}
-}
-
 func IsControlRole(role string) bool {
-	switch role {
-	case "control-session", "control-beacon", "control-channel", "control-tunnel", "control-pivot", "analyzing":
+	switch RoleFamily(role) {
+	case "control-channel", "control-pivot":
 		return true
 	default:
 		return false
@@ -296,14 +302,12 @@ func CandidateLess(a, b Candidate) bool {
 }
 
 func roleFamilyPriority(role string) int {
-	switch role {
-	case "control-tunnel", "control-pivot":
+	switch RoleFamily(role) {
+	case "control-pivot":
 		return 5
-	case "control-session", "control-beacon":
+	case "control-channel":
 		return 4
-	case "analyzing":
-		return 3
-	case "listen":
+	case "listener":
 		return 2
 	default:
 		return 1
@@ -322,34 +326,33 @@ func candidatePriority(c Candidate) int {
 
 func ParseRoleFilter(s string) map[string]bool {
 	allRoles := []string{
-		"control-session",
-		"control-beacon",
+		"control-channel",
 		"control-pivot",
-		"control-tunnel",
-		"analyzing",
-		"listen",
+		"listener",
 		"outbound",
 	}
 
 	roleGroups := map[string][]string{
-		"recommended":     {"control-session", "control-beacon", "control-pivot", "control-tunnel", "analyzing"},
+		"recommended":     {"control-channel", "control-pivot"},
 		"all":             allRoles,
-		"control-session": {"control-session"},
-		"control-beacon":  {"control-beacon"},
+		"control-channel": {"control-channel"},
 		"control-pivot":   {"control-pivot"},
-		"control-tunnel":  {"control-tunnel"},
-		"listen":          {"listen"},
+		"listener":        {"listener"},
 		"outbound":        {"outbound"},
 		// Legacy aliases.
-		"control-channel": {"control-session", "control-beacon"},
-		"session":         {"control-session"},
-		"beacon":          {"control-beacon"},
-		"tunnel":          {"control-tunnel", "control-pivot"},
+		"control-session": {"control-channel"},
+		"control-beacon":  {"control-channel"},
+		"control-tunnel":  {"control-pivot"},
+		"session":         {"control-channel"},
+		"beacon":          {"control-channel"},
+		"tunnel":          {"control-pivot"},
 		"smb-pipe":        {"control-pivot"},
-		"control":         {"control-session", "control-beacon", "control-tunnel", "control-pivot"},
-		"command":         {"control-session", "control-beacon"},
-		"network":         {"listen", "outbound"},
-		"reverse":         {"control-session", "control-beacon", "control-tunnel"},
+		"listen":          {"listener"},
+		"analyzing":       {"outbound"},
+		"control":         {"control-channel", "control-pivot"},
+		"command":         {"control-channel"},
+		"network":         {"listener", "outbound"},
+		"reverse":         {"control-channel"},
 		"pivot":           {"control-pivot"},
 	}
 

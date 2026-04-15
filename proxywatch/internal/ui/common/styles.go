@@ -87,10 +87,6 @@ func DotSpinFrame() string {
 	return DotSpinFrames[int(time.Now().UnixMilli()/120)%len(DotSpinFrames)]
 }
 
-func DialSpinFrame() string {
-	return DialSpinFrames[int(time.Now().UnixMilli()/200)%len(DialSpinFrames)]
-}
-
 // ── FormRow ──────────────────────────────────────────────────────────────────
 
 // FormRow represents a single row in a setup panel form.
@@ -376,18 +372,6 @@ func RenderAccentPanel(w, h int, title, content string) string {
 	}
 
 	return strings.Join(lines, "\n")
-}
-
-// ── RenderQuitConfirm ────────────────────────────────────────────────────────
-
-// RenderQuitConfirm renders the quit confirmation overlay.
-func RenderQuitConfirm(deadline time.Time, w int) string {
-	remaining := time.Until(deadline).Truncate(time.Second)
-	if remaining < 0 {
-		remaining = 0
-	}
-	msg := fmt.Sprintf("  Press q again to quit (%ds)", int(remaining.Seconds()))
-	return StatusFail.Render(msg)
 }
 
 // ── RenderMenuPanel ──────────────────────────────────────────────────────────

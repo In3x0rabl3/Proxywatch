@@ -1,8 +1,9 @@
-package classifier
+package detection
 
 import (
 	"time"
 
+	"proxywatch/internal/detection/scoring"
 	"proxywatch/internal/shared"
 )
 
@@ -83,8 +84,8 @@ func touchHistoryFromCandidate(c *shared.Candidate, now time.Time) {
 	if c == nil || c.Proc == nil {
 		return
 	}
-	scopedPID := historyPIDForCandidate(c)
-	hist := getHistory(scopedPID, now)
+	scopedPID := scoring.HistoryPIDForCandidate(c)
+	hist := scoring.GetHistory(scopedPID, now)
 
 	if c.InboundTotal > 0 {
 		shared.RecentClientSeen[scopedPID] = now
@@ -122,13 +123,13 @@ func shouldRescoreUnchangedCandidate(c *shared.Candidate, prev *shared.Candidate
 		return false
 	}
 	switch prev.Role {
-	case "outbound", "control-session", "control-beacon", "control-channel", "control-tunnel", "control-pivot", "listen":
+	case "outbound", "control-channel", "control-pivot", "listener":
 		// Time-based signals (e.g., persistent control duration, burst cadence)
 		// must still evolve even when socket tuple signatures are unchanged.
 	default:
 		return false
 	}
-	hist := getHistory(historyPIDForCandidate(c), now)
+	hist := scoring.GetHistory(scoring.HistoryPIDForCandidate(c), now)
 	if hist.LastScoreEval.IsZero() {
 		return true
 	}
@@ -137,7 +138,7 @@ func shouldRescoreUnchangedCandidate(c *shared.Candidate, prev *shared.Candidate
 
 func hasEstablishedEgress(conns []shared.ConnectionInfo) bool {
 	for _, cn := range conns {
-		if !isEstablishedState(cn.State) {
+		if !scoring.IsEstablishedState(cn.State) {
 			continue
 		}
 		if cn.RemoteAddress == "" ||

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	classifier "proxywatch/internal/detection"
-	"proxywatch/internal/model"
+	"proxywatch/internal/detection"
+	"proxywatch/internal/detection/model"
 	"proxywatch/internal/shared"
-	"proxywatch/internal/telemetry"
+	"proxywatch/internal/detection/telemetry"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -148,6 +148,18 @@ func HandleInspectKey(app *shared.AppState, tev *tcell.EventKey) bool {
 		}
 	}
 
+	// 'x' — toggle show all signals in evidence.
+	if tev.Rune() == 'x' || tev.Rune() == 'X' {
+		app.InspectShowAllSignals = !app.InspectShowAllSignals
+		// Invalidate evidence cache so it rebuilds.
+		app.InspectEvidenceCacheKey = ""
+		if app.InspectShowAllSignals {
+			app.LastError = "Signal debug: ON — showing all signals"
+		} else {
+			app.LastError = "Signal debug: OFF"
+		}
+	}
+
 	if tev.Rune() == 't' || tev.Rune() == 'T' {
 		var cand *shared.Candidate
 		for i := range app.Candidates {
@@ -157,9 +169,9 @@ func HandleInspectKey(app *shared.AppState, tev *tcell.EventKey) bool {
 			}
 		}
 		if cand != nil && cand.Proc != nil {
-			key := classifier.ProcessBehaviorKey(cand)
+			key := detection.ProcessBehaviorKey(cand)
 			current := model.GetTrainingLabel(key)
-			labels := []string{"", "benign", "session", "beacon", "tunnel", "pivot", "malicious"}
+			labels := []string{"", "outbound", "listener", "control-channel", "control-pivot"}
 			nextIdx := 0
 			for i, l := range labels {
 				if l == current {
@@ -327,7 +339,7 @@ func HandleKillRequest(app *shared.AppState, keyRune rune) {
 		model.RecordFeedback(model.FeedbackEntry{
 			Timestamp:   time.Now().UTC(),
 			Action:      "kill",
-			ProcessKey:  classifier.ProcessBehaviorKey(&cand),
+			ProcessKey:  detection.ProcessBehaviorKey(&cand),
 			ProcessName: cand.Proc.Name,
 			Role:        cand.Role,
 			Score:       cand.Score,

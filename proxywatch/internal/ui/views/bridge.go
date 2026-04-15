@@ -39,20 +39,6 @@ const (
 const WhitelistFieldMax = WhitelistFieldRemove
 
 const (
-	CalibrateFieldProvider = iota
-	CalibrateFieldHostScope
-	CalibrateFieldModel
-	CalibrateFieldProfile
-	CalibrateFieldOutput
-	CalibrateFieldDuration
-	CalibrateFieldAction
-	CalibrateFieldApply
-	CalibrateFieldReset
-)
-
-const CalibrateFieldMax = CalibrateFieldReset
-
-const (
 	ContourFieldSource = iota
 	ContourFieldEndpoint
 	ContourFieldOutput
@@ -76,24 +62,6 @@ const (
 	ContourDashContour  = 1
 	ContourDashServices = 2
 )
-
-const (
-	SiemFieldProvider = iota
-	SiemFieldModel
-	SiemFieldSourceReport
-	SiemFieldJSONOutput
-	SiemFieldGenerate
-	SiemFieldCalibrate
-	SiemFieldReportOutput
-	SiemFieldSaveGeneration
-	SiemFieldDebugLog
-	SiemFieldRulesJSON
-	SiemFieldApply
-	SiemFieldSave
-	SiemFieldDisable
-)
-
-const SiemFieldMax = SiemFieldCalibrate
 
 const (
 	KeystoreFieldOpenAIKey = iota
@@ -139,6 +107,14 @@ const (
 	KeystorePanelFields = 2
 )
 
+const (
+	TrainingFieldAutoLearn = iota
+	TrainingFieldRetrain
+	TrainingFieldReset
+)
+
+const TrainingFieldMax = TrainingFieldReset
+
 // Lowercase aliases for internal use by view files — matching old package-private names.
 const (
 	collectFieldSource   = CollectFieldSource
@@ -157,19 +133,6 @@ const (
 )
 
 const (
-	calibrateFieldProvider  = CalibrateFieldProvider
-	calibrateFieldHostScope = CalibrateFieldHostScope
-	calibrateFieldModel     = CalibrateFieldModel
-	calibrateFieldProfile   = CalibrateFieldProfile
-	calibrateFieldOutput    = CalibrateFieldOutput
-	calibrateFieldDuration  = CalibrateFieldDuration
-	calibrateFieldAction    = CalibrateFieldAction
-	calibrateFieldApply     = CalibrateFieldApply
-	calibrateFieldReset     = CalibrateFieldReset
-	calibrateFieldMax       = CalibrateFieldMax
-)
-
-const (
 	contourFieldSource   = ContourFieldSource
 	contourFieldEndpoint = ContourFieldEndpoint
 	contourFieldOutput   = ContourFieldOutput
@@ -180,15 +143,6 @@ const (
 	contourDashScan     = ContourDashScan
 	contourDashContour  = ContourDashContour
 	contourDashServices = ContourDashServices
-)
-
-const (
-	siemFieldProvider     = SiemFieldProvider
-	siemFieldModel        = SiemFieldModel
-	siemFieldSourceReport = SiemFieldSourceReport
-	siemFieldJSONOutput   = SiemFieldJSONOutput
-	siemFieldGenerate     = SiemFieldGenerate
-	siemFieldCalibrate    = SiemFieldCalibrate
 )
 
 const (
@@ -226,6 +180,13 @@ const (
 	keystoreFieldMax                = KeystoreFieldMax
 )
 
+const (
+	trainingFieldAutoLearn = TrainingFieldAutoLearn
+	trainingFieldRetrain   = TrainingFieldRetrain
+	trainingFieldReset     = TrainingFieldReset
+	trainingFieldMax       = TrainingFieldMax
+)
+
 // ── Time format ─────────────────────────────────────────────────────────────
 
 const UTCTimeFormat = "2006-01-02 15:04:05"
@@ -243,7 +204,6 @@ var (
 	colorDim    = common.ColorDim
 	colorMuted  = common.ColorMuted
 	colorAlert  = common.ColorAlert
-	colorWarn   = common.ColorWarn
 	colorSelect = common.ColorSelect
 )
 
@@ -269,13 +229,9 @@ var (
 
 var matrixFailStyle = common.MatrixFailStyle
 
-var (
-	dotSpinFrames  = common.DotSpinFrames
-	dialSpinFrames = common.DialSpinFrames
-)
+var dotSpinFrames = common.DotSpinFrames
 
-func dotSpinFrame() string  { return common.DotSpinFrame() }
-func dialSpinFrame() string { return common.DialSpinFrame() }
+func dotSpinFrame() string { return common.DotSpinFrame() }
 
 // Re-export common types under their old names.
 type FormRow = common.FormRow
@@ -316,7 +272,6 @@ func renderHelpPanel(title string, options []string, w int) string {
 func TruncateToWidth(s string, w int) string { return common.TruncateToWidth(s, w) }
 func ClipToWidth(s string, w int) string     { return common.ClipToWidth(s, w) }
 func FormatBytes(n uint64) string            { return common.FormatBytes(n) }
-func FormatBytesPerSec(n uint64) string      { return common.FormatBytesPerSec(n) }
 func FormatIOBytes(r, w, o uint64) string    { return common.FormatIOBytes(r, w, o) }
 func FormatIORate(r, w, o uint64) string     { return common.FormatIORate(r, w, o) }
 func spinnerElapsed(start time.Time) string {
@@ -324,7 +279,6 @@ func spinnerElapsed(start time.Time) string {
 }
 
 // Help option functions from common.
-func calibrationMenuHelpOptions() []string { return common.CalibrationMenuHelpOptions() }
 func contourMenuHelpOptions() []string     { return common.ContourMenuHelpOptions() }
 func siemMenuHelpOptions() []string        { return common.SiemMenuHelpOptions() }
 func collectMenuHelpOptions() []string     { return common.CollectMenuHelpOptions() }
@@ -343,11 +297,9 @@ var (
 	StepWorkflowMenu                func(*shared.AppState, int) bool
 	JumpToWorkflow                  func(*shared.AppState, rune) bool
 	RequestQuit                     func(*shared.AppState) bool
-	HandleCalibrationKey            func(*shared.AppState, *tcell.EventKey) bool
 	HandleContourKey                func(*shared.AppState, *tcell.EventKey) bool
 	HandleContourModeKey            func(*shared.AppState, *tcell.EventKey) bool
 	HandleDashboardKey              func(*shared.AppState, *tcell.EventKey) bool
-	HandleSIEMKey                   func(*shared.AppState, *tcell.EventKey) bool
 	HandleKeystoreKey               func(*shared.AppState, *tcell.EventKey) bool
 	HandleWhitelistKey              func(*shared.AppState, *tcell.EventKey) bool
 	HandleInspectKey                func(*shared.AppState, *tcell.EventKey) bool
@@ -355,10 +307,6 @@ var (
 	HandleKeyEvent                  func(*shared.AppState, *tcell.EventKey) bool
 	DrawCurrentMode                 func(*shared.AppState)
 	DrawQuitConfirmOverlay          func(*shared.AppState)
-	CalibrateEditValue              func(*shared.AppState) string
-	CalibrationActionLabel          func(*shared.AppState) string
-	CalibrationCollectionLines      func(*shared.AppState) []string
-	NormalizeCalibrationReportLines func([]string, int) []string
 	DashboardHostListMode           func(*shared.AppState) bool
 	DashboardProcessCandidates      func(*shared.AppState) []shared.Candidate
 	SelectedDashboardProcessIndex   func(*shared.AppState, []shared.Candidate) int
@@ -377,13 +325,12 @@ var (
 	CollectLiveLines                func(*shared.AppState) []string
 	WhitelistProcessCandidates      func(*shared.AppState) []shared.Candidate
 	FormatWhitelistEntry            func(string, int) string
-	NonEmptySIEMValue               func(string, string) string
 	RoleSortMenuLabels              func() []string
 	ClampIndex                      func(int, int) int
-	CalibrateHostScopeLabel         func(*shared.AppState) string
-	CalibrateResetLabel             func(*shared.AppState) string
-	SiemFieldMaxFor                 func(*shared.AppState) int
+	HandleTrainingKey               func(*shared.AppState, *tcell.EventKey) bool
 )
+
+// SIEM wiring is declared in siem.go as views.HandleSIEMKey.
 
 // ── Convenience wrappers ────────────────────────────────────────────────────
 // These let view code call the function variables with the old lowercase names.
@@ -423,13 +370,6 @@ func requestQuit(app *shared.AppState) bool {
 	return false
 }
 
-func handleCalibrationKey(app *shared.AppState, tev *tcell.EventKey) bool {
-	if HandleCalibrationKey != nil {
-		return HandleCalibrationKey(app, tev)
-	}
-	return false
-}
-
 func handleContourKey(app *shared.AppState, tev *tcell.EventKey) bool {
 	if HandleContourKey != nil {
 		return HandleContourKey(app, tev)
@@ -447,13 +387,6 @@ func handleContourModeKey(app *shared.AppState, tev *tcell.EventKey) bool {
 func handleDashboardKey(app *shared.AppState, tev *tcell.EventKey) bool {
 	if HandleDashboardKey != nil {
 		return HandleDashboardKey(app, tev)
-	}
-	return false
-}
-
-func handleSIEMKey(app *shared.AppState, tev *tcell.EventKey) bool {
-	if HandleSIEMKey != nil {
-		return HandleSIEMKey(app, tev)
 	}
 	return false
 }
@@ -503,34 +436,6 @@ func drawQuitConfirmOverlay(app *shared.AppState) {
 	if DrawQuitConfirmOverlay != nil {
 		DrawQuitConfirmOverlay(app)
 	}
-}
-
-func calibrateEditValue(app *shared.AppState) string {
-	if CalibrateEditValue != nil {
-		return CalibrateEditValue(app)
-	}
-	return ""
-}
-
-func calibrationActionLabel(app *shared.AppState) string {
-	if CalibrationActionLabel != nil {
-		return CalibrationActionLabel(app)
-	}
-	return "Start"
-}
-
-func calibrationCollectionLines(app *shared.AppState) []string {
-	if CalibrationCollectionLines != nil {
-		return CalibrationCollectionLines(app)
-	}
-	return nil
-}
-
-func normalizeCalibrationReportLines(lines []string, width int) []string {
-	if NormalizeCalibrationReportLines != nil {
-		return NormalizeCalibrationReportLines(lines, width)
-	}
-	return lines
 }
 
 func dashboardHostListMode(app *shared.AppState) bool {
@@ -656,16 +561,6 @@ func formatWhitelistEntry(entry string, width int) string {
 	return entry
 }
 
-func nonEmptySIEMValue(value, fallback string) string {
-	if NonEmptySIEMValue != nil {
-		return NonEmptySIEMValue(value, fallback)
-	}
-	if value != "" {
-		return value
-	}
-	return fallback
-}
-
 func roleSortMenuLabels() []string {
 	if RoleSortMenuLabels != nil {
 		return RoleSortMenuLabels()
@@ -689,18 +584,11 @@ func clampIndex(idx, n int) int {
 	return idx
 }
 
-func calibrateHostScopeLabel(app *shared.AppState) string {
-	if CalibrateHostScopeLabel != nil {
-		return CalibrateHostScopeLabel(app)
+func handleTrainingKey(app *shared.AppState, tev *tcell.EventKey) bool {
+	if HandleTrainingKey != nil {
+		return HandleTrainingKey(app, tev)
 	}
-	return ""
-}
-
-func calibrateResetLabel(app *shared.AppState) string {
-	if CalibrateResetLabel != nil {
-		return CalibrateResetLabel(app)
-	}
-	return "Reset baseline model"
+	return false
 }
 
 // ── Inspector-specific styles (shared across multiple views) ────────────────
@@ -714,7 +602,6 @@ var (
 	inspCyan    = lipgloss.NewStyle().Foreground(common.ColorCyan).Background(common.ColorBg)
 	inspSession = lipgloss.NewStyle().Foreground(common.ColorSession).Bold(true).Background(common.ColorBg)
 	inspPivot   = lipgloss.NewStyle().Foreground(common.ColorWarn).Bold(true).Background(common.ColorBg)
-	inspTunnel  = lipgloss.NewStyle().Foreground(common.ColorOrange).Bold(true).Background(common.ColorBg)
 )
 
 // ── sparkGauge renders a simple percentage gauge ────────────────────────────
@@ -757,33 +644,30 @@ var (
 	lgMuted   = lipgloss.NewStyle().Foreground(common.ColorMuted).Background(common.ColorBg)
 	lgSession = lipgloss.NewStyle().Foreground(common.ColorSession).Bold(true).Background(common.ColorBg)
 	lgPivot   = lipgloss.NewStyle().Foreground(common.ColorWarn).Bold(true).Background(common.ColorBg)
-	lgTunnel  = lipgloss.NewStyle().Foreground(common.ColorOrange).Bold(true).Background(common.ColorBg)
 
 	lgSelectBg = lipgloss.NewStyle().Background(common.ColorSelect)
 )
 
 func lgRoleStyle(role string) lipgloss.Style {
-	switch role {
-	case "control-session", "control-beacon":
+	switch shared.RoleFamily(role) {
+	case "control-channel":
 		return lgSession
-	case "analyzing":
-		return lgDim
 	case "control-pivot":
 		return lgPivot
-	case "control-tunnel":
-		return lgTunnel
 	default:
 		return lgTextB
 	}
 }
 
 func lgStateStyle(state string) lipgloss.Style {
-	switch state {
-	case "active":
+	switch {
+	case state == "tunneling":
 		return lgAlert
-	case "strong":
-		return lgWarn
-	default:
+	case strings.Contains(state, "Analyzing"):
+		return lgDim
+	case state == "exited":
+		return lgDim
+	default: // "watch"
 		return lgWatch
 	}
 }

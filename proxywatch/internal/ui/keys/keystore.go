@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	classifier "proxywatch/internal/detection"
+	"proxywatch/internal/detection"
 	"proxywatch/internal/keystore"
 	"proxywatch/internal/shared"
 
@@ -18,7 +18,7 @@ import (
 func ApplyDetectionOutputRuntimeConfig() error {
 	debugOutputPath := keystore.RuntimeValue("PROXYWATCH_DETECT_DEBUG_LOG")
 	defenderOutputPath := keystore.RuntimeValue("PROXYWATCH_DETECT_RULES_JSON")
-	return classifier.ConfigureDetectionOutputs(debugOutputPath, defenderOutputPath)
+	return detection.ConfigureDetectionOutputs(debugOutputPath, defenderOutputPath)
 }
 
 func HandleKeystoreKey(app *shared.AppState, tev *tcell.EventKey) bool {

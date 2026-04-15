@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,7 +17,11 @@ import (
 type Whitelist struct {
 	mu      sync.RWMutex
 	Entries map[string]bool
-	Path    string
+	// Patterns holds entries using glob syntax (host|path:glob:<pat> or
+	// host|name:glob:<pat>). Host may be "*" to match any host. Matched
+	// separately from Entries since path.Match cannot use map lookup.
+	Patterns []string
+	Path     string
 }
 
 func DefaultWhitelistPath() string {
@@ -89,9 +94,65 @@ func LoadWhitelist(path string) (*Whitelist, error) {
 		if !isValidWhitelistEntry(item) {
 			continue
 		}
+		if isPatternEntry(item) {
+			w.Patterns = append(w.Patterns, item)
+			continue
+		}
 		w.Entries[item] = true
 	}
 	return w, nil
+}
+
+func (w *Whitelist) allEntries() []string {
+	out := make([]string, 0, len(w.Entries)+len(w.Patterns))
+	for k := range w.Entries {
+		out = append(out, k)
+	}
+	out = append(out, w.Patterns...)
+	sort.Strings(out)
+	return out
+}
+
+// matchPattern checks whether key matches any stored glob pattern. Caller
+// holds w.mu.
+func (w *Whitelist) matchPattern(hostKey, spec string) bool {
+	for _, pat := range w.Patterns {
+		pHost, pSpec, ok := splitEntry(pat)
+		if !ok {
+			continue
+		}
+		if pHost != "*" && !strings.EqualFold(pHost, hostKey) {
+			continue
+		}
+		if !strings.HasPrefix(pSpec, "path:glob:") && !strings.HasPrefix(pSpec, "name:glob:") {
+			continue
+		}
+		if (strings.HasPrefix(spec, "path:") && strings.HasPrefix(pSpec, "path:glob:")) ||
+			(strings.HasPrefix(spec, "name:") && strings.HasPrefix(pSpec, "name:glob:")) {
+			glob := strings.TrimPrefix(strings.TrimPrefix(pSpec, "path:glob:"), "name:glob:")
+			val := strings.TrimPrefix(strings.TrimPrefix(spec, "path:"), "name:")
+			if ok, _ := path.Match(glob, val); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isPatternEntry(entry string) bool {
+	_, spec, ok := splitEntry(entry)
+	if !ok {
+		return false
+	}
+	return strings.HasPrefix(spec, "path:glob:") || strings.HasPrefix(spec, "name:glob:")
+}
+
+func splitEntry(entry string) (host, spec string, ok bool) {
+	parts := strings.SplitN(entry, "|", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), true
 }
 
 func (w *Whitelist) Save() error {
@@ -110,12 +171,8 @@ func (w *Whitelist) Save() error {
 	}
 
 	w.mu.RLock()
-	items := make([]string, 0, len(w.Entries))
-	for k := range w.Entries {
-		items = append(items, k)
-	}
+	items := w.allEntries()
 	w.mu.RUnlock()
-	sort.Strings(items)
 
 	data, err := json.MarshalIndent(items, "", "  ")
 	if err != nil {
@@ -138,7 +195,17 @@ func (w *Whitelist) IsWhitelisted(c Candidate) bool {
 	}
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return w.Entries[key]
+	if w.Entries[key] {
+		return true
+	}
+	if len(w.Patterns) == 0 {
+		return false
+	}
+	host, spec, ok := splitEntry(key)
+	if !ok {
+		return false
+	}
+	return w.matchPattern(host, spec)
 }
 
 func (w *Whitelist) AddCandidate(c Candidate) (string, error) {
@@ -169,9 +236,19 @@ func (w *Whitelist) Filter(cands []Candidate) []Candidate {
 	}
 	out := make([]Candidate, 0, len(cands))
 	for _, c := range cands {
-		if !w.Entries[whitelistKey(c)] {
+		key := whitelistKey(c)
+		if key == "" {
 			out = append(out, c)
+			continue
 		}
+		if w.Entries[key] {
+			continue
+		}
+		host, spec, ok := splitEntry(key)
+		if ok && len(w.Patterns) > 0 && w.matchPattern(host, spec) {
+			continue
+		}
+		out = append(out, c)
 	}
 	return out
 }
@@ -181,12 +258,8 @@ func (w *Whitelist) List() []string {
 		return nil
 	}
 	w.mu.RLock()
-	items := make([]string, 0, len(w.Entries))
-	for k := range w.Entries {
-		items = append(items, k)
-	}
+	items := w.allEntries()
 	w.mu.RUnlock()
-	sort.Strings(items)
 	return items
 }
 
@@ -201,6 +274,15 @@ func (w *Whitelist) Remove(key string) error {
 	w.mu.Lock()
 	if w.Entries != nil {
 		delete(w.Entries, key)
+	}
+	if len(w.Patterns) > 0 {
+		kept := w.Patterns[:0]
+		for _, p := range w.Patterns {
+			if p != key {
+				kept = append(kept, p)
+			}
+		}
+		w.Patterns = kept
 	}
 	w.mu.Unlock()
 	return w.Save()
@@ -295,5 +377,6 @@ func isValidWhitelistEntry(entry string) bool {
 	if host == "" || spec == "" {
 		return false
 	}
-	return strings.HasPrefix(spec, "path:") || strings.HasPrefix(spec, "name:")
+	return strings.HasPrefix(spec, "path:") || strings.HasPrefix(spec, "name:") ||
+		strings.HasPrefix(spec, "path:glob:") || strings.HasPrefix(spec, "name:glob:")
 }

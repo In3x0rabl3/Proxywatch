@@ -10,8 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/gdamore/tcell/v2"
 
-	classifier "proxywatch/internal/detection"
-	"proxywatch/internal/model"
+	"proxywatch/internal/detection"
+	"proxywatch/internal/detection/model"
 	"proxywatch/internal/shared"
 )
 
@@ -269,15 +269,11 @@ func (m InspectorModel) renderBody() string {
 }
 
 func inspRoleStyle(role string) lipgloss.Style {
-	switch role {
-	case "control-session", "control-beacon":
+	switch shared.RoleFamily(role) {
+	case "control-channel":
 		return inspSession
 	case "control-pivot":
 		return inspPivot
-	case "control-tunnel":
-		return inspTunnel
-	case "analyzing":
-		return inspDim
 	default:
 		return inspValue
 	}
@@ -285,13 +281,11 @@ func inspRoleStyle(role string) lipgloss.Style {
 
 func inspStateStyle(state string) lipgloss.Style {
 	switch state {
-	case "active":
+	case "tunneling":
 		return inspAlert
-	case "strong":
-		return inspWarn
 	case "exited":
 		return inspDim
-	default:
+	default: // "watch"
 		return lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
 	}
 }
@@ -330,13 +324,10 @@ func (m InspectorModel) buildContent() string {
 		return inspAlert.Render("Process no longer present. Press ESC.")
 	}
 
-	role := normalizeDashboardRole(cand.Role)
+	role := shared.RoleFamily(cand.Role)
+	role = normalizeDashboardRole(role)
 	state := "watch"
-	if cand.ActiveProxying {
-		state = "active"
-	} else if cand.StrongEvidence {
-		state = "strong"
-	}
+	state = shared.CandidateState(*cand)
 
 	name := "(unknown)"
 	pid := 0
@@ -412,7 +403,7 @@ func (m InspectorModel) buildContent() string {
 	var identity []string
 	identity = append(identity, kv("Name:", name, inspValue))
 	roleDisplay := role
-	if cand.ControlSubtype != "" && (role == "control-pivot" || role == "control-tunnel") {
+	if cand.ControlSubtype != "" && role == "control-pivot" {
 		roleDisplay = role + " (" + cand.ControlSubtype + ")"
 	}
 	identity = append(identity, kv("Role:", roleDisplay, inspRoleStyle(role)))
@@ -525,286 +516,401 @@ func (m InspectorModel) buildContent() string {
 	}
 	sections = append(sections, section{"NETWORK", network})
 
-	// ANALYSIS
-	var analysis []string
-	if cand.ControlChannel != nil {
-		cn := cand.ControlChannel
-		scope := "external"
-		scopeSt := inspWarn
-		if shared.IsInternalIP(cn.RemoteAddress) {
-			scope = "internal"
-			scopeSt = inspCyan
+	// CONTOUR — egress intelligence from contour probes, shown as a separate
+	// section so operators can distinguish probe-verified findings from
+	// signal-based analysis.
+	{
+		var contourLines []string
+		egressSigs, _, _ := model.EgressSignals(cand.Conns)
+		for _, sig := range egressSigs {
+			label := "tunnel-capable"
+			if strings.Contains(sig, "exfil") {
+				label = "exfil-capable"
+			}
+			contourLines = append(contourLines, kv("Egress:", label+" (contour confirmed)", inspValue))
 		}
-		analysis = append(analysis, kv("Control:", fmt.Sprintf("%s:%d", cn.RemoteAddress, cn.RemotePort), inspAlert))
-		analysis = append(analysis, inspLabel.Render("            ")+scopeSt.Render(fmt.Sprintf("%s  |  %ds  |  %s", cn.State, cand.ControlDurationSeconds, scope)))
-	}
-	if cand.OutLongLived > 0 || cand.OutShortLived > 0 {
-		analysis = append(analysis, kv("Duration:", fmt.Sprintf("%d long-lived,  %d short-lived", cand.OutLongLived, cand.OutShortLived), inspValue))
-	}
-	if cand.TrafficVerified {
-		analysis = append(analysis, kv("Verified:", "matches learned baseline", inspDim))
-	}
-	if len(analysis) > 0 {
-		sections = append(sections, section{"ANALYSIS", analysis})
+		// Pull contour reasons from the candidate's reasons list.
+		for _, reason := range cand.Reasons {
+			if strings.Contains(reason, "contour") || strings.Contains(reason, "Contour") {
+				contourLines = append(contourLines, kv("Finding:", reason, inspValue))
+			}
+		}
+		if len(contourLines) > 0 {
+			sections = append(sections, section{"CONTOUR", contourLines})
+		}
 	}
 
-	// EVIDENCE — structured, numbered evidence items with severity indicators.
+	// EVIDENCE — combines structured signal findings with scoring reasons.
+	// Formatted like the MODEL box (label:value style). Capped at 6 items.
 	{
-		type evidenceItem struct {
-			severity string // "CRITICAL", "HIGH", "MEDIUM", "LOW", "OK"
-			finding  string
-			detail   string
+		type evidenceLine struct {
+			label string
+			value string
+			style lipgloss.Style
 		}
-		var items []evidenceItem
+		var lines []evidenceLine
 
 		sigSet := make(map[string]bool, len(cand.Signals))
 		for _, s := range cand.Signals {
 			sigSet[s] = true
 		}
-		isSuspicious := strings.HasPrefix(role, "control-") || role == "analyzing"
+		isSuspicious := strings.HasPrefix(role, "control-")
 
-		if isSuspicious {
-			if cand.ControlChannel != nil {
-				cn := cand.ControlChannel
-				dest := fmt.Sprintf("%s:%d", cn.RemoteAddress, cn.RemotePort)
-				if cand.ControlDurationSeconds >= 300 {
-					items = append(items, evidenceItem{"CRITICAL", "Persistent control channel",
-						fmt.Sprintf("Connection to %s held for %dm%ds", dest, cand.ControlDurationSeconds/60, cand.ControlDurationSeconds%60)})
-				} else if cand.ControlDurationSeconds >= 60 {
-					items = append(items, evidenceItem{"HIGH", "Long-lived connection",
-						fmt.Sprintf("Connection to %s held for %dm%ds", dest, cand.ControlDurationSeconds/60, cand.ControlDurationSeconds%60)})
-				} else if cand.ControlDurationSeconds > 0 {
-					items = append(items, evidenceItem{"MEDIUM", "Active connection held open",
-						fmt.Sprintf("Connection to %s for %ds", dest, cand.ControlDurationSeconds)})
-				}
-			}
+		_ = isSuspicious // used by signal-driven evidence below
 
-			if sigSet["beacon-confirmed"] {
-				items = append(items, evidenceItem{"CRITICAL", "Beacon cadence confirmed",
-					"Regular callback interval with consistent jitter detected"})
-			} else if sigSet["beacon-model-recalled"] {
-				items = append(items, evidenceItem{"CRITICAL", "Known beacon (model recall)",
-					"This process identity was previously confirmed as a beacon"})
+		// Special formatted evidence (always shown first if applicable).
+		if cand.ControlChannel != nil {
+			cn := cand.ControlChannel
+			dest := fmt.Sprintf("%s:%d", cn.RemoteAddress, cn.RemotePort)
+			if cand.ControlDurationSeconds >= 60 {
+				lines = append(lines, evidenceLine{"Persistent control", fmt.Sprintf("%s held %dm%ds", dest, cand.ControlDurationSeconds/60, cand.ControlDurationSeconds%60), inspValue})
+			} else if cand.ControlDurationSeconds > 0 {
+				lines = append(lines, evidenceLine{"Active connection", fmt.Sprintf("%s for %ds", dest, cand.ControlDurationSeconds), inspValue})
 			}
+		}
+		beaconMs := cand.BeaconIntervalMs
+		beaconJitter := cand.BeaconJitter
+		if beaconMs == 0 && cand.Proc != nil {
+			if bp := model.ResolveProfile(detection.ProcessBehaviorKey(cand)); bp != nil && bp.BeaconIntervalMs > 0 {
+				beaconMs = bp.BeaconIntervalMs
+				beaconJitter = bp.BeaconJitter
+			}
+		}
+		if beaconMs > 0 {
+			intervalSec := float64(beaconMs) / 1000.0
+			var intervalStr string
+			if intervalSec >= 60 {
+				intervalStr = fmt.Sprintf("%.0fm%.0fs", intervalSec/60, float64(int(intervalSec)%60))
+			} else {
+				intervalStr = fmt.Sprintf("%.1fs", intervalSec)
+			}
+			jitterStr := fmt.Sprintf("%.0f%%", beaconJitter*100)
+			lines = append(lines, evidenceLine{"Callback", fmt.Sprintf("%s interval, %s jitter", intervalStr, jitterStr), inspAlert})
+		}
 
-			if sigSet["cdn-control-channel"] {
-				items = append(items, evidenceItem{"CRITICAL", "Domain fronting detected",
-					"Control channel routes through CDN — traffic hides behind trusted domains"})
-			} else if sigSet["cdn-destination"] {
-				items = append(items, evidenceItem{"MEDIUM", "CDN-routed traffic",
-					"External traffic routes through CDN infrastructure"})
-			}
+		// Signal-driven evidence: pick up to 3 network + 3 host signals.
+		// Each signal maps to a human-readable label + description.
+		type evidenceMapping struct {
+			signal string
+			label  string
+			desc   string
+			isHost bool
+		}
+		mappings := []evidenceMapping{
+			// Network signals
+			{"beacon-interval-confirmed", "Callback timing", "Periodic callback with measured interval", false},
+			{"beacon-syn-cycle-cadence", "SYN cycling", "Repeated failed connection attempts (C2 may be down)", false},
+			{"beacon-target-lock", "Target locked", "All connections to single remote endpoint", false},
+			{"beacon-http-channel", "HTTP channel", "All callbacks over HTTP/HTTPS", false},
+			{"beacon-endpoint-rotation", "C2 rotation", "Multiple IPs contacted on same port (failover)", false},
+			{"session-control-channel-persistent", "Persistent control", "Long-held external control channel", false},
+			{"session-single-target-persistence", "Pinned target", "Traffic pinned to stable remote target", false},
+			{"session-conn-churn", "Connection churn", "Repeated connect/disconnect pattern", false},
+			{"session-exfil-write-heavy", "Exfiltration shape", "Write-heavy outbound data flow", false},
+			{"session-asn-mismatch", "ASN mismatch", "Destination doesn't match vendor network", false},
+			{"pivot-listener-plus-outbound", "Relay shape", "Listener accepting + forwarding traffic", false},
+			{"pivot-loopback-listener-external-out", "SOCKS shape", "Loopback listener with external outbound", false},
+			{"pivot-multiplex-relay", "Multiplex relay", "External channel relaying to internal targets", false},
+			{"pivot-throughput-symmetry", "Relay symmetry", "Balanced read/write throughput (forwarding)", false},
+			{"pivot-socks-candidate", "SOCKS proxy", "Loopback listener with diverse destinations", false},
+			{"outbound-standard-ports-only", "Standard ports", "All connections on HTTP/HTTPS only", false},
+			{"outbound-asn-org-aligned", "ASN aligned", "Destination matches vendor network", false},
+			{"outbound-cdn-destination", "CDN traffic", "Connecting to CDN infrastructure", false},
+			{"listener-wildcard-bind", "Wildcard bind", "Listening on all interfaces (0.0.0.0)", false},
+			{"listener-inbound-external", "External inbound", "Accepting connections from outside", false},
+			// Host signals
+			{"beacon-sleep-wake-cycle", "Dormant implant", "Long sleep intervals with brief activity", true},
+			{"beacon-micro-payload", "Micro payload", "Tiny data exchange despite long runtime", true},
+			{"beacon-low-cpu-long-life", "Low CPU", "Long-lived process with near-zero CPU usage", true},
+			{"beacon-no-children", "No children", "Never spawns child processes", true},
+			{"beacon-crypto-lib-loaded", "Crypto loaded", "Encryption library loaded with minimal IO", true},
+			{"session-shell-spawn", "Shell spawned", "Spawned interactive shell processes", true},
+			{"session-lolbin-children", "LOLBin children", "Spawned system binary child processes", true},
+			{"session-elevated-external", "Elevated C2", "SYSTEM/High integrity with external connection", true},
+			{"session-encoding-in-cmdline", "Encoded cmdline", "Base64/encoded command in command line", true},
+			{"session-bursty-io-pattern", "Bursty IO", "Command → output → idle pattern", true},
+			{"session-rare-parent-network", "Rare parent", "Unusual parent-child chain with network", true},
+			{"session-covert-channel", "Covert channel", "IO activity without visible connections", true},
+			{"session-rwx-memory", "RWX memory", "Read-write-execute memory regions detected", true},
+			{"session-impersonation-token", "Impersonation", "Impersonation token detected", true},
+			{"pivot-named-pipe-c2-pattern", "C2 named pipe", "Named pipe matching C2 framework pattern", true},
+			{"pivot-admin-share-smb", "Admin SMB", "Accessing admin share pipes (srvsvc/svcctl)", true},
+			{"pivot-ssh-tunnel-flags", "SSH tunnel", "Tunnel flags in command line (-L/-R/-D)", true},
+			{"pivot-proxy-lib-loaded", "Proxy library", "Proxy/tunnel library loaded", true},
+			{"pivot-elevated-relay", "Elevated relay", "SYSTEM integrity relaying to internal targets", true},
+			{"pivot-anon-exec-memory", "Anon exec mem", "Anonymous executable memory (reflective loading)", true},
+			{"outbound-known-vendor", "Known vendor", "Recognized software publisher", true},
+			{"outbound-system-path", "System path", "Running from protected OS directory", true},
+			{"outbound-download-heavy", "Download heavy", "95%+ read ratio (downloading)", true},
+			{"listener-service-context", "Service context", "Running as system service", true},
+			{"listener-long-idle", "Long idle", "Listening but minimal activity", true},
+			{"listener-named-pipe-server", "Pipe server", "Serving named pipes", true},
+		}
 
-			if cand.ActiveProxying {
-				items = append(items, evidenceItem{"CRITICAL", "Active relay / proxy",
-					"Simultaneous inbound and outbound with symmetric I/O — actively forwarding traffic"})
+		netCount, hostCount := 0, 0
+		for _, em := range mappings {
+			if !sigSet[em.signal] {
+				continue
 			}
-
-			if cand.DelegatedStrong {
-				items = append(items, evidenceItem{"HIGH", "Delegated egress",
-					fmt.Sprintf("Traffic exits through PID %d (%s)", cand.DelegatedOwnerPID, cand.DelegatedOwner)})
+			if em.isHost && hostCount >= 3 {
+				continue
 			}
-
-			if cand.OutExternal > 0 && cand.OutInternal > 0 {
-				items = append(items, evidenceItem{"HIGH", "Lateral + external",
-					fmt.Sprintf("%d external + %d internal targets — C2 with lateral movement", cand.OutExternal, cand.OutInternal)})
-			} else if cand.OutLongLived > 0 {
-				items = append(items, evidenceItem{"MEDIUM", "Persistent outbound",
-					fmt.Sprintf("%d long-lived connection(s) — not transient request/response", cand.OutLongLived)})
+			if !em.isHost && netCount >= 3 {
+				continue
 			}
-
-			if sigSet["contour-egress-tunnel-port"] {
-				items = append(items, evidenceItem{"HIGH", "Contour-verified tunnel port",
-					"Port confirmed capable of carrying tunnel traffic on this network"})
+			style := inspValue
+			if em.isHost {
+				style = inspSession
+				hostCount++
+			} else {
+				netCount++
 			}
-
-			if sigSet["suspicious-exe-path"] {
-				items = append(items, evidenceItem{"MEDIUM", "Suspicious executable path",
-					"Runs from user-writable temp/download location"})
-			}
-
-			if sigSet["rare-parent"] || sigSet["suspicious-parent-chain"] {
-				items = append(items, evidenceItem{"MEDIUM", "Unusual parent process",
-					"Execution chain does not match normal software behavior"})
-			}
-
-			if len(cand.NamedPipes) > 0 {
-				items = append(items, evidenceItem{"MEDIUM", "Named pipes open",
-					fmt.Sprintf("%d pipe(s) — used by C2 frameworks for IPC", len(cand.NamedPipes))})
-			}
-
-			if sigSet["asn-org-mismatch"] {
-				items = append(items, evidenceItem{"LOW", "ASN mismatch",
-					"Destination network org does not match process publisher"})
-			}
-
-			if sigSet["model-role-override"] {
-				items = append(items, evidenceItem{"HIGH", "Model override active",
-					"Detection model overrode signal-based role from prior intelligence"})
-			}
-		} else if role == "listen" || role == "outbound" {
-			if cand.TrafficVerified {
-				items = append(items, evidenceItem{"OK", "Baseline verified",
-					"Traffic matches learned behavioral baseline — consistently benign"})
-			}
-			if sigSet["asn-org-aligned"] {
-				items = append(items, evidenceItem{"OK", "ASN aligned",
-					"Destination network matches process publisher"})
-			}
-			if sigSet["baseline-verified"] {
-				items = append(items, evidenceItem{"OK", "Stable profile",
-					"Behavioral profile stable over extended observation"})
-			}
-			if cand.Proc != nil && strings.TrimSpace(cand.Proc.Company) != "" {
-				items = append(items, evidenceItem{"OK", "Known publisher",
-					strings.TrimSpace(cand.Proc.Company)})
+			lines = append(lines, evidenceLine{em.label, em.desc, style})
+			if netCount >= 3 && hostCount >= 3 {
+				break
 			}
 		}
 
-		if len(items) > 0 {
-			var evidence []string
-			for _, item := range items {
-				var marker string
-				var findStyle, detailStyle lipgloss.Style
-				switch item.severity {
-				case "CRITICAL":
-					marker = inspAlert.Render("  !! ")
-					findStyle = inspAlert
-					detailStyle = inspWarn
-				case "HIGH":
-					marker = inspWarn.Render("  !  ")
-					findStyle = inspWarn
-					detailStyle = inspDim
-				case "MEDIUM":
-					marker = lipgloss.NewStyle().Foreground(lipgloss.Color("#D19A66")).Render("  >  ")
-					findStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#D19A66"))
-					detailStyle = inspDim
-				case "LOW":
-					marker = inspDim.Render("  -  ")
-					findStyle = inspDim
-					detailStyle = inspDim
-				case "OK":
-					marker = inspSession.Render("  +  ")
-					findStyle = inspSession
-					detailStyle = inspDim
-				default:
-					marker = inspDim.Render("  -  ")
-					findStyle = inspDim
-					detailStyle = inspDim
-				}
-				evidence = append(evidence, marker+findStyle.Render(item.finding))
-				evidence = append(evidence, inspLabel.Render("     ")+detailStyle.Render(item.detail))
-			}
-
-			sections = append(sections, section{"EVIDENCE", evidence})
+		// Publisher info for context.
+		if cand.Proc != nil && strings.TrimSpace(cand.Proc.Company) != "" {
+			lines = append(lines, evidenceLine{"Known publisher", strings.TrimSpace(cand.Proc.Company), inspSession})
 		}
+
+		// Categorize reasons into host-based vs network-based, pick 3 of each.
+		// Host keywords: library, command, proxy flags, raw socket, parent, memory,
+		//   child, shell, script, encoded, integrity, CPU, thread, pipe, module.
+		// Network keywords: connection, port, outbound, inbound, listener, SMB,
+		//   SSH, control, channel, target, DNS, proxy, tunnel, relay, beacon.
+		var netReasons, hostReasons []string
+		for _, reason := range cand.Reasons {
+			r := strings.ToLower(reason)
+			if strings.Contains(r, "contour") || strings.Contains(r, "model:") ||
+				strings.Contains(r, "experience consensus") || strings.Contains(r, "user-writable") ||
+				strings.Contains(r, "de-emphasized") || strings.Contains(r, "baseline") ||
+				strings.Contains(r, "verified destinations") {
+				continue
+			}
+			isHost := strings.Contains(r, "library") || strings.Contains(r, "command line") ||
+				strings.Contains(r, "proxy/tunnel flags") || strings.Contains(r, "raw socket") ||
+				strings.Contains(r, "parent") || strings.Contains(r, "memory") ||
+				strings.Contains(r, "child") || strings.Contains(r, "shell") ||
+				strings.Contains(r, "script") || strings.Contains(r, "encoded") ||
+				strings.Contains(r, "integrity") || strings.Contains(r, "module") ||
+				strings.Contains(r, "pipe")
+			if isHost {
+				hostReasons = append(hostReasons, reason)
+			} else {
+				netReasons = append(netReasons, reason)
+			}
+		}
+		netR, hostR := 0, 0
+		for _, reason := range netReasons {
+			if netR >= 3 {
+				break
+			}
+			lines = append(lines, evidenceLine{"Reason", reason, inspValue})
+			netR++
+		}
+		for _, reason := range hostReasons {
+			if hostR >= 3 {
+				break
+			}
+			lines = append(lines, evidenceLine{"Reason", reason, inspSession})
+			hostR++
+		}
+
+		// When signal debug is OFF, cap at 6 curated items.
+		// When ON, show all curated items + raw signal list.
+		if !m.app.InspectShowAllSignals {
+			if len(lines) > 6 {
+				lines = lines[:6]
+			}
+		}
+
+		var evidence []string
+		for _, line := range lines {
+			evidence = append(evidence, kv(line.label+":", line.value, line.style))
+		}
+
+		// Signal debug mode: append ALL raw signals from the candidate.
+		if m.app.InspectShowAllSignals && len(cand.Signals) > 0 {
+			evidence = append(evidence, kv("", "── Signals (x to hide) ──", inspDim))
+			for _, sig := range cand.Signals {
+				// Color-code by role prefix.
+				style := inspDim
+				switch {
+				case strings.HasPrefix(sig, "beacon-"):
+					style = inspAlert
+				case strings.HasPrefix(sig, "session-"):
+					style = inspSession
+				case strings.HasPrefix(sig, "pivot-"):
+					style = inspValue
+				case strings.HasPrefix(sig, "outbound-"):
+					style = inspCyan
+				case strings.HasPrefix(sig, "listener-"):
+					style = inspDim
+				}
+				evidence = append(evidence, kv("Signal:", sig, style))
+			}
+		}
+
+		if len(evidence) == 0 {
+			evidence = append(evidence, kv("Status:", "No evidence collected yet", inspDim))
+		}
+		sectionName := "EVIDENCE"
+		if m.app.InspectShowAllSignals {
+			sectionName = "EVIDENCE (debug)"
+		}
+		sections = append(sections, section{sectionName, evidence})
 	}
 
 	// MODEL
 	{
 		var modelLines []string
-		model.FlushExperience()
+		// Don't call FlushExperience from UI — it acquires mu.Lock and
+		// contends with the classifier background thread, causing freezes.
 		dm := model.Get()
+
 		if dm != nil && cand.Proc != nil {
-			key := classifier.ProcessBehaviorKey(cand)
-			userVerdict, calVerdict, confidence := model.ProcessVerdict(key)
+			key := detection.ProcessBehaviorKey(cand)
+			userVerdict, _, _ := model.ProcessVerdict(key)
 			expProfile := model.ResolveProfile(key)
-
 			trainLabel := model.GetTrainingLabel(key)
-			if trainLabel != "" {
-				modelLines = append(modelLines, kv("Training:", trainLabel+" (press 't' to change)", inspAlert))
-			} else {
-				modelLines = append(modelLines, kv("Training:", "none (press 't' to label)", inspDim))
-			}
 
-			if calVerdict != "" {
-				calStyle := inspDim
-				if calVerdict == "suspicious" {
-					calStyle = inspWarn
-				} else if calVerdict == "benign" {
-					calStyle = inspSession
+			// ML vs Rule — always show both perspectives, even when they agree.
+			// This makes it clear what each subsystem decided and whether they
+			// reinforce or conflict. When they differ, the signal override
+			// (classifier.go) chose one — visible in the final Role field above.
+			ruleRole := cand.SuggestedRole
+			if ruleRole == "" {
+				ruleRole = shared.InferRoleFromSignals(cand.Signals, cand.ControlSubtype, cand.Role)
+			}
+			// Rule label shows the committed role suffix when rules were
+			// overridden downstream (demoted by shape-only guard, signal
+			// override, etc.). Prevents the confusing case where Rule
+			// says "control-channel" but the process is labeled
+			// "outbound" — now it reads "control-channel → outbound".
+			ruleLabel := ruleRole
+			if ruleRole != "" && cand.Role != "" && ruleRole != cand.Role {
+				ruleLabel = ruleRole + " → " + cand.Role
+			}
+			if cand.MLActive && cand.MLRole != "" {
+				mlConfPct := int(cand.MLConfidence * 100)
+				mlStyle := inspDim
+				if mlConfPct >= 60 {
+					mlStyle = inspValue
+				} else if mlConfPct <= 30 {
+					mlStyle = inspWarn
 				}
-				modelLines = append(modelLines, kv("Calibration:", calVerdict, calStyle))
-			}
-			if userVerdict != "" {
-				verdictStyle := inspDim
-				if userVerdict == "malicious" {
-					verdictStyle = inspAlert
-				} else if userVerdict == "benign" {
-					verdictStyle = inspSession
-				} else if userVerdict == "contested" {
-					verdictStyle = inspWarn
+				modelLines = append(modelLines, kv("ML:", fmt.Sprintf("%s (%d%%)", cand.MLRole, mlConfPct), mlStyle))
+				if ruleLabel != "" {
+					modelLines = append(modelLines, kv("Rule:", ruleLabel, inspDim))
 				}
-				modelLines = append(modelLines, kv("Operator:", userVerdict, verdictStyle))
+			} else if ruleLabel != "" {
+				// No ML prediction — show rule engine suggestion only.
+				modelLines = append(modelLines, kv("ML:", "(no prediction)", inspDim))
+				modelLines = append(modelLines, kv("Rule:", ruleLabel, inspDim))
 			}
 
-			confPct := int((confidence + 1.0) * 50)
-			confLabel := "uncertain"
-			confStyle := inspDim
-			if confPct >= 60 {
-				confLabel = "likely benign"
-				confStyle = inspSession
-			} else if confPct <= 40 {
-				confLabel = "likely malicious"
-				confStyle = inspAlert
+			// Decision reasoning — collect all model-related reasons into a
+			// single multi-line entry to avoid repeating the "Reasoning:"
+			// label. A process often has multiple "model:" reasons (role
+			// decision + beacon timing + experience stats).
+			var reasoningParts []string
+			for _, reason := range cand.Reasons {
+				r := strings.ToLower(reason)
+				if strings.Contains(r, "model:") || strings.Contains(r, "experience consensus") {
+					display := reason
+					if strings.HasPrefix(strings.ToLower(display), "model: ") {
+						display = display[7:]
+					} else if strings.HasPrefix(strings.ToLower(display), "model:") {
+						display = display[6:]
+					}
+					reasoningParts = append(reasoningParts, display)
+				}
 			}
-			modelLines = append(modelLines, kv("Confidence:", fmt.Sprintf("%d%% (%s)", confPct, confLabel), confStyle))
+			if len(reasoningParts) > 0 {
+				modelLines = append(modelLines, kv("Reasoning:", strings.Join(reasoningParts, " · "), inspValue))
+			}
 
+			// Observations and experience.
 			if expProfile != nil && expProfile.ExperienceObservations > 0 {
 				dominant := expProfile.DominantRole
 				if dominant == "" {
 					dominant = "unknown"
 				}
-				modelLines = append(modelLines, kv("Experience:", fmt.Sprintf("%d observations, %.0f%% stable, dominant: %s",
-					expProfile.ExperienceObservations,
-					expProfile.RoleStability*100,
-					dominant), inspDim))
-			} else {
-				modelLines = append(modelLines, kv("Experience:", "collecting...", inspDim))
-			}
+				modelLines = append(modelLines, kv("Observations:", fmt.Sprintf("%d", expProfile.ExperienceObservations), inspValue))
 
-			egressSigs, _, _ := model.EgressSignals(cand.Conns)
-			if len(egressSigs) > 0 {
-				for _, sig := range egressSigs {
-					label := "tunnel-capable"
-					if strings.Contains(sig, "exfil") {
-						label = "exfil-capable"
+				// Beacon timing — show callback interval and jitter if detected.
+				if expProfile.BeaconIntervalMs > 0 {
+					intervalSec := float64(expProfile.BeaconIntervalMs) / 1000.0
+					var intervalStr string
+					if intervalSec >= 60 {
+						intervalStr = fmt.Sprintf("%.0fm%.0fs", intervalSec/60, float64(int(intervalSec)%60))
+					} else {
+						intervalStr = fmt.Sprintf("%.1fs", intervalSec)
 					}
-					modelLines = append(modelLines, kv("Egress:", label+" (contour confirmed)", inspWarn))
+					jitterStr := fmt.Sprintf("%.0f%%", expProfile.BeaconJitter*100)
+					modelLines = append(modelLines, kv("Callback:", fmt.Sprintf("%s interval, %s jitter", intervalStr, jitterStr), inspAlert))
+				} else if cand.BeaconIntervalMs > 0 {
+					intervalSec := float64(cand.BeaconIntervalMs) / 1000.0
+					var intervalStr string
+					if intervalSec >= 60 {
+						intervalStr = fmt.Sprintf("%.0fm%.0fs", intervalSec/60, float64(int(intervalSec)%60))
+					} else {
+						intervalStr = fmt.Sprintf("%.1fs", intervalSec)
+					}
+					jitterStr := fmt.Sprintf("%.0f%%", cand.BeaconJitter*100)
+					modelLines = append(modelLines, kv("Callback:", fmt.Sprintf("%s interval, %s jitter", intervalStr, jitterStr), inspAlert))
 				}
+			} else {
+				modelLines = append(modelLines, kv("Observations:", "collecting initial data", inspDim))
 			}
 
+			// Operator feedback.
+			if trainLabel != "" {
+				modelLines = append(modelLines, kv("Label:", trainLabel+" (t to change)", inspAlert))
+			}
+			if userVerdict != "" {
+				verdictStyle := inspDim
+				switch userVerdict {
+				case "malicious":
+					verdictStyle = inspAlert
+				case "benign":
+					verdictStyle = inspCyan
+				case "contested":
+					verdictStyle = inspWarn
+				}
+				modelLines = append(modelLines, kv("Verdict:", userVerdict, verdictStyle))
+			}
 			if expProfile != nil && (expProfile.KillCount > 0 || expProfile.WhitelistCount > 0) {
 				modelLines = append(modelLines, kv("Feedback:", fmt.Sprintf("%d kills, %d whitelists", expProfile.KillCount, expProfile.WhitelistCount), inspDim))
 			}
+
+			// Per-process learning state.
+			if expProfile != nil {
+				obs := expProfile.ExperienceObservations
+				stab := expProfile.RoleStability
+				procState := "analyzing"
+				procStyle := inspDim
+				switch {
+				case obs < 30:
+					procState = "analyzing"
+				case obs < 200 || stab < 0.50:
+					procState = "learning"
+					procStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#D19A66")).Background(colorBg)
+				default:
+					procState = fmt.Sprintf("monitoring (%d obs)", obs)
+					procStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#56B6C2")).Background(colorBg)
+				}
+				// Never say "confirmed" — any process can be compromised at any time.
+				modelLines = append(modelLines, kv("Status:", procState, procStyle))
+			}
 		}
+
 		if len(modelLines) > 0 {
 			sections = append(sections, section{"MODEL", modelLines})
 		}
-	}
-
-	// REASONS — contour reasons always shown, others capped at 5, max total 7.
-	if len(cand.Reasons) > 0 {
-		var contourReasons, otherReasons []string
-		for _, reason := range cand.Reasons {
-			if strings.Contains(reason, "contour") || strings.Contains(reason, "Contour") {
-				contourReasons = append(contourReasons, reason)
-			} else {
-				otherReasons = append(otherReasons, reason)
-			}
-		}
-		if len(otherReasons) > 5 {
-			otherReasons = otherReasons[:5]
-		}
-		combined := append(contourReasons, otherReasons...)
-		if len(combined) > 7 {
-			combined = combined[:7]
-		}
-		var reasons []string
-		for _, reason := range combined {
-			reasons = append(reasons, "  "+inspWarn.Render(">>")+inspValue.Render(" "+reason))
-		}
-		sections = append(sections, section{"REASONS", reasons})
 	}
 
 	// CONNECTIONS

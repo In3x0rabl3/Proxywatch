@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"proxywatch/internal/calibration"
 	"proxywatch/internal/keystore"
 	"proxywatch/internal/proxyhound"
 	"proxywatch/internal/shared"
@@ -37,20 +36,6 @@ const (
 const WhitelistFieldMax = WhitelistFieldRemove
 
 const (
-	CalibrateFieldProvider = iota
-	CalibrateFieldHostScope
-	CalibrateFieldModel
-	CalibrateFieldProfile
-	CalibrateFieldOutput
-	CalibrateFieldDuration
-	CalibrateFieldAction
-	CalibrateFieldApply
-	CalibrateFieldReset
-)
-
-const CalibrateFieldMax = CalibrateFieldReset
-
-const (
 	ContourFieldSource = iota
 	ContourFieldEndpoint
 	ContourFieldOutput
@@ -74,31 +59,6 @@ const (
 	ContourDashContour  = 1
 	ContourDashServices = 2
 )
-
-const (
-	SiemFieldProvider = iota
-	SiemFieldModel
-	SiemFieldSourceReport
-	SiemFieldJSONOutput
-	SiemFieldGenerate
-	SiemFieldCalibrate
-	SiemFieldReportOutput
-	SiemFieldSaveGeneration
-	SiemFieldDebugLog
-	SiemFieldRulesJSON
-	SiemFieldApply
-	SiemFieldSave
-	SiemFieldDisable
-)
-
-const SiemFieldMax = SiemFieldCalibrate
-
-func SiemFieldMaxFor(app *shared.AppState) int {
-	if len(app.SIEMSourceReports) == 0 {
-		return SiemFieldCalibrate
-	}
-	return SiemFieldGenerate
-}
 
 const (
 	KeystoreFieldOpenAIKey = iota
@@ -139,7 +99,7 @@ const (
 const KeystoreFieldMax = KeystoreFieldNew
 
 var (
-	RoleMenuChoices    = []string{"recommended", "all", "control-session", "control-beacon", "control-pivot", "control-tunnel", "analyzing", "listen", "outbound"}
+	RoleMenuChoices    = []string{"recommended", "all", "control-channel", "control-pivot", "listener", "outbound"}
 	SortMenuChoices    = []string{"default", "host", "role", "age", "state", "pid", "process"}
 	RefreshMenuChoices = []string{"100ms", "250ms", "500ms", "1s", "2s", "5s"}
 )
@@ -147,11 +107,6 @@ var (
 const QuitConfirmTimeout = 5 * time.Second
 
 // ── Result types ────────────────────────────────────────────────────────────
-
-type CalibrationExecResult struct {
-	Result calibration.RunResult
-	Err    error
-}
 
 // ── Private helper functions (mirrors of ui package private funcs) ──────────
 
@@ -269,32 +224,8 @@ func cycleField(field *int, minField, maxField int, up bool) {
 	}
 }
 
-func scrollReport(scroll *int, maxScroll int, delta int) bool {
-	if delta == 0 || maxScroll <= 0 {
-		return false
-	}
-	before := *scroll
-	*scroll += delta
-	if *scroll < 0 {
-		*scroll = 0
-	}
-	if *scroll > maxScroll {
-		*scroll = maxScroll
-	}
-	return *scroll != before
-}
-
 func setWorkflowStatus(app *shared.AppState, text *string, isErr *bool, until *time.Time, msg string, isError bool) {
 	common.SetWorkflowStatus(app, text, isErr, until, msg, isError)
-}
-
-func containsString(items []string, value string) bool {
-	for _, item := range items {
-		if item == value {
-			return true
-		}
-	}
-	return false
 }
 
 func findIndex(items []string, value string) int {
@@ -347,10 +278,6 @@ func safePreset(value, fallback string) string {
 	return value
 }
 
-func safeRolePreset(app *shared.AppState) string {
-	return common.SafeRolePreset(app)
-}
-
 func clampIndex(idx, n int) int {
 	return common.ClampIndex(idx, n)
 }
@@ -368,7 +295,7 @@ func applyRolePreset(app *shared.AppState, preset string) {
 	app.RolePreset = preset
 	switch preset {
 	case "recommended":
-		app.RoleFilterOverride = shared.ParseRoleFilter("control-channel,control-pivot,control-tunnel")
+		app.RoleFilterOverride = shared.ParseRoleFilter("control-session,control-beacon,control-pivot")
 	case "all":
 		app.RoleFilterOverride = nil
 	default:
@@ -384,7 +311,7 @@ func StepWorkflowMenu(app *shared.AppState, dir int) bool {
 	}
 	order := []shared.AppMode{
 		shared.ModeDashboard,
-		shared.ModeCalibration,
+		shared.ModeTraining,
 		shared.ModeContour,
 		shared.ModeCollect,
 		shared.ModeSIEM,
@@ -433,14 +360,14 @@ func StepWorkflowMenu(app *shared.AppState, dir int) bool {
 		escapeToDashboard(app)
 	case shared.ModeWhitelist:
 		EnterWhitelistManager(app)
-	case shared.ModeCalibration:
-		EnterCalibrationMode(app)
+	case shared.ModeTraining:
+		EnterTrainingMode(app)
 	case shared.ModeContour:
 		EnterContourMode(app)
-	case shared.ModeSIEM:
-		EnterSIEMMode(app)
 	case shared.ModeCollect:
 		EnterCollectMode(app)
+	case shared.ModeSIEM:
+		EnterSIEMMode(app)
 	case shared.ModeKeystore:
 		EnterKeystoreMode(app)
 	}
@@ -459,7 +386,7 @@ func JumpToWorkflow(app *shared.AppState, r rune) bool {
 	case '0':
 		target = shared.ModeDashboard
 	case '1':
-		target = shared.ModeCalibration
+		target = shared.ModeTraining
 	case '2':
 		target = shared.ModeContour
 	case '3':
@@ -499,8 +426,8 @@ func JumpToWorkflow(app *shared.AppState, r rune) bool {
 	switch target {
 	case shared.ModeDashboard:
 		escapeToDashboard(app)
-	case shared.ModeCalibration:
-		EnterCalibrationMode(app)
+	case shared.ModeTraining:
+		EnterTrainingMode(app)
 	case shared.ModeContour:
 		EnterContourMode(app)
 	case shared.ModeCollect:
@@ -526,10 +453,6 @@ func escapeToDashboard(app *shared.AppState) bool {
 		app.CollectEditing = false
 		app.CollectShowHelp = false
 		app.CollectShowMenu = false
-	case shared.ModeCalibration:
-		app.CalibrateEditing = false
-		app.ShowCalibrateHelp = false
-		app.ShowCalibrateMenu = false
 	case shared.ModeContour:
 		app.ContourEditing = false
 		app.ContourShowHelp = false
@@ -537,10 +460,6 @@ func escapeToDashboard(app *shared.AppState) bool {
 	case shared.ModeKeystore:
 		app.KeystoreEditing = false
 		app.KeystoreShowHelp = false
-	case shared.ModeSIEM:
-		app.SIEMEditing = false
-		app.SIEMShowHelp = false
-		app.SIEMShowMenu = false
 	}
 	app.Mode = shared.ModeDashboard
 	return false
@@ -695,68 +614,6 @@ func FinalizeCollection(app *shared.AppState) {
 	app.CollectData = nil
 	app.CollectEditing = false
 	app.CollectProgressLines = nil
-}
-
-// ── Calibration helpers ─────────────────────────────────────────────────────
-
-func RefreshCalibrateHostScopes(app *shared.AppState) {
-	if app == nil {
-		return
-	}
-	opts := []string{"(this host)"}
-	seen := make(map[string]bool)
-	addHost := func(host string) {
-		host = strings.TrimSpace(host)
-		if host == "" {
-			return
-		}
-		key := strings.ToLower(host)
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		opts = append(opts, host)
-	}
-	addHost(shared.DefaultHostID(strings.TrimSpace(app.LocalHost)))
-	for _, hs := range app.HostSummaries {
-		addHost(shared.DisplayHost(hs.Host))
-	}
-	for _, c := range app.Candidates {
-		addHost(shared.DisplayHost(c.Host))
-	}
-	opts = append(opts, "(all hosts)")
-	app.CalibrateHostScopeOpts = opts
-	current := strings.TrimSpace(app.CalibrateHostScope)
-	if current == "" {
-		current = "(this host)"
-	}
-	idx := findIndex(opts, current)
-	if idx < 0 {
-		for i, opt := range opts {
-			if strings.EqualFold(opt, current) {
-				idx = i
-				break
-			}
-		}
-	}
-	if idx < 0 {
-		idx = 0
-	}
-	app.CalibrateHostScopeIndex = idx
-	app.CalibrateHostScope = opts[idx]
-}
-
-func ResolveCalibrateModelScope(app *shared.AppState) calibration.ModelScope {
-	choice := strings.TrimSpace(app.CalibrateHostScope)
-	switch {
-	case choice == "" || choice == "(this host)":
-		host := shared.DefaultHostID(strings.TrimSpace(app.LocalHost))
-		return calibration.ModelScope{Kind: "host", Hosts: []string{host}, Label: host}
-	case choice == "(all hosts)":
-		return calibration.ModelScope{Kind: "environment", Label: "all"}
-	default:
-		return calibration.ModelScope{Kind: "host", Hosts: []string{choice}, Label: choice}
-	}
 }
 
 // ── Whitelist helpers ───────────────────────────────────────────────────────
@@ -1037,7 +894,8 @@ func KeystoreFieldVisible(field int) bool {
 		KeystoreFieldMethod, KeystoreFieldNew,
 		KeystoreFieldBuildkiteToken, KeystoreFieldAWSAccessKey, KeystoreFieldAWSSecretKey,
 		KeystoreFieldAzureClientID, KeystoreFieldAzureClientSecret, KeystoreFieldGCPServiceKey,
-		KeystoreFieldSlackBotToken, KeystoreFieldFirebaseKey, KeystoreFieldTeamsAuth:
+		KeystoreFieldSlackBotToken, KeystoreFieldDiscordBotToken, KeystoreFieldTelegramBotKey,
+		KeystoreFieldFirebaseKey, KeystoreFieldTeamsAuth, KeystoreFieldGitLabToken:
 		return false
 	}
 	return field >= KeystoreFieldOpenAIKey && field <= KeystoreFieldMax
@@ -1152,52 +1010,6 @@ func InitMissingKeystoreKeys(app *shared.AppState) {
 	}
 }
 
-// ── SIEM field helpers ──────────────────────────────────────────────────────
-
-func SiemFieldEditable(field int) bool {
-	switch field {
-	case SiemFieldReportOutput, SiemFieldJSONOutput:
-		return true
-	default:
-		return false
-	}
-}
-
-// ── Decrypt helper ──────────────────────────────────────────────────────────
-
-func TryDecryptAndRun(app *shared.AppState, statusText *string, statusError *bool, statusUntil *time.Time, onSuccess func()) bool {
-	if app.KeystoreActiveEntry == "" || !app.KeystoreSecure {
-		return false
-	}
-	path := app.KeystorePath
-	if path == "" {
-		entries := keystore.ListKeystores()
-		for _, e := range entries {
-			if e.Name == app.KeystoreActiveEntry {
-				path = e.Path
-				break
-			}
-		}
-	}
-	if path == "" {
-		return false
-	}
-
-	setWorkflowStatus(app, statusText, statusError, statusUntil,
-		"touch YubiKey to decrypt keystore...", false)
-	go func() {
-		values, err := keystore.LoadSecure(path)
-		if err != nil {
-			setWorkflowStatus(app, statusText, statusError, statusUntil,
-				"decrypt failed: "+err.Error(), true)
-			return
-		}
-		keystore.ApplyToRuntime(values)
-		keystore.SetActiveKeystore(nil)
-		onSuccess()
-	}()
-	return true
-}
 
 // SelectedWhitelistProcessCandidate returns the currently selected process candidate
 // in the whitelist panel.

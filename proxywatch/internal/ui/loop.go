@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -11,7 +10,6 @@ import (
 
 	"proxywatch/internal/keystore"
 	"proxywatch/internal/shared"
-	"proxywatch/internal/siem"
 	uicommon "proxywatch/internal/ui/common"
 	"proxywatch/internal/ui/keys"
 	"proxywatch/internal/ui/platform"
@@ -30,11 +28,6 @@ type refreshResult struct {
 	selectedKey         string
 	selectedIdx         int
 	selectionKeyAtStart string
-}
-
-type siemExecResult struct {
-	result siem.SIEMRunResult
-	err    error
 }
 
 // ── Run ─────────────────────────────────────────────────────────────────────
@@ -90,7 +83,7 @@ func Run(app *shared.AppState, scanner shared.Scanner) error {
 	wireBridge()
 
 	root := NewRootModel(app, scanner)
-	wireSIEMCallback(app, root.siemCh, &root.siemInFlight)
+	wireTrainingCallback(app, root.trainingCh, &root.trainingInFlight)
 
 	// Wire YubiKey touch callback to update UI state.
 	keystore.TouchCallback = func(active bool) {
@@ -110,11 +103,9 @@ func wireBridge() {
 	views.StepWorkflowMenu = keys.StepWorkflowMenu
 	views.JumpToWorkflow = keys.JumpToWorkflow
 	views.RequestQuit = requestQuit
-	views.HandleCalibrationKey = keys.HandleCalibrationKey
 	views.HandleContourKey = keys.HandleContourKey
 	views.HandleContourModeKey = keys.HandleContourModeKey
 	views.HandleDashboardKey = keys.HandleDashboardKey
-	views.HandleSIEMKey = keys.HandleSIEMKey
 	views.HandleKeystoreKey = keys.HandleKeystoreKey
 	views.HandleWhitelistKey = keys.HandleWhitelistKey
 	views.HandleInspectKey = keys.HandleInspectKey
@@ -122,10 +113,6 @@ func wireBridge() {
 	views.HandleKeyEvent = handleKeyEvent
 	views.DrawCurrentMode = drawCurrentMode
 	views.DrawQuitConfirmOverlay = uicommon.DrawQuitConfirmOverlay
-	views.CalibrateEditValue = keys.CalibrateEditValue
-	views.CalibrationActionLabel = render.CalibrationActionLabel
-	views.CalibrationCollectionLines = render.CalibrationCollectionLines
-	views.NormalizeCalibrationReportLines = render.NormalizeCalibrationReportLines
 	views.DashboardHostListMode = keys.DashboardHostListMode
 	views.DashboardProcessCandidates = keys.DashboardProcessCandidates
 	views.SelectedDashboardProcessIndex = keys.SelectedDashboardProcessIndex
@@ -144,12 +131,10 @@ func wireBridge() {
 	views.CollectLiveLines = render.CollectLiveLines
 	views.WhitelistProcessCandidates = keys.WhitelistProcessCandidates
 	views.FormatWhitelistEntry = render.FormatWhitelistEntry
-	views.NonEmptySIEMValue = nonEmptySIEMValue
 	views.RoleSortMenuLabels = keys.RoleSortMenuLabels
 	views.ClampIndex = uicommon.ClampIndex
-	views.CalibrateHostScopeLabel = calibrateHostScopeLabel
-	views.CalibrateResetLabel = calibrateResetLabel
-	views.SiemFieldMaxFor = keys.SiemFieldMaxFor
+	views.HandleTrainingKey = keys.HandleTrainingKey
+	views.HandleSIEMKey = keys.HandleSIEMKey
 }
 
 // ── Init / defaults ─────────────────────────────────────────────────────────
@@ -163,12 +148,19 @@ func initAppDefaults(app *shared.AppState) {
 	}
 	app.SelectedIdx = -1
 	app.Mode = shared.ModeDashboard
+	if app.SortPreset == "" {
+		app.SortPreset = "role"
+	}
+	if app.RolePreset == "" {
+		app.RolePreset = "all"
+	}
+
+	// Training control plane defaults.
+	app.TrainingAutoRetrain = true
+	app.TrainingField = 0
+	shared.AutoRetrainEnabled.Store(true)
 
 	// Clear stale report data from previous runs.
-	app.SIEMReportLines = nil
-	app.SIEMProgressLines = nil
-	app.CalibrateReportLines = nil
-	app.CalibrateProgressLines = nil
 	app.ContourReportLines = nil
 	app.ContourProgressLines = nil
 	app.CollectResultHasData = false
@@ -263,14 +255,12 @@ func drawCurrentMode(app *shared.AppState) {
 		render.DrawWhitelist(app)
 	case shared.ModeCollect:
 		render.DrawCollect(app)
-	case shared.ModeCalibration:
-		render.DrawCalibration(app)
 	case shared.ModeContour:
 		render.DrawContour(app)
 	case shared.ModeKeystore:
 		render.DrawKeystore(app)
 	case shared.ModeSIEM:
-		render.DrawSIEM(app)
+		// Rendered entirely by the bubbletea SIEMModel — no legacy tcell draw.
 	}
 	uicommon.DrawQuitConfirmOverlay(app)
 }
@@ -293,8 +283,6 @@ func handleKeyEvent(app *shared.AppState, tev *tcell.EventKey) bool {
 		return keys.HandleWhitelistKey(app, tev)
 	case shared.ModeCollect:
 		return keys.HandleCollectKey(app, tev)
-	case shared.ModeCalibration:
-		return keys.HandleCalibrationKey(app, tev)
 	case shared.ModeContour:
 		return keys.HandleContourKey(app, tev)
 	case shared.ModeKeystore:
@@ -317,10 +305,6 @@ func escapeToDashboard(app *shared.AppState) bool {
 		app.CollectEditing = false
 		app.CollectShowHelp = false
 		app.CollectShowMenu = false
-	case shared.ModeCalibration:
-		app.CalibrateEditing = false
-		app.ShowCalibrateHelp = false
-		app.ShowCalibrateMenu = false
 	case shared.ModeContour:
 		app.ContourEditing = false
 		app.ContourShowHelp = false
@@ -329,9 +313,7 @@ func escapeToDashboard(app *shared.AppState) bool {
 		app.KeystoreEditing = false
 		app.KeystoreShowHelp = false
 	case shared.ModeSIEM:
-		app.SIEMEditing = false
-		app.SIEMShowHelp = false
-		app.SIEMShowMenu = false
+		app.SiemShowHelp = false
 	}
 	app.Mode = shared.ModeDashboard
 	return false
@@ -423,17 +405,13 @@ func applyRefreshResult(app *shared.AppState, res refreshResult) {
 		newKeys[key] = role
 		if app.PrevCandidateKeys != nil {
 			if _, existed := app.PrevCandidateKeys[key]; !existed {
-				if role == "control-session" || role == "control-beacon" || role == "control-tunnel" || role == "control-pivot" {
+				if role == "control-channel" || role == "control-pivot" {
 					if !bellRung && c.StrongEvidence {
-						fmt.Fprint(os.Stderr, "\a")
+						// Bell disabled — writing to stderr corrupts TUI.
+						// TODO: use bubbletea program.Send() for bell.
 						bellRung = true
 					}
-					state := "watch"
-					if c.ActiveProxying {
-						state = "active"
-					} else if c.StrongEvidence {
-						state = "strong"
-					}
+					state := shared.CandidateState(c)
 					shared.LogSessionEvent(app, shared.SessionEvent{
 						Timestamp: time.Now().UTC(),
 						Host:      shared.DisplayHost(c.Host),
@@ -517,35 +495,25 @@ func collectCandidatesForSource(app *shared.AppState) []shared.Candidate {
 	return filtered
 }
 
-func applySIEMExecResult(app *shared.AppState, res siemExecResult) {
-	keys.ApplySIEMExecResult(app, keys.SiemExecResult{Result: res.result, Err: res.err})
-}
-
-// ── Small helpers kept in root ──────────────────────────────────────────────
-
-func calibrateHostScopeLabel(app *shared.AppState) string {
-	scope := strings.TrimSpace(app.CalibrateHostScope)
-	if scope == "" || scope == "(this host)" {
-		return shared.DefaultHostID(strings.TrimSpace(app.LocalHost)) + " (local)"
+// wireTrainingCallback sets up app.StartTrainingRetrain to poll the
+// orchestrator for completion and deliver the result via the channel.
+// The caller (keys/training.go) triggers the orchestrator directly before
+// calling this callback.
+func wireTrainingCallback(app *shared.AppState, ch chan TrainingExecResultMsg, inFlight *bool) {
+	app.StartTrainingRetrain = func() {
+		if *inFlight {
+			return
+		}
+		*inFlight = true
+		go func() {
+			// The orchestrator runs asynchronously. Poll until done.
+			if tOrch, ok := app.TrainingOrchestrator.(interface{ IsActive() bool }); ok {
+				time.Sleep(200 * time.Millisecond)
+				for tOrch.IsActive() {
+					time.Sleep(500 * time.Millisecond)
+				}
+			}
+			ch <- TrainingExecResultMsg{}
+		}()
 	}
-	return scope
-}
-
-func calibrateResetLabel(app *shared.AppState) string {
-	if app.CalibrateResetConfirm && time.Now().Before(app.CalibrateResetDeadline) {
-		return "CONFIRM reset (press ENTER)"
-	}
-	return "Reset baseline model"
-}
-
-func nonEmptySIEMValue(value, fallback string) string {
-	if value != "" {
-		return value
-	}
-	return fallback
-}
-
-// FindIndexByKey is exported for use by external callers.
-func FindIndexByKey(cands []shared.Candidate, key string) int {
-	return uicommon.FindIndexByKey(cands, key)
 }

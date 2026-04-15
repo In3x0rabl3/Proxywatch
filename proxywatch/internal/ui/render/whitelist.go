@@ -106,12 +106,7 @@ func DrawWhitelist(app *shared.AppState) {
 				name = shared.DisplayProcessName(c.Proc)
 			}
 			role := common.NormalizeDashboardRole(c.Role)
-			stateVal := "watch"
-			if c.ActiveProxying {
-				stateVal = "active"
-			} else if c.StrongEvidence {
-				stateVal = "strong"
-			}
+			stateVal := shared.CandidateState(c)
 			prefix := " "
 			st := common.StyleText
 			rowSelected := i == app.WhitelistProcessSelected

@@ -207,18 +207,6 @@ func EmptyValues() map[string]string {
 	return out
 }
 
-// MethodLabel returns a display label for a security method ID.
-func MethodLabel(method string) string {
-	switch strings.TrimSpace(strings.ToLower(method)) {
-	case "gpg":
-		return "GPG Key"
-	case "yubikey":
-		return "Hardware Key"
-	default:
-		return "Local Key"
-	}
-}
-
 // ── Vault File API ──────────────────────────────────────────────────────────
 // StoreFile/LoadFile/DeleteFile operate on the in-memory vault. Files are
 // persisted to the encrypted keystore when Save/Lock is called.
@@ -252,26 +240,6 @@ func LoadFile(name string) ([]byte, bool) {
 		return nil, false
 	}
 	return append([]byte(nil), data...), true
-}
-
-// DeleteFile removes a named file from the vault.
-func DeleteFile(name string) {
-	vaultFilesMu.Lock()
-	defer vaultFilesMu.Unlock()
-	if vaultFiles != nil {
-		delete(vaultFiles, name)
-	}
-}
-
-// ListFiles returns all file keys in the vault.
-func ListFiles() []string {
-	vaultFilesMu.RLock()
-	defer vaultFilesMu.RUnlock()
-	keys := make([]string, 0, len(vaultFiles))
-	for k := range vaultFiles {
-		keys = append(keys, k)
-	}
-	return keys
 }
 
 // VaultWrite stores data in vault if active, otherwise writes to disk.

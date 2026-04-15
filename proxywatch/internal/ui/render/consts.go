@@ -20,18 +20,6 @@ const (
 )
 
 const (
-	calibrateFieldProvider = iota
-	calibrateFieldHostScope
-	calibrateFieldModel
-	calibrateFieldProfile
-	calibrateFieldOutput
-	calibrateFieldDuration
-	calibrateFieldAction
-	calibrateFieldApply
-	calibrateFieldReset
-)
-
-const (
 	contourFieldSource = iota
 	contourFieldEndpoint
 	contourFieldOutput
@@ -39,22 +27,6 @@ const (
 	contourFieldProbeMode
 	contourFieldProbeRole
 	contourFieldAction
-)
-
-const (
-	siemFieldProvider = iota
-	siemFieldModel
-	siemFieldSourceReport
-	siemFieldJSONOutput
-	siemFieldGenerate
-	siemFieldCalibrate
-	siemFieldReportOutput
-	siemFieldSaveGeneration
-	siemFieldDebugLog
-	siemFieldRulesJSON
-	siemFieldApply
-	siemFieldSave
-	siemFieldDisable
 )
 
 const (

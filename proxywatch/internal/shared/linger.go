@@ -75,12 +75,12 @@ func ApplyCandidateLinger(current []Candidate, now time.Time, keepFor time.Durat
 			stale.Proc.IOWriteBps = 0
 			stale.Proc.IOOtherBps = 0
 		}
-		stale.ActiveProxying = false
-		// Clear connections — process is gone, sockets are closed.
-		stale.Conns = nil
-		stale.Listeners = nil
-		stale.UDPListeners = nil
-		stale.ControlChannel = nil
+		// Preserve connection data, role, signals, and ActiveProxying on
+		// exited processes. This evidence is needed for:
+		// - post-mortem role display (what was it doing when alive)
+		// - child tunnel aggregation (correlate children with parent)
+		// - training data (short-lived processes are valid samples)
+		// Only zero live IO rates — the rest is historical evidence.
 		out = append(out, stale)
 	}
 
@@ -173,6 +173,71 @@ func isTransientEntry(s string) bool {
 	return false
 }
 
+// AggregateLingerChildEvidence correlates exited children (from linger cache)
+// with live parent processes. When a short-lived child had internal connections
+// (e.g., SSH SOCKS proxy fork), transfer tunnel evidence to the parent.
+// This catches cases where the child exits before AggregateChildTunnelEvidence
+// runs inside Classify.
+func AggregateLingerChildEvidence(cands []Candidate, now time.Time) {
+	// Build parent PID → index map for processes with listeners.
+	parentIdx := make(map[int]int)
+	for i := range cands {
+		c := &cands[i]
+		if c.Proc == nil || c.Exited {
+			continue
+		}
+		if len(c.Listeners) > 0 || len(c.UDPListeners) > 0 {
+			parentIdx[c.Proc.Pid] = i
+		}
+	}
+	if len(parentIdx) == 0 {
+		return
+	}
+
+	// Find exited children that had internal connections.
+	for i := range cands {
+		c := &cands[i]
+		if c.Proc == nil || c.Proc.ParentPid <= 0 {
+			continue
+		}
+		pidx, ok := parentIdx[c.Proc.ParentPid]
+		if !ok {
+			continue
+		}
+
+		childInternal := 0
+		for _, conn := range c.Conns {
+			if IsInternalIP(conn.RemoteAddress) && conn.RemotePort > 0 {
+				childInternal++
+			}
+		}
+		if childInternal == 0 {
+			continue
+		}
+
+		parent := &cands[pidx]
+		parent.ActiveProxying = true
+		if parent.Role == "listen" || parent.Role == "listener" {
+			parent.Role = "control-pivot"
+		}
+		TunnelingSeen[parent.Proc.Pid] = now
+		parent.OutInternal += childInternal
+		parent.OutTotal += childInternal
+
+		hasSignal := false
+		for _, sig := range parent.Signals {
+			if sig == "child-tunnel-relay" {
+				hasSignal = true
+				break
+			}
+		}
+		if !hasSignal {
+			parent.Signals = append(parent.Signals, "child-tunnel-relay")
+			parent.Reasons = append(parent.Reasons, "Exited child processes forwarded internal connections through listener")
+		}
+	}
+}
+
 func lingerKeepFor(c Candidate, base time.Duration) time.Duration {
 	keep := base
 	if keep <= 0 {
@@ -186,6 +251,15 @@ func lingerKeepFor(c Candidate, base time.Duration) time.Duration {
 				keep = CandidateSuspiciousLingerTTL
 			}
 			break
+		}
+	}
+	// Children of tunnel/pivot parents (e.g., sshd SOCKS forks) get extended
+	// linger so their connection evidence persists for parent correlation.
+	if c.Proc != nil && c.Proc.ParentPid > 0 {
+		if _, ok := TunnelingSeen[c.Proc.ParentPid]; ok {
+			if CandidateSuspiciousLingerTTL > keep {
+				keep = CandidateSuspiciousLingerTTL
+			}
 		}
 	}
 	if c.StrongEvidence && CandidateStrongLingerTTL > keep {

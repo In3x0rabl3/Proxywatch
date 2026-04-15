@@ -41,24 +41,6 @@ func DrawDashboard(app *shared.AppState) {
 	common.PutStringStyle(s, start, 2, refreshVal, common.StyleTextB)
 
 	bodyY := headerH
-	if app.CalibrateAnalyzing {
-		common.PutStringStyle(s, 2, bodyY, common.TruncateToWidth("gpt analyzing...", w-4), common.StyleTextB)
-		bodyY++
-	} else if app.CalibrateActive {
-		remaining := time.Until(app.CalibrateUntil).Round(time.Second)
-		if remaining < 0 {
-			remaining = 0
-		}
-		common.PutStringStyle(s, 2, bodyY, common.TruncateToWidth("calibration collection in progress   "+remaining.String()+" remaining", w-4), common.StyleAlertB)
-		bodyY++
-	} else if app.CalibrateStatusText != "" && time.Now().Before(app.CalibrateStatusUntil) {
-		st := common.StyleText
-		if app.CalibrateStatusError {
-			st = common.StyleAlert
-		}
-		common.PutStringStyle(s, 2, bodyY, common.TruncateToWidth(app.CalibrateStatusText, w-4), st)
-		bodyY++
-	}
 	if len(app.HostSummaries) > 1 {
 		summaryLine := BuildMultiHostSummary(app)
 		titleLine := fmt.Sprintf("HOST SUMMARY (%d hosts)", len(app.HostSummaries))
@@ -88,12 +70,10 @@ func DrawDashboard(app *shared.AppState) {
 
 func BuildMultiHostSummary(app *shared.AppState) string {
 	type hostRoles struct {
-		total     int
-		session   int
-		beacon    int
-		pivot     int
-		tunnel    int
-		analyzing int
+		total   int
+		session int
+		beacon  int
+		pivot   int
 	}
 	perHost := make(map[string]*hostRoles)
 	for _, hs := range app.HostSummaries {
@@ -107,17 +87,11 @@ func BuildMultiHostSummary(app *shared.AppState) string {
 			perHost[key] = hr
 		}
 		hr.total++
-		switch c.Role {
-		case "control-session":
+		switch shared.RoleFamily(c.Role) {
+		case "control-channel":
 			hr.session++
-		case "control-beacon":
-			hr.beacon++
 		case "control-pivot":
 			hr.pivot++
-		case "control-tunnel":
-			hr.tunnel++
-		case "analyzing":
-			hr.analyzing++
 		}
 	}
 	parts := make([]string, 0, len(app.HostSummaries))
@@ -137,8 +111,8 @@ func BuildMultiHostSummary(app *shared.AppState) string {
 			if hr.beacon > 0 {
 				roleParts = append(roleParts, fmt.Sprintf("%d beacon", hr.beacon))
 			}
-			if hr.tunnel > 0 {
-				roleParts = append(roleParts, fmt.Sprintf("%d tunnel", hr.tunnel))
+			if hr.pivot > 0 {
+				roleParts = append(roleParts, fmt.Sprintf("%d pivot", hr.pivot))
 			}
 		}
 		if len(roleParts) > 0 {
@@ -178,11 +152,11 @@ func drawDashboardHostView(app *shared.AppState, bodyY, bodyH, w, h int) {
 		seenW      = 6
 		processesW = 9
 		watchW     = 5
-		strongW    = 6
+		tunnelW    = 6
 		rolesW     = 5
-		activeW    = 6
+		// activeW removed — no "active" state column
 	)
-	baseNoHost := colHost + 2 + statusW + 2 + seenW + 2 + processesW + 2 + watchW + 2 + strongW + 2 + rolesW + 2 + activeW
+	baseNoHost := colHost + 2 + statusW + 2 + seenW + 2 + processesW + 2 + watchW + 2 + tunnelW + 2 + rolesW
 	hostAvail := max(5, w-2-baseNoHost)
 	hostNeed := 10
 	for i := range app.HostSummaries {
@@ -201,18 +175,17 @@ func drawDashboardHostView(app *shared.AppState, bodyY, bodyH, w, h int) {
 	colSeen := colStatus + statusW + 2
 	colProcesses := colSeen + seenW + 2
 	colWatch := colProcesses + processesW + 2
-	colStrong := colWatch + watchW + 2
-	colRoles := colStrong + strongW + 2
-	colActive := colRoles + rolesW + 2
+	colTunnel := colWatch + watchW + 2
+	colRoles := colTunnel + tunnelW + 2
+	// colActive removed
 
 	common.PutStringStyle(s, colHost, bodyY+1, "HOST", common.StyleTextB)
 	common.PutStringStyle(s, colStatus, bodyY+1, "STATUS", common.StyleTextB)
 	common.PutStringStyle(s, colSeen, bodyY+1, "SEEN", common.StyleTextB)
 	common.PutStringStyle(s, colProcesses, bodyY+1, "PROCESSES", common.StyleTextB)
 	common.PutStringStyle(s, colWatch, bodyY+1, "WATCH", common.StyleTextB)
-	common.PutStringStyle(s, colStrong, bodyY+1, "STRONG", common.StyleTextB)
+	common.PutStringStyle(s, colTunnel, bodyY+1, "TUNNEL", common.StyleTextB)
 	common.PutStringStyle(s, colRoles, bodyY+1, "ROLES", common.StyleTextB)
-	common.PutStringStyle(s, colActive, bodyY+1, "ACTIVE", common.StyleTextB)
 
 	maxRows := bodyH - 4
 	if maxRows < 1 {
@@ -263,9 +236,8 @@ func drawDashboardHostView(app *shared.AppState, bodyY, bodyH, w, h int) {
 		common.PutStringStyle(s, colSeen, rowY, fmt.Sprintf("%-*s", seenW, common.TruncateToWidth(seen, seenW)), common.ApplySelectedRowStyle(common.StyleDim, rowSelected))
 		common.PutStringStyle(s, colProcesses, rowY, fmt.Sprintf("%*d", processesW, item.Processes), common.ApplySelectedRowStyle(common.StyleText, rowSelected))
 		common.PutStringStyle(s, colWatch, rowY, fmt.Sprintf("%*d", watchW, item.Watch), common.ApplySelectedRowStyle(common.StyleWatch, rowSelected))
-		common.PutStringStyle(s, colStrong, rowY, fmt.Sprintf("%*d", strongW, item.Strong), common.ApplySelectedRowStyle(common.StyleWarn, rowSelected))
+		common.PutStringStyle(s, colTunnel, rowY, fmt.Sprintf("%*d", tunnelW, item.Tunneling), common.ApplySelectedRowStyle(common.StyleAlertB, rowSelected))
 		common.PutStringStyle(s, colRoles, rowY, fmt.Sprintf("%*d", rolesW, item.Roles), common.ApplySelectedRowStyle(common.StyleCyanB, rowSelected))
-		common.PutStringStyle(s, colActive, rowY, fmt.Sprintf("%*d", activeW, item.Active), common.ApplySelectedRowStyle(common.StyleAlertB, rowSelected))
 	}
 	common.PutStringStyle(s, max(2, w-8), h-1, fmt.Sprintf("%d/%d", app.DashboardHostSelected+1, len(app.HostSummaries)), common.StyleCyanB)
 }
@@ -289,7 +261,7 @@ func drawDashboardProcessView(app *shared.AppState, bodyY, bodyH, w, h int) {
 		pidW      = 7
 		roleW     = 16
 		ageW      = 5
-		stateW    = 7
+		stateW    = 15
 		minHostW  = 5
 		minProcW  = 8
 	)
@@ -428,12 +400,7 @@ func DrawInspector(app *shared.AppState) {
 
 	role := common.NormalizeDashboardRole(cand.Role)
 	rs := common.RoleStyle(role)
-	state := "watch"
-	if cand.ActiveProxying {
-		state = "active"
-	} else if cand.StrongEvidence {
-		state = "strong"
-	}
+	state := shared.CandidateState(*cand)
 	ss := common.StateStyle(state)
 
 	line1 := "UTC: " + time.Now().UTC().Format(common.UTCTimeFormat)

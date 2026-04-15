@@ -20,7 +20,11 @@ func RunTeaProgram(root tea.Model) error {
 	fmt.Fprint(os.Stdout, "\033]11;rgb:1e/1e/1e\007")
 
 	p := tea.NewProgram(root, tea.WithAltScreen(), tea.WithInputTTY(), tea.WithMouseCellMotion())
+	fmt.Fprintf(os.Stderr, "[ui] starting TUI...\n")
 	_, err := p.Run()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ui] TUI error: %v\n", err)
+	}
 
 	// Restore terminal default background.
 	fmt.Fprint(os.Stdout, "\033]111\007")
