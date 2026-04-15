@@ -59,10 +59,11 @@ func EmitDistinguishingSignals(c *shared.Candidate, addSignal func(string), ctx 
 	}
 
 	// proxy-library-loaded: well-known proxy/tunnel libraries loaded
-	// into process memory. Windows-native inspection is limited (no
-	// fillLoadedLibs due to EnumProcessModulesEx hangs), so this path
-	// primarily fires on Linux where /proc/[pid]/maps provides a clean
-	// module list.
+	// into process memory. Linux reads /proc/[pid]/maps directly.
+	// Windows uses EnumProcessModules behind a handle-duplicating
+	// goroutine wrapper (see telemetry/process_windows_libs.go) so
+	// protected service hosts that historically hung the syscall
+	// can no longer stall the scanner.
 	if hasProxyLibraryLoaded(c.Proc.LoadedLibs) {
 		addSignal("proxy-library-loaded")
 	}

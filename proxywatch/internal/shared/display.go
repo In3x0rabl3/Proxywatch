@@ -152,7 +152,13 @@ type ProcessMeta struct {
 	Integrity   string
 	SessionID   uint32
 	SessionName string
-	FetchedAt   time.Time
+	// LoadedLibs caches the notable-library enumeration so the (slow
+	// and occasionally hang-prone on protected service hosts)
+	// EnumProcessModules syscall runs at most once per TTL per PID.
+	// Modules don't change inside a 60s window for real workloads;
+	// TTL-expiry refreshes long-lived processes naturally.
+	LoadedLibs []string
+	FetchedAt  time.Time
 }
 
 type ProcessMetaCache struct {

@@ -64,16 +64,14 @@ func GetProcessInfoMap() (map[int]*shared.ProcessInfo, error) {
 				fillHandleCount(h, pi)
 				if !metaOK {
 					fillExePath(h, pi)
-					// fillLoadedLibs is DISABLED on Windows: EnumProcessModulesEx
-					// hangs indefinitely on protected service hosts (svchost)
-					// in certain Windows states. The naive timeout-goroutine
-					// approach is unsafe because the main path closes the
-					// handle the goroutine is mid-syscall on. Until we land a
-					// safe handle-duplicating wrapper, skip loaded-libs
-					// enumeration; we lose the beacon-crypto-lib-loaded signal
-					// but gain a responsive scanner. Other role detection
-					// (tunnel flags, named pipes, ASN, traffic patterns) is
-					// unaffected.
+					// fillLoadedLibs enumerates notable crypto/proxy/tunnel
+					// DLLs via EnumProcessModules. Runs in a goroutine with
+					// a duplicated handle so the main path's CloseHandle
+					// can't invalidate the syscall mid-flight, bounded by
+					// enumModulesTimeout (~400ms) with a per-PID cooldown
+					// for protected service hosts that block indefinitely.
+					// Restores beacon-crypto-lib-loaded on Windows.
+					fillLoadedLibs(h, pi)
 					fillUser(h, pi)
 					fillIntegrity(h, pi)
 					fillTokenDetails(h, pi)
@@ -300,6 +298,10 @@ func applyCachedMeta(pi *shared.ProcessInfo, meta shared.ProcessMeta) {
 	pi.Integrity = meta.Integrity
 	pi.SessionID = meta.SessionID
 	pi.SessionName = meta.SessionName
+	// LoadedLibs is populated by fillLoadedLibs on first observation and
+	// must survive across meta-cache hits; otherwise beacon-crypto-lib-
+	// loaded fires only on the very first cycle and disappears forever.
+	pi.LoadedLibs = meta.LoadedLibs
 }
 
 func cacheMeta(pid int, pi *shared.ProcessInfo, now time.Time) {
@@ -310,6 +312,7 @@ func cacheMeta(pid int, pi *shared.ProcessInfo, now time.Time) {
 		Integrity:   pi.Integrity,
 		SessionID:   pi.SessionID,
 		SessionName: pi.SessionName,
+		LoadedLibs:  pi.LoadedLibs,
 		FetchedAt:   now,
 	})
 }
