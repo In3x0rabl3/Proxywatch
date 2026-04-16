@@ -113,6 +113,20 @@ func EmitBeaconSignals(c *shared.Candidate, addSignal func(string), ctx SignalCo
 	// Shadow-only: see behavior/saas.go for the full endpoint list.
 	emitSaaSC2Signal(c, addSignal)
 
+	// cdn-fronted-c2-candidate: shadow-only signal for CDN domain
+	// fronting (Cobalt Strike / Sliver / custom implants relaying
+	// through Cloudflare, Azure, CloudFront, Fastly, Akamai). Fires
+	// when an unknown-vendor unsigned process maintains persistent
+	// HTTPS traffic to a destination whose ASN belongs to a CDN.
+	// Legitimate vendor apps that use CDN infrastructure are
+	// whitelisted via IsKnownVendorProcess; this signal specifically
+	// targets the "random binary dropped in user-writable path that
+	// happens to talk to a CDN" pattern.
+	//
+	// Not in controlSignals / outboundSignals / pivotSignals — ship
+	// as shadow, measure FP rate, graduate to role-promotion later.
+	emitCDNFrontedSignal(c, addSignal)
+
 	// beacon-memory-stable: stable low memory footprint over time.
 	if c.OutTotal > 0 {
 		if hist := shared.ProcHistoryByPID[ctx.ScopedPID]; hist != nil && len(hist.MemSamples) >= 5 {

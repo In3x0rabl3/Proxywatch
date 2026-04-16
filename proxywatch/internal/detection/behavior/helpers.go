@@ -97,6 +97,67 @@ func IsC2PipeName(name string) bool {
 	return false
 }
 
+// IsSuspiciousRandomPipeName returns true for named pipes that look
+// randomly generated — short alphanumeric strings with no recognizable
+// vendor prefix. Covers custom Mythic SMB profiles and any operator-
+// renamed implant pipes the fixed IsC2PipeName list can't catch.
+// Shadow-only: the positive set is broad, so it feeds a new signal
+// that doesn't vote in role inference yet.
+func IsSuspiciousRandomPipeName(name string) bool {
+	base := name
+	// Strip the windows \\.\pipe\ prefix if present.
+	if i := strings.LastIndex(base, `\`); i >= 0 {
+		base = base[i+1:]
+	}
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	if base == "" {
+		return false
+	}
+	// Already flagged by the hard pattern list — don't double-count.
+	if IsC2PipeName(base) {
+		return false
+	}
+	// Known vendor/system pipe prefixes that we want to whitelist.
+	benignPrefixes := []string{
+		"anonpipe", "lsass", "spoolss", "srvsvc", "wkssvc", "samr",
+		"netlogon", "eventlog", "scerpc", "atsvc", "epmapper",
+		"mojo.", "chrome_", "msedge_", "slack_", "teams_",
+		"docker_engine", "pipewire", "openssh-ssh", "git-lfs-",
+		"vs_", "vscode_", "cursor_", "jetbrains_",
+	}
+	low := strings.ToLower(base)
+	for _, pfx := range benignPrefixes {
+		if strings.HasPrefix(low, pfx) {
+			return false
+		}
+	}
+	// Short base names are the C2 shape: 6–16 chars, alphanumeric only,
+	// mixed case or mixed with digits. Most legitimate pipes are longer
+	// and use hyphens/underscores/periods or clear vendor prefixes.
+	if len(base) < 6 || len(base) > 16 {
+		return false
+	}
+	var hasDigit, hasAlpha, hasSep bool
+	for _, r := range base {
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+			hasAlpha = true
+		case r == '-' || r == '_' || r == '.':
+			hasSep = true
+		default:
+			return false
+		}
+	}
+	// Only flag strings that mix letters+digits and have no separators —
+	// classic random-token shape. Pure-alpha names like "WellKnownPipe"
+	// and separator-containing names like "mojo.1234" are spared.
+	return hasAlpha && hasDigit && !hasSep
+}
+
 // PrepareCommonState computes shared intermediate values used across multiple
 // role emitters. Called once per candidate to avoid redundant work.
 type CommonState struct {

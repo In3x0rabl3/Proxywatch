@@ -77,10 +77,26 @@ func EmitPivotSignals(c *shared.Candidate, addSignal func(string), ctx SignalCon
 	}
 
 	// pivot-named-pipe-c2-pattern: C2-like named pipe detected.
+	namedPipeHardMatch := false
 	for _, pipe := range c.NamedPipes {
 		if IsC2PipeName(pipe) {
 			addSignal("pivot-named-pipe-c2-pattern")
+			namedPipeHardMatch = true
 			break
+		}
+	}
+
+	// pivot-named-pipe-random-name: broader fallback for Mythic / custom
+	// implant pipe names the hard-pattern list can't catch. Shadow-only
+	// — not in pivotSignals, so it doesn't vote in InferRoleFromSignals.
+	// Only considered when the hard match missed, the process is
+	// non-vendor, and the pipe shape actually looks random.
+	if !namedPipeHardMatch && !shared.IsKnownVendorProcess(p) {
+		for _, pipe := range c.NamedPipes {
+			if IsSuspiciousRandomPipeName(pipe) {
+				addSignal("pivot-named-pipe-random-name")
+				break
+			}
 		}
 	}
 
@@ -139,5 +155,42 @@ func EmitPivotSignals(c *shared.Candidate, addSignal func(string), ctx SignalCon
 	// pivot-anon-exec-memory: anonymous executable memory (reflective loading).
 	if p.AnonExecCount > 0 && c.OutInternal > 0 {
 		addSignal("pivot-anon-exec-memory")
+	}
+
+	// injection-rwx-external: shadow-only signal for reflective-loaded /
+	// injected implants (Kharon-Mtc, CS spawnto, Sliver migrate). Fires
+	// when a non-vendor process has anonymous RWX memory regions AND
+	// external outbound traffic. Existing pivot-anon-exec-memory only
+	// covers the lateral (internal) case; this extends the same idea to
+	// beacon-style external C2. Not in pivotSignals — it doesn't vote
+	// yet. Gate on unknown-vendor so JIT runtimes (CoreCLR, V8) don't
+	// trip it every time they touch the internet.
+	if (p.HasRWXMemory || p.AnonExecCount > 0) &&
+		c.OutExternal > 0 &&
+		!shared.IsKnownVendorProcess(p) &&
+		p.SignatureTrust != shared.SignatureTrustTrusted {
+		addSignal("injection-rwx-external")
+	}
+
+	// wg-udp-shape: shadow-only signal for WireGuard-style C2 transport
+	// (Sliver `wg`). Fires when a non-vendor process owns a UDP listener
+	// on the WireGuard default port (51820) or on a high-port UDP
+	// listener with no TCP activity — the classic WG implant shape. UDP
+	// outbound isn't tracked yet, so we only pattern-match listeners.
+	// Not in pivotSignals.
+	if len(c.UDPListeners) > 0 && !shared.IsKnownVendorProcess(p) &&
+		p.SignatureTrust != shared.SignatureTrustTrusted {
+		for _, ul := range c.UDPListeners {
+			if ul.LocalPort == 51820 {
+				addSignal("wg-udp-shape")
+				break
+			}
+			// High-port UDP listener + no TCP listeners + minimal TCP
+			// outbound: UDP-only implant shape.
+			if ul.LocalPort >= 40000 && len(c.Listeners) == 0 && c.OutTotal <= 1 {
+				addSignal("wg-udp-shape")
+				break
+			}
+		}
 	}
 }
