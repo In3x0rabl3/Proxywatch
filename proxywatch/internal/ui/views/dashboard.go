@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"proxywatch/internal/detection/model"
 	"proxywatch/internal/shared"
 )
 
@@ -134,13 +135,24 @@ func (m DashboardModel) renderHeader(w int) string {
 		rightLabelStyle.Render("UTC: ") + dimText.Render(utcValue)
 
 	// Line 2: refresh rate + classifier mode (right, values de-emphasized).
+	// Classifier label reflects ML qualification lifecycle so operators can
+	// tell at a glance whether the ML model is driving role assignment, is
+	// still shadowing, or has been demoted by the shadow-degrade guard.
 	classifierVal := "Rules"
-	if m.app.MLClassifierPrimary {
+	classifierStyle := dimText
+	switch {
+	case model.MLDemoted():
+		classifierVal = "ML DEGRADED"
+		classifierStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#E06C75"))
+	case model.MLQualified():
+		classifierVal = "ML"
+		classifierStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379"))
+	case m.app.MLClassifierPrimary:
 		classifierVal = "ML"
 	}
 	refreshRight := rightLabelStyle.Render("Refresh: ") + dimText.Render(refreshVal)
 	refreshPlain := "Refresh: " + refreshVal
-	classifierRight := rightLabelStyle.Render("Classifier: ") + dimText.Render(classifierVal)
+	classifierRight := rightLabelStyle.Render("Classifier: ") + classifierStyle.Render(classifierVal)
 	classifierPlain := "Classifier: " + classifierVal
 	gap2 := max(1, contentW-len(refreshPlain)-len(classifierPlain)-2)
 	line2 := bgSp(gap2) + classifierRight + bgSp(2) + refreshRight
