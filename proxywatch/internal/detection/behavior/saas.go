@@ -1,23 +1,23 @@
 package behavior
 
 import (
+	"encoding/json"
+	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
+	"proxywatch/internal/safeio"
 	"proxywatch/internal/shared"
 )
 
-// saasC2Suffixes lists DNS suffixes of public SaaS platforms that
-// have documented C2 profiles (Mythic, Sliver plugins, research
-// demonstrators). A persistent connection from an unknown-vendor,
-// unsigned process to one of these hostnames is suspicious because
-// legitimate users running a native Slack / Discord / Teams client
-// are always `IsKnownVendorProcess=true`.
-//
-// Narrow by design — a short list that catches the actively-abused
-// platforms rather than a wide "all SaaS" net. Extend via an on-disk
-// override at ~/.proxywatch/saas-endpoints.json (future work); for
-// now keep the list in-tree so the signal is deterministic.
-var saasC2Suffixes = []string{
+// defaultSaaSC2Suffixes ships with the binary and catches the public
+// SaaS platforms currently documented as Mythic / Sliver C2 profiles.
+// Operators can extend via ~/.proxywatch/saas-endpoints.json; see
+// loadSaaSC2Suffixes below. Intentionally narrow — a short high-
+// specificity list beats a broad net that false-flags legitimate
+// Slack/Discord/Teams users running unknown-vendor helper processes.
+var defaultSaaSC2Suffixes = []string{
 	"slack.com",
 	"discord.com",
 	"discordapp.com",
@@ -34,6 +34,77 @@ var saasC2Suffixes = []string{
 	"api.trello.com",
 }
 
+// Operator override file at ~/.proxywatch/saas-endpoints.json.
+// Shape: {"suffixes":["one.com","two.org"],"mode":"replace"} where
+// mode is "merge" (default — operator list is added to defaults) or
+// "replace" (operator list fully replaces defaults). The file is read
+// at signal-evaluation time with a 60-second cache, so changes take
+// effect without restart.
+type saasConfig struct {
+	Suffixes []string `json:"suffixes,omitempty"`
+	Mode     string   `json:"mode,omitempty"` // "merge" | "replace"
+}
+
+var (
+	saasSuffixMu       sync.RWMutex
+	saasSuffixList     []string
+	saasSuffixLoadedAt time.Time
+)
+
+const saasSuffixCacheTTL = 60 * time.Second
+
+// loadSaaSC2Suffixes returns the effective suffix list, merging the
+// shipped defaults with any ~/.proxywatch/saas-endpoints.json override.
+// Cached for saasSuffixCacheTTL so the hot path doesn't touch disk.
+func loadSaaSC2Suffixes() []string {
+	saasSuffixMu.RLock()
+	fresh := saasSuffixList != nil && time.Since(saasSuffixLoadedAt) < saasSuffixCacheTTL
+	list := saasSuffixList
+	saasSuffixMu.RUnlock()
+	if fresh {
+		return list
+	}
+	return reloadSaaSC2Suffixes()
+}
+
+func reloadSaaSC2Suffixes() []string {
+	path := filepath.Join(safeio.ProxywatchDataRoot(), "saas-endpoints.json")
+	effective := append([]string(nil), defaultSaaSC2Suffixes...)
+
+	if data, err := safeio.ReadFile(path); err == nil {
+		var cfg saasConfig
+		if jerr := json.Unmarshal(data, &cfg); jerr == nil {
+			clean := make([]string, 0, len(cfg.Suffixes))
+			for _, s := range cfg.Suffixes {
+				s = strings.ToLower(strings.TrimSpace(s))
+				if s != "" {
+					clean = append(clean, s)
+				}
+			}
+			if strings.EqualFold(cfg.Mode, "replace") && len(clean) > 0 {
+				effective = clean
+			} else if len(clean) > 0 {
+				seen := make(map[string]struct{}, len(effective))
+				for _, s := range effective {
+					seen[s] = struct{}{}
+				}
+				for _, s := range clean {
+					if _, dup := seen[s]; !dup {
+						effective = append(effective, s)
+						seen[s] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+
+	saasSuffixMu.Lock()
+	saasSuffixList = effective
+	saasSuffixLoadedAt = time.Now()
+	saasSuffixMu.Unlock()
+	return effective
+}
+
 // matchesSaaSC2 returns true if host ends in any of saasC2Suffixes.
 // Case-insensitive; bare "slack.com" does match, as does "wss://cdn.slack.com".
 func matchesSaaSC2(host string) bool {
@@ -41,7 +112,7 @@ func matchesSaaSC2(host string) bool {
 	if h == "" {
 		return false
 	}
-	for _, suf := range saasC2Suffixes {
+	for _, suf := range loadSaaSC2Suffixes() {
 		if h == suf || strings.HasSuffix(h, "."+suf) {
 			return true
 		}
