@@ -146,8 +146,8 @@ func triggerForwardRefresh(domain string) {
 
 // DNSStats returns coarse counters surfaced via /online/status.
 type DNSStats struct {
-	PTREntries int `json:"ptr_entries"`
-	FwdEntries int `json:"fwd_entries"`
+	PTREntries  int `json:"ptr_entries"`
+	FwdEntries  int `json:"fwd_entries"`
 	PTRInFlight int `json:"ptr_in_flight"`
 	FwdInFlight int `json:"fwd_in_flight"`
 }

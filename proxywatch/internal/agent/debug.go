@@ -18,12 +18,12 @@ import (
 // so the agent-side debug HTTP API can return what was *just* sent to the
 // server. Read-only — never mutated by the HTTP handlers.
 type clientStateSnapshot struct {
-	mu              sync.RWMutex
-	hostID          string
-	serverAddr      string
-	lastClassifyAt  time.Time
-	lastSendAt      time.Time
-	lastCandidates  []shared.Candidate
+	mu             sync.RWMutex
+	hostID         string
+	serverAddr     string
+	lastClassifyAt time.Time
+	lastSendAt     time.Time
+	lastCandidates []shared.Candidate
 }
 
 var clientState = &clientStateSnapshot{}

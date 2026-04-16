@@ -73,7 +73,6 @@ func IsSuspiciousExePath(exePath string) bool {
 	return false
 }
 
-
 func IsPendingControlState(state string) bool {
 	switch state {
 	case "SYN_SENT", "SYN_RECEIVED":

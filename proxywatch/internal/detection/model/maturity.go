@@ -17,11 +17,11 @@ const (
 
 // ModelMaturity tracks how reliable the ML model is.
 type ModelMaturity struct {
-	Score             int       `json:"score"`       // 0-100
-	State             string    `json:"state"`       // COLD/LEARNING/STABLE/CALIBRATED
-	LocalObservations int       `json:"local_obs"`   // observations since model load
-	StabilityRatio    float64   `json:"stability"`   // prediction stability (0-1)
-	MeanConfidence    float64   `json:"mean_conf"`   // mean top-class probability
+	Score             int       `json:"score"`     // 0-100
+	State             string    `json:"state"`     // COLD/LEARNING/STABLE/CALIBRATED
+	LocalObservations int       `json:"local_obs"` // observations since model load
+	StabilityRatio    float64   `json:"stability"` // prediction stability (0-1)
+	MeanConfidence    float64   `json:"mean_conf"` // mean top-class probability
 	LastComputed      time.Time `json:"last_computed"`
 }
 

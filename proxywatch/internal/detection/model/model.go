@@ -80,12 +80,12 @@ type DetectionModel struct {
 	Maturity ModelMaturity `json:"maturity"`
 
 	// Baseline lifecycle.
-	BaselineState    string    `json:"baseline_state,omitempty"`    // "none", "building", "ready", "degraded"
-	BaselineVersion  string    `json:"baseline_version,omitempty"`  // e.g., "v1-user-2026-04-04"
-	BaselineType     string    `json:"baseline_type,omitempty"`     // "shipped", "user", "none"
-	BaselineReadyAt  time.Time `json:"baseline_ready_at,omitempty"` // when baseline first became ready
-	BaselineAccuracy float64   `json:"baseline_accuracy,omitempty"` // accuracy at time of certification
-	BaselineDataSize int       `json:"baseline_data_size,omitempty"`// feedback count at certification
+	BaselineState    string    `json:"baseline_state,omitempty"`     // "none", "building", "ready", "degraded"
+	BaselineVersion  string    `json:"baseline_version,omitempty"`   // e.g., "v1-user-2026-04-04"
+	BaselineType     string    `json:"baseline_type,omitempty"`      // "shipped", "user", "none"
+	BaselineReadyAt  time.Time `json:"baseline_ready_at,omitempty"`  // when baseline first became ready
+	BaselineAccuracy float64   `json:"baseline_accuracy,omitempty"`  // accuracy at time of certification
+	BaselineDataSize int       `json:"baseline_data_size,omitempty"` // feedback count at certification
 
 	Checksum string `json:"checksum"`
 }
@@ -381,14 +381,14 @@ func markDirty() {
 // BaselineStatus returns a summary of the detection model's integrity and state
 // for display on the model dashboard.
 type BaselineStatus struct {
-	Loaded       bool
+	Loaded      bool
 	ChecksumOK  bool
-	Checksum     string // first 12 hex chars
-	Profiles     int
-	Feedback     int
-	Patterns     int
-	EgressPaths  int
-	LastUpdated  time.Time
+	Checksum    string // first 12 hex chars
+	Profiles    int
+	Feedback    int
+	Patterns    int
+	EgressPaths int
+	LastUpdated time.Time
 }
 
 // ResetToBaseline clears all learned intelligence (experience, feedback,

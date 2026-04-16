@@ -6,8 +6,8 @@ import (
 
 	"proxywatch/internal/contour"
 	"proxywatch/internal/detection"
-	"proxywatch/internal/keystore"
 	"proxywatch/internal/detection/model"
+	"proxywatch/internal/keystore"
 	"proxywatch/internal/shared"
 
 	"github.com/gdamore/tcell/v2"

@@ -38,12 +38,12 @@ type node struct {
 }
 
 type modelJSON struct {
-	Format      string      `json:"format"`
-	NumClasses  int         `json:"num_classes"`
-	NumFeatures int         `json:"num_features"`
-	NumTrees    int         `json:"num_trees"`
-	RoleClasses []string    `json:"role_classes"`
-	Trees       []treeJSON  `json:"trees"`
+	Format      string     `json:"format"`
+	NumClasses  int        `json:"num_classes"`
+	NumFeatures int        `json:"num_features"`
+	NumTrees    int        `json:"num_trees"`
+	RoleClasses []string   `json:"role_classes"`
+	Trees       []treeJSON `json:"trees"`
 }
 
 type treeJSON struct {

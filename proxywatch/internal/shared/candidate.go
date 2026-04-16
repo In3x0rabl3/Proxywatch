@@ -44,8 +44,8 @@ type Candidate struct {
 	MLConfidence float64            // confidence of top prediction
 	MLTopN       []MLRolePrediction // top-3 role candidates
 	MLActive     bool               // true when ML model made this prediction
-	SeenSeconds            int
-	Exited                 bool // process no longer running (lingered entry)
+	SeenSeconds  int
+	Exited       bool // process no longer running (lingered entry)
 
 	OutTotal      int
 	OutExternal   int
@@ -152,10 +152,10 @@ type ProcessInfo struct {
 	// outbound destinations share DNS with the Authenticode publisher.
 	// OnlineEvidence is a compact flat tag list for operator-visible
 	// evidence trace ("dns:ptr-aligned:drata.com", "pkg:dpkg-owned:openssh-client", ...).
-	PkgOwned             bool
-	PkgOwnerName         string
-	PublisherDNSAligned  bool
-	OnlineEvidence       []string
+	PkgOwned            bool
+	PkgOwnerName        string
+	PublisherDNSAligned bool
+	OnlineEvidence      []string
 }
 
 type ListenerInfo struct {
@@ -254,7 +254,9 @@ const AnalyzingStableRoleCycles = 12
 // deliberating, not present instant verdicts that look stale.
 //
 // Exit condition: (streak >= AnalyzingStableRoleCycles) AND
-//                  (time since firstSeenInRun >= AnalyzingMinVisibleSeconds)
+//
+//	(time since firstSeenInRun >= AnalyzingMinVisibleSeconds)
+//
 // so a flapping process never exits early, and a stable process still
 // shows Analyzing for the minimum visible window.
 const AnalyzingMinVisibleSeconds = 10
@@ -266,7 +268,7 @@ const AnalyzingMinVisibleSeconds = 10
 // historical data. Not persisted, not thread-hot-path — only read from
 // CandidateState which is already display-scoped.
 var (
-	pidFirstSeenMu   sync.Mutex
+	pidFirstSeenMu    sync.Mutex
 	pidFirstSeenInRun = map[int]time.Time{}
 )
 

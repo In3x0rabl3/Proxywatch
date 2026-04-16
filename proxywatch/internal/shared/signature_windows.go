@@ -35,7 +35,7 @@ const (
 	wtdStateactionVerify = 1
 	wtdStateactionClose  = 2
 
-	wtdSafer    = 1
+	wtdSafer               = 1
 	wtdRevocationCheckNone = 0
 
 	trustEExplicitDistrust uint32 = 0x800B0111
@@ -49,9 +49,9 @@ const (
 	certQueryContentFlagPkcs7Signed = 1 << 7
 	certQueryFormatFlagBinary       = 1 << 1
 
-	cmsgSignerCountParam    = 5
-	cmsgSignerInfoParam     = 6
-	cmsgCertParam           = 12
+	cmsgSignerCountParam = 5
+	cmsgSignerInfoParam  = 6
+	cmsgCertParam        = 12
 
 	certNameSimpleDisplayType = 4
 )
@@ -66,10 +66,10 @@ var winTrustActionGenericVerifyV2 = windows.GUID{
 }
 
 type wintrustFileInfo struct {
-	StructSize       uint32
-	FilePath         *uint16
-	FileHandle       windows.Handle
-	KnownSubject     uintptr // *GUID, nil
+	StructSize   uint32
+	FilePath     *uint16
+	FileHandle   windows.Handle
+	KnownSubject uintptr // *GUID, nil
 }
 
 type wintrustData struct {
@@ -89,16 +89,16 @@ type wintrustData struct {
 }
 
 var (
-	modWintrust       = windows.NewLazySystemDLL("wintrust.dll")
-	modCrypt32        = windows.NewLazySystemDLL("crypt32.dll")
-	procWinVerifyTrust= modWintrust.NewProc("WinVerifyTrust")
-	procCryptQueryObject = modCrypt32.NewProc("CryptQueryObject")
-	procCryptMsgGetParam = modCrypt32.NewProc("CryptMsgGetParam")
-	procCertGetNameStringW = modCrypt32.NewProc("CertGetNameStringW")
+	modWintrust                    = windows.NewLazySystemDLL("wintrust.dll")
+	modCrypt32                     = windows.NewLazySystemDLL("crypt32.dll")
+	procWinVerifyTrust             = modWintrust.NewProc("WinVerifyTrust")
+	procCryptQueryObject           = modCrypt32.NewProc("CryptQueryObject")
+	procCryptMsgGetParam           = modCrypt32.NewProc("CryptMsgGetParam")
+	procCertGetNameStringW         = modCrypt32.NewProc("CertGetNameStringW")
 	procCertFindCertificateInStore = modCrypt32.NewProc("CertFindCertificateInStore")
 	procCertFreeCertificateContext = modCrypt32.NewProc("CertFreeCertificateContext")
-	procCertCloseStore = modCrypt32.NewProc("CertCloseStore")
-	procCryptMsgClose  = modCrypt32.NewProc("CryptMsgClose")
+	procCertCloseStore             = modCrypt32.NewProc("CertCloseStore")
+	procCryptMsgClose              = modCrypt32.NewProc("CryptMsgClose")
 )
 
 // verifyBinaryTrust is the legacy entry — when called from telemetry at

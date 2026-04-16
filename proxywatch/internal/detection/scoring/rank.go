@@ -606,7 +606,7 @@ func ScoreCandidate(c *shared.Candidate) {
 	// Traffic verification and benign status must NEVER block beacon detection.
 	// A beacon connecting to the same C2 server will always have "verified" traffic.
 	// Only block beacons when they are stale (no active connections) and unconfirmed.
-	beaconBlockedByVerified := false   // removed — trafficVerified must not suppress beacons
+	beaconBlockedByVerified := false       // removed — trafficVerified must not suppress beacons
 	beaconBlockedByBenignExternal := false // removed — benignClient is always false
 	beaconBlockedByStaleBenign := false    // removed — benignClient is always false
 	beaconBlockedByStaleUnconfirmed := beaconEligible && !beaconConfirmed && !outboundRecent && outTotal == 0
@@ -679,7 +679,7 @@ func ScoreCandidate(c *shared.Candidate) {
 				c.Role = "control-channel"
 				c.ActiveProxying = true
 				shared.TunnelingSeen[scopedPID] = now
-			shared.TunnelingSeen[c.Proc.Pid] = now
+				shared.TunnelingSeen[c.Proc.Pid] = now
 				c.ControlChannel = controlConn
 				c.ControlDurationSeconds = controlSecs
 				c.Reasons = []string{
@@ -1063,7 +1063,7 @@ func ScoreCandidate(c *shared.Candidate) {
 		c.Role != "tunnel" &&
 		c.Role != "control-channel" {
 		c.Role = "control-channel"
-			c.ActiveProxying = true
+		c.ActiveProxying = true
 		c.ActiveProxying = activeClients > 0 || localTransportRecent
 		c.Reasons = append(c.Reasons, "Loopback forward-listener with persistent control channel")
 		if c.Score < 65 {
@@ -1097,7 +1097,7 @@ func ScoreCandidate(c *shared.Candidate) {
 		c.Role = "control-channel"
 		c.ActiveProxying = activeClients > 0 || localTransportRecent || internalScanRecent
 		shared.TunnelingSeen[scopedPID] = now
-			shared.TunnelingSeen[c.Proc.Pid] = now
+		shared.TunnelingSeen[c.Proc.Pid] = now
 		c.Reasons = append(c.Reasons, "Listener + outbound control shape indicates likely tunnel behavior")
 		if c.Score < 58 {
 			c.Score = 58

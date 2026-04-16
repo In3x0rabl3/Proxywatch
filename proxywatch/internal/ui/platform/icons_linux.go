@@ -3,10 +3,10 @@
 package platform
 
 const (
-	IconPlay     = "▶"
-	IconStop     = "■"
-	BarLeft      = "▕"
-	BarRight     = "▏"
-	BarFilled    = "━"
-	BarEmpty     = "─"
+	IconPlay  = "▶"
+	IconStop  = "■"
+	BarLeft   = "▕"
+	BarRight  = "▏"
+	BarFilled = "━"
+	BarEmpty  = "─"
 )

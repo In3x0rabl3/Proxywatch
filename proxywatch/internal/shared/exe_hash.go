@@ -14,9 +14,9 @@ import (
 // (mtime + size) we computed it for. Cache is invalidated when the file
 // on disk changes — same path, different content → recompute.
 type exeHashEntry struct {
-	sha256    string
-	modUnix   int64
-	size      int64
+	sha256     string
+	modUnix    int64
+	size       int64
 	computedAt time.Time
 }
 

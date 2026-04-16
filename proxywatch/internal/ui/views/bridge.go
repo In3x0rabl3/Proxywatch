@@ -279,55 +279,55 @@ func spinnerElapsed(start time.Time) string {
 }
 
 // Help option functions from common.
-func contourMenuHelpOptions() []string     { return common.ContourMenuHelpOptions() }
-func siemMenuHelpOptions() []string        { return common.SiemMenuHelpOptions() }
-func collectMenuHelpOptions() []string     { return common.CollectMenuHelpOptions() }
-func keystoreMenuHelpOptions() []string    { return common.KeystoreMenuHelpOptions() }
-func whitelistMenuHelpOptions() []string   { return common.WhitelistMenuHelpOptions() }
-func inspectorMenuOptions() []string       { return common.InspectorMenuOptions() }
-func dashboardMenuHelpOptions() []string   { return common.DashboardMenuHelpOptions() }
-func refreshPresetOptions() []string       { return common.RefreshPresetOptions() }
+func contourMenuHelpOptions() []string   { return common.ContourMenuHelpOptions() }
+func siemMenuHelpOptions() []string      { return common.SiemMenuHelpOptions() }
+func collectMenuHelpOptions() []string   { return common.CollectMenuHelpOptions() }
+func keystoreMenuHelpOptions() []string  { return common.KeystoreMenuHelpOptions() }
+func whitelistMenuHelpOptions() []string { return common.WhitelistMenuHelpOptions() }
+func inspectorMenuOptions() []string     { return common.InspectorMenuOptions() }
+func dashboardMenuHelpOptions() []string { return common.DashboardMenuHelpOptions() }
+func refreshPresetOptions() []string     { return common.RefreshPresetOptions() }
 
 // ── Function variables wired by ui package ──────────────────────────────────
 // These are set by ui.init() or ui.Run() to point at the real implementations.
 
 var (
-	ConvertKeyMsg                   func(tea.KeyMsg) *tcell.EventKey
-	HandleQuitConfirmKey            func(*shared.AppState, *tcell.EventKey) (bool, bool)
-	StepWorkflowMenu                func(*shared.AppState, int) bool
-	JumpToWorkflow                  func(*shared.AppState, rune) bool
-	RequestQuit                     func(*shared.AppState) bool
-	HandleContourKey                func(*shared.AppState, *tcell.EventKey) bool
-	HandleContourModeKey            func(*shared.AppState, *tcell.EventKey) bool
-	HandleDashboardKey              func(*shared.AppState, *tcell.EventKey) bool
-	HandleKeystoreKey               func(*shared.AppState, *tcell.EventKey) bool
-	HandleWhitelistKey              func(*shared.AppState, *tcell.EventKey) bool
-	HandleInspectKey                func(*shared.AppState, *tcell.EventKey) bool
-	HandleCollectKey                func(*shared.AppState, *tcell.EventKey) bool
-	HandleKeyEvent                  func(*shared.AppState, *tcell.EventKey) bool
-	DrawCurrentMode                 func(*shared.AppState)
-	DrawQuitConfirmOverlay          func(*shared.AppState)
-	DashboardHostListMode           func(*shared.AppState) bool
-	DashboardProcessCandidates      func(*shared.AppState) []shared.Candidate
-	SelectedDashboardProcessIndex   func(*shared.AppState, []shared.Candidate) int
-	BuildMultiHostSummary           func(*shared.AppState) string
-	SafeRolePreset                  func(*shared.AppState) string
-	FormatDashboardAge              func(int) string
-	NormalizeDashboardRole          func(string) string
-	DashboardCandidateAgeSeconds    func(shared.Candidate) int
-	CycleInspectProcess             func(*shared.AppState, int)
-	InspectorExternalOrgs           func(*shared.Candidate) ([]string, int, int)
-	EnsureKeystoreValues            func(*shared.AppState)
-	KeystoreFieldEnvKey             func(int) (string, bool)
-	KeystoreFieldVisible            func(int) bool
-	RefreshCollectSources           func(*shared.AppState)
-	CollectActionLabel              func(*shared.AppState) string
-	CollectLiveLines                func(*shared.AppState) []string
-	WhitelistProcessCandidates      func(*shared.AppState) []shared.Candidate
-	FormatWhitelistEntry            func(string, int) string
-	RoleSortMenuLabels              func() []string
-	ClampIndex                      func(int, int) int
-	HandleTrainingKey               func(*shared.AppState, *tcell.EventKey) bool
+	ConvertKeyMsg                 func(tea.KeyMsg) *tcell.EventKey
+	HandleQuitConfirmKey          func(*shared.AppState, *tcell.EventKey) (bool, bool)
+	StepWorkflowMenu              func(*shared.AppState, int) bool
+	JumpToWorkflow                func(*shared.AppState, rune) bool
+	RequestQuit                   func(*shared.AppState) bool
+	HandleContourKey              func(*shared.AppState, *tcell.EventKey) bool
+	HandleContourModeKey          func(*shared.AppState, *tcell.EventKey) bool
+	HandleDashboardKey            func(*shared.AppState, *tcell.EventKey) bool
+	HandleKeystoreKey             func(*shared.AppState, *tcell.EventKey) bool
+	HandleWhitelistKey            func(*shared.AppState, *tcell.EventKey) bool
+	HandleInspectKey              func(*shared.AppState, *tcell.EventKey) bool
+	HandleCollectKey              func(*shared.AppState, *tcell.EventKey) bool
+	HandleKeyEvent                func(*shared.AppState, *tcell.EventKey) bool
+	DrawCurrentMode               func(*shared.AppState)
+	DrawQuitConfirmOverlay        func(*shared.AppState)
+	DashboardHostListMode         func(*shared.AppState) bool
+	DashboardProcessCandidates    func(*shared.AppState) []shared.Candidate
+	SelectedDashboardProcessIndex func(*shared.AppState, []shared.Candidate) int
+	BuildMultiHostSummary         func(*shared.AppState) string
+	SafeRolePreset                func(*shared.AppState) string
+	FormatDashboardAge            func(int) string
+	NormalizeDashboardRole        func(string) string
+	DashboardCandidateAgeSeconds  func(shared.Candidate) int
+	CycleInspectProcess           func(*shared.AppState, int)
+	InspectorExternalOrgs         func(*shared.Candidate) ([]string, int, int)
+	EnsureKeystoreValues          func(*shared.AppState)
+	KeystoreFieldEnvKey           func(int) (string, bool)
+	KeystoreFieldVisible          func(int) bool
+	RefreshCollectSources         func(*shared.AppState)
+	CollectActionLabel            func(*shared.AppState) string
+	CollectLiveLines              func(*shared.AppState) []string
+	WhitelistProcessCandidates    func(*shared.AppState) []shared.Candidate
+	FormatWhitelistEntry          func(string, int) string
+	RoleSortMenuLabels            func() []string
+	ClampIndex                    func(int, int) int
+	HandleTrainingKey             func(*shared.AppState, *tcell.EventKey) bool
 )
 
 // SIEM wiring is declared in siem.go as views.HandleSIEMKey.

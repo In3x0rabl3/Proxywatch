@@ -8,8 +8,8 @@ import (
 
 	"proxywatch/internal/detection"
 	"proxywatch/internal/detection/model"
-	"proxywatch/internal/shared"
 	"proxywatch/internal/detection/telemetry"
+	"proxywatch/internal/shared"
 
 	"github.com/gdamore/tcell/v2"
 )

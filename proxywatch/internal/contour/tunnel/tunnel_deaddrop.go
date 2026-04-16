@@ -691,7 +691,6 @@ func connectGithubDeadDropClient(ctx context.Context, emit func(string)) TunnelR
 	return connectDeadDropClient(ctx, &githubDeadDrop{creator: false}, emit)
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Transport 2: OpenAI Files API dead drop
 //
@@ -891,4 +890,3 @@ func serveOpenAIDeadDrop(ctx context.Context, emit func(string)) TunnelResult {
 func connectOpenAIDeadDropClient(ctx context.Context, emit func(string)) TunnelResult {
 	return connectDeadDropClient(ctx, &openaiDeadDrop{creator: false}, emit)
 }
-

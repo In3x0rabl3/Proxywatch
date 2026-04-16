@@ -19,4 +19,3 @@ func SpinnerElapsed(start time.Time) time.Duration {
 }
 
 const CalibrationReportLabelWidth = 18
-

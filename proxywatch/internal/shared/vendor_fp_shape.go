@@ -36,7 +36,7 @@ type FPShape struct {
 	Blockers          []string // union of hard + soft (back-compat)
 	HardBlockers      []string
 	SoftBlockers      []string
-	SoftOverride      bool     // true when soft blockers present but waived by vendor signals
+	SoftOverride      bool // true when soft blockers present but waived by vendor signals
 	OverrideReason    string
 	VendorSignalCount int
 	WouldDemote       bool

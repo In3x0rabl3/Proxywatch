@@ -29,7 +29,7 @@ const (
 // Verifier names — kept as constants so /fp-report, tests, and operator
 // filters agree on the spellings.
 const (
-	VerifierAuthenticode   = "authenticode"
-	VerifierPkgOwnership   = "pkg-ownership"
-	VerifierPublisherDNS   = "publisher-dns"
+	VerifierAuthenticode = "authenticode"
+	VerifierPkgOwnership = "pkg-ownership"
+	VerifierPublisherDNS = "publisher-dns"
 )

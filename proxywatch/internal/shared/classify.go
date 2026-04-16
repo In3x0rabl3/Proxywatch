@@ -68,7 +68,7 @@ type ProcHistory struct {
 var ModelGeneration int
 
 type ProcessBehavior struct {
-	Generation int `json:"generation"` // model generation when observations started
+	Generation             int            `json:"generation"` // model generation when observations started
 	LastSeen               time.Time      `json:"last_seen"`
 	Observations           int            `json:"observations"`
 	SuspiciousObservations int            `json:"suspicious_observations"`

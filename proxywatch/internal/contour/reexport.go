@@ -52,16 +52,16 @@ const (
 // Probe function re-exports
 // ═══════════════════════════════════════════════════════════════════════════
 
-func NormalizeProbeMode(v string) string        { return probe.NormalizeProbeMode(v) }
-func ProbeModeLabel(v string) string             { return probe.ProbeModeLabel(v) }
-func DefaultProbeMode() string                   { return probe.DefaultProbeMode() }
-func DefaultProbeRole() string                   { return probe.DefaultProbeRole() }
-func NormalizeProbeRole(v string) string          { return probe.NormalizeProbeRole(v) }
-func DefaultProbePorts() []int                    { return probe.DefaultProbePorts() }
-func DefaultProtocolNames() []string              { return probe.DefaultProtocolNames() }
-func ClassifyProtoKind(proto string) string       { return probe.ClassifyProtoKind(proto) }
-func ServiceTargetNames() []string                { return probe.ServiceTargetNames() }
-func IsCarrierTunnelMethod(method string) bool    { return probe.IsCarrierTunnelMethod(method) }
+func NormalizeProbeMode(v string) string       { return probe.NormalizeProbeMode(v) }
+func ProbeModeLabel(v string) string           { return probe.ProbeModeLabel(v) }
+func DefaultProbeMode() string                 { return probe.DefaultProbeMode() }
+func DefaultProbeRole() string                 { return probe.DefaultProbeRole() }
+func NormalizeProbeRole(v string) string       { return probe.NormalizeProbeRole(v) }
+func DefaultProbePorts() []int                 { return probe.DefaultProbePorts() }
+func DefaultProtocolNames() []string           { return probe.DefaultProtocolNames() }
+func ClassifyProtoKind(proto string) string    { return probe.ClassifyProtoKind(proto) }
+func ServiceTargetNames() []string             { return probe.ServiceTargetNames() }
+func IsCarrierTunnelMethod(method string) bool { return probe.IsCarrierTunnelMethod(method) }
 
 func RunListenerProbe(ctx context.Context, ports []int, onUpdate func(ListenerProbeResult)) ListenerProbeResult {
 	return probe.RunListenerProbe(ctx, ports, onUpdate)
@@ -81,10 +81,11 @@ func RunTunnel(ctx context.Context, input TunnelInput) tunnel.TunnelResult {
 	return tunnel.RunTunnel(ctx, input)
 }
 
-func ServiceMethodToProto(service string) string         { return tunnel.ServiceMethodToProto(service) }
-func ServiceMethodToProtoDeadDrop(service string) string { return tunnel.ServiceMethodToProtoDeadDrop(service) }
-func GetServiceKeyExported(service string) string        { return tunnel.GetServiceKeyExported(service) }
+func ServiceMethodToProto(service string) string { return tunnel.ServiceMethodToProto(service) }
+func ServiceMethodToProtoDeadDrop(service string) string {
+	return tunnel.ServiceMethodToProtoDeadDrop(service)
+}
+func GetServiceKeyExported(service string) string { return tunnel.GetServiceKeyExported(service) }
 
 var UsableServices = tunnel.UsableServices
 var DeadDropServices = tunnel.DeadDropServices
-

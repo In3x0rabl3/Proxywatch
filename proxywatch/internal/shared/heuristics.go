@@ -535,7 +535,7 @@ func IsKnownUpdaterProcess(p *ProcessInfo) bool {
 		"edgeupdate": true, "microsoftedgeupdate": true, "microsoftedgeupdatecore": true,
 		"brave_update": true, "brave-update": true,
 		"zoomautoupdater": true,
-		"dockerupdater": true, "com.docker.updater": true,
+		"dockerupdater":   true, "com.docker.updater": true,
 		"1passwordupdater": true,
 	}
 	if updaterExact[name] {

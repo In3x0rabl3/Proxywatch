@@ -35,7 +35,7 @@ package shared
 // HardDistinguishingSignals — Tier 2. Signals that are cryptographically
 // or behaviorally hard to fake. Emitters are audited:
 //
-//   grep -rn 'addSignal("X")' internal/detection/
+//	grep -rn 'addSignal("X")' internal/detection/
 //
 // Adding an entry here requires a brief justification in this comment.
 var HardDistinguishingSignals = map[string]bool{

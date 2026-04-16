@@ -65,116 +65,116 @@ const (
 
 // ── Role 2: Control-Session (24-47) — 11 network + 13 host ────────────
 const (
-	FSessionControlDurationSec = iota + 24 // (N) control channel hold time
-	FSessionConnLifetimeMaxSec             // (N) longest single connection
-	FSessionDistinctTargets                // (N) unique targets
-	FSessionExternalConnCount              // (N) external connections
-	FSessionConnChurnRate                  // (N) connections per minute
-	FSessionIOWriteRatio                   // (N) write/(read+write)
-	FSessionASNMismatch                    // (N) vendor/ASN alignment flag
-	FSessionPreExisting                    // (N) had connections on first observation
-	FSessionControlChannelAgeSec           // (N) oldest ESTABLISHED age
-	FSessionInternalConnCount              // (N) internal connections
-	FSessionIOCurrentRate                  // (N) instantaneous IO rate
-	FSessionIORWBalance                    // (H) read/write ratio
-	FSessionIOBurstiness                   // (H) stddev of IO rate / mean
-	FSessionIntegrityLevel                 // (H) 0=low, 1=med, 2=high, 3=system
-	FSessionCmdLength                      // (H) command line length
-	FSessionCmdHasEncoded                  // (H) encoded content flag
-	FSessionChildProcessCount              // (H) children spawned
-	FSessionChildIsLOLBin                  // (H) children are system binaries
-	FSessionDelegatedEgressStrong           // (H) delegated egress flag
-	FSessionParentScore                    // (H) parent detection score
-	FSessionRareParent                     // (H) rare parent-child combo flag
-	FSessionCPUToIORatio                   // (H) CPU per MB IO
-	FSessionIOOtherRatio                   // (H) IOOther/(total IO)
-	FSessionIdleActiveRatio                // (H) idle vs active cycles
+	FSessionControlDurationSec    = iota + 24 // (N) control channel hold time
+	FSessionConnLifetimeMaxSec                // (N) longest single connection
+	FSessionDistinctTargets                   // (N) unique targets
+	FSessionExternalConnCount                 // (N) external connections
+	FSessionConnChurnRate                     // (N) connections per minute
+	FSessionIOWriteRatio                      // (N) write/(read+write)
+	FSessionASNMismatch                       // (N) vendor/ASN alignment flag
+	FSessionPreExisting                       // (N) had connections on first observation
+	FSessionControlChannelAgeSec              // (N) oldest ESTABLISHED age
+	FSessionInternalConnCount                 // (N) internal connections
+	FSessionIOCurrentRate                     // (N) instantaneous IO rate
+	FSessionIORWBalance                       // (H) read/write ratio
+	FSessionIOBurstiness                      // (H) stddev of IO rate / mean
+	FSessionIntegrityLevel                    // (H) 0=low, 1=med, 2=high, 3=system
+	FSessionCmdLength                         // (H) command line length
+	FSessionCmdHasEncoded                     // (H) encoded content flag
+	FSessionChildProcessCount                 // (H) children spawned
+	FSessionChildIsLOLBin                     // (H) children are system binaries
+	FSessionDelegatedEgressStrong             // (H) delegated egress flag
+	FSessionParentScore                       // (H) parent detection score
+	FSessionRareParent                        // (H) rare parent-child combo flag
+	FSessionCPUToIORatio                      // (H) CPU per MB IO
+	FSessionIOOtherRatio                      // (H) IOOther/(total IO)
+	FSessionIdleActiveRatio                   // (H) idle vs active cycles
 )
 
 // ── Role 3: Control-Pivot (48-72) — 14 network + 11 host ──────────────
 const (
 	FPivotInboundOutboundRatio     = iota + 48 // (N) inbound/outbound balance
-	FPivotThroughputSymmetry                    // (N) BPS rate symmetry
-	FPivotIOBalance                             // (N) cumulative read/write balance
-	FPivotMultiplexRatio                        // (N) clients per listener
-	FPivotFanOutFromListener                    // (N) outbound when has listener
-	FPivotPortDiversityThruProcess              // (N) distinct outbound ports through listener
-	FPivotLoopbackRelayToExternal               // (N) loopback in → external out
-	FPivotExternalRelayToLoopback               // (N) external in → loopback out
-	FPivotConcurrentBidirectional               // (N) min(inbound, outbound)
-	FPivotSOCKSCandidate                        // (N) loopback listener + diverse ports
-	FPivotIOPerClient                           // (N) bytes per inbound client
-	FPivotSMBConnCount                          // (N) SMB connections
-	FPivotSMBDistinctTargets                    // (N) unique SMB targets
-	FPivotSMBAllInternal                        // (N) all SMB internal flag
-	FPivotNamedPipeCount                        // (H) named pipes owned
-	FPivotNamedPipeC2Pattern                    // (H) C2-like pipe name flag
-	FPivotNamedPipeAdmin                        // (H) admin pipe name flag
-	FPivotCmdHasTunnelFlags                     // (H) tunnel flags in cmdline
-	FPivotHasProxyLib                           // (H) proxy/tunnel library loaded
-	FPivotListenerCount                         // (H) listener port count
-	FPivotListenerLoopbackOnly                  // (H) all listeners on loopback
-	FPivotListenerEphemeral                     // (H) listener on high port
-	FPivotListenerPortSpread                    // (H) port range spread
-	FPivotIntegrityLevel                        // (H) integrity level
-	FPivotIsServiceContext                      // (H) runs as service flag
+	FPivotThroughputSymmetry                   // (N) BPS rate symmetry
+	FPivotIOBalance                            // (N) cumulative read/write balance
+	FPivotMultiplexRatio                       // (N) clients per listener
+	FPivotFanOutFromListener                   // (N) outbound when has listener
+	FPivotPortDiversityThruProcess             // (N) distinct outbound ports through listener
+	FPivotLoopbackRelayToExternal              // (N) loopback in → external out
+	FPivotExternalRelayToLoopback              // (N) external in → loopback out
+	FPivotConcurrentBidirectional              // (N) min(inbound, outbound)
+	FPivotSOCKSCandidate                       // (N) loopback listener + diverse ports
+	FPivotIOPerClient                          // (N) bytes per inbound client
+	FPivotSMBConnCount                         // (N) SMB connections
+	FPivotSMBDistinctTargets                   // (N) unique SMB targets
+	FPivotSMBAllInternal                       // (N) all SMB internal flag
+	FPivotNamedPipeCount                       // (H) named pipes owned
+	FPivotNamedPipeC2Pattern                   // (H) C2-like pipe name flag
+	FPivotNamedPipeAdmin                       // (H) admin pipe name flag
+	FPivotCmdHasTunnelFlags                    // (H) tunnel flags in cmdline
+	FPivotHasProxyLib                          // (H) proxy/tunnel library loaded
+	FPivotListenerCount                        // (H) listener port count
+	FPivotListenerLoopbackOnly                 // (H) all listeners on loopback
+	FPivotListenerEphemeral                    // (H) listener on high port
+	FPivotListenerPortSpread                   // (H) port range spread
+	FPivotIntegrityLevel                       // (H) integrity level
+	FPivotIsServiceContext                     // (H) runs as service flag
 )
 
 // ── Role 4: Outbound (73-94) — 11 network + 11 host ───────────────────
 const (
-	FOutboundExternalRatio        = iota + 73 // (N) fraction external
-	FOutboundDistinctPrefixes                 // (N) subnet diversity
-	FOutboundShortLivedRatio                  // (N) fraction short-lived
-	FOutboundLongLivedRatio                   // (N) fraction long-lived
-	FOutboundWellKnownPortRatio               // (N) fraction standard ports
-	FOutboundConnDistinctPorts                // (N) port diversity
-	FOutboundConnOutTotal                     // (N) total outbound
-	FOutboundConnOutLoopback                  // (N) loopback connections
-	FOutboundRareDestPort                     // (N) unusual port flag
-	FOutboundRareDestPrefix                   // (N) unusual subnet flag
-	FOutboundIORateTotal                      // (N) throughput rate
-	FOutboundIOReadRatio                      // (H) read/(read+write)
-	FOutboundIOTotalBytes                     // (H) total bytes
-	FOutboundKnownVendor                      // (H) vendor recognition flag
-	FOutboundKnownNetworkActive               // (H) known network app flag
+	FOutboundExternalRatio         = iota + 73 // (N) fraction external
+	FOutboundDistinctPrefixes                  // (N) subnet diversity
+	FOutboundShortLivedRatio                   // (N) fraction short-lived
+	FOutboundLongLivedRatio                    // (N) fraction long-lived
+	FOutboundWellKnownPortRatio                // (N) fraction standard ports
+	FOutboundConnDistinctPorts                 // (N) port diversity
+	FOutboundConnOutTotal                      // (N) total outbound
+	FOutboundConnOutLoopback                   // (N) loopback connections
+	FOutboundRareDestPort                      // (N) unusual port flag
+	FOutboundRareDestPrefix                    // (N) unusual subnet flag
+	FOutboundIORateTotal                       // (N) throughput rate
+	FOutboundIOReadRatio                       // (H) read/(read+write)
+	FOutboundIOTotalBytes                      // (H) total bytes
+	FOutboundKnownVendor                       // (H) vendor recognition flag
+	FOutboundKnownNetworkActive                // (H) known network app flag
 	FOutboundCompanyNetworkAligned             // (H) vendor/ASN match
-	FOutboundProcessIsLOLBin                  // (H) LOLBin flag
-	FOutboundProcessIsScripting               // (H) script engine flag
-	FOutboundSuspiciousPath                   // (H) user-writable path flag
-	FOutboundProcessNameEntropy               // (H) name randomization
-	FOutboundPathDepth                        // (H) path depth
-	FOutboundBenignClient                     // (H) trusted directory flag
+	FOutboundProcessIsLOLBin                   // (H) LOLBin flag
+	FOutboundProcessIsScripting                // (H) script engine flag
+	FOutboundSuspiciousPath                    // (H) user-writable path flag
+	FOutboundProcessNameEntropy                // (H) name randomization
+	FOutboundPathDepth                         // (H) path depth
+	FOutboundBenignClient                      // (H) trusted directory flag
 )
 
 // ── Role 5: Listener (95-116) — 11 network + 11 host ──────────────────
 const (
-	FListenerPortCount               = iota + 95 // (N) distinct listener ports
-	FListenerPortMin                              // (N) lowest port
-	FListenerPortMax                              // (N) highest port
-	FListenerWildcardCount                        // (N) 0.0.0.0 bindings
-	FListenerLoopbackCount                        // (N) 127.0.0.1 bindings
-	FListenerUDPCount                             // (N) UDP listeners
-	FListenerInboundTotal                         // (N) inbound connections
-	FListenerInboundExternal                      // (N) external inbound
-	FListenerInboundInternal                      // (N) internal inbound
-	FListenerDistinctClients                      // (N) unique inbound sources
-	FListenerNoOutbound                           // (N) zero outbound flag
-	FListenerIsServiceContext                     // (H) service account flag
-	FListenerProcessAgeSec                        // (H) process age
-	FListenerIOTotalRate                          // (H) throughput rate
-	FListenerProcessMemMB                         // (H) working set MB
-	FListenerHasRawSocket                         // (H) raw socket flag
-	FListenerHasNamedPipes                        // (H) has named pipes
-	FListenerChildCount                           // (H) child process count
-	FListenerHighPort                             // (H) all ports >1024 flag
-	FListenerConnSamePortRatio                    // (H) traffic on primary port
-	FListenerInboundLoopback                      // (H) loopback inbound count
-	FListenerEstablishedOnListenerPorts            // (H) ESTABLISHED on listener ports
+	FListenerPortCount                  = iota + 95 // (N) distinct listener ports
+	FListenerPortMin                                // (N) lowest port
+	FListenerPortMax                                // (N) highest port
+	FListenerWildcardCount                          // (N) 0.0.0.0 bindings
+	FListenerLoopbackCount                          // (N) 127.0.0.1 bindings
+	FListenerUDPCount                               // (N) UDP listeners
+	FListenerInboundTotal                           // (N) inbound connections
+	FListenerInboundExternal                        // (N) external inbound
+	FListenerInboundInternal                        // (N) internal inbound
+	FListenerDistinctClients                        // (N) unique inbound sources
+	FListenerNoOutbound                             // (N) zero outbound flag
+	FListenerIsServiceContext                       // (H) service account flag
+	FListenerProcessAgeSec                          // (H) process age
+	FListenerIOTotalRate                            // (H) throughput rate
+	FListenerProcessMemMB                           // (H) working set MB
+	FListenerHasRawSocket                           // (H) raw socket flag
+	FListenerHasNamedPipes                          // (H) has named pipes
+	FListenerChildCount                             // (H) child process count
+	FListenerHighPort                               // (H) all ports >1024 flag
+	FListenerConnSamePortRatio                      // (H) traffic on primary port
+	FListenerInboundLoopback                        // (H) loopback inbound count
+	FListenerEstablishedOnListenerPorts             // (H) ESTABLISHED on listener ports
 
 	// Cross-role disambiguation features (117-119).
-	FBeaconOutLongLivedCount    // (N) long-lived outbound connections — 0 for beacons, >=1 for sessions
-	FBeaconReconnectCount       // (N) connection teardown/recreate cycles — high for beacons
-	FSessionIOActiveRatio       // (H) fraction of observation time with active IO — high for sessions
+	FBeaconOutLongLivedCount // (N) long-lived outbound connections — 0 for beacons, >=1 for sessions
+	FBeaconReconnectCount    // (N) connection teardown/recreate cycles — high for beacons
+	FSessionIOActiveRatio    // (H) fraction of observation time with active IO — high for sessions
 
 	// Online verification features (120-121). Populated by the signature
 	// worker running by default in live posture on Windows (Authenticode +

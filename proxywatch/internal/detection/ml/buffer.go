@@ -26,7 +26,7 @@ type TrainingBuffer struct {
 }
 
 const (
-	DefaultBufferSize = 10000
+	DefaultBufferSize  = 10000
 	BufferDiskMaxBytes = 50 * 1024 * 1024 // 50MB
 )
 

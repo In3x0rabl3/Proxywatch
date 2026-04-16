@@ -43,22 +43,22 @@ func CandidateBehaviorKey(c *Candidate) string {
 // observable behavioral distinction from telemetry.
 var controlSignals = map[string]bool{
 	// High-specificity callback/timing patterns
-	"beacon-interval-confirmed":        true,
-	"beacon-syn-cycle-cadence":          true,
+	"beacon-interval-confirmed": true,
+	"beacon-syn-cycle-cadence":  true,
 	// beacon-target-lock demoted — single persistent target is common for VPN, sync, update
 	"beacon-reconnecting-unknown-vendor": true,
-	"beacon-short-lived-callback":       true,
+	"beacon-short-lived-callback":        true,
 	// High-specificity persistent control patterns
 	"session-control-channel-persistent": true,
 	// session-single-target-persistence demoted — single persistent target is
 	// common for VPN daemons, sync agents, push notification services
-	"session-pre-existing-control":       true,
-	"session-shell-spawn":                true,
-	"session-lolbin-children":            true,
-	"session-encoding-in-cmdline":        true,
-	"session-covert-channel":             true,
-	"session-impersonation-token":        true,
-	"session-internal-control":           true,
+	"session-pre-existing-control": true,
+	"session-shell-spawn":          true,
+	"session-lolbin-children":      true,
+	"session-encoding-in-cmdline":  true,
+	"session-covert-channel":       true,
+	"session-impersonation-token":  true,
+	"session-internal-control":     true,
 	// Demoted to ML-only (still emitted for training, removed from rule
 	// inference — too generic, fire on legitimate apps equally):
 	// beacon-http-channel, beacon-endpoint-rotation, beacon-no-children,
@@ -72,40 +72,40 @@ var controlSignals = map[string]bool{
 }
 
 var pivotSignals = map[string]bool{
-	"pivot-listener-plus-outbound":       true,
+	"pivot-listener-plus-outbound":         true,
 	"pivot-loopback-listener-external-out": true,
 	// pivot-multiplex-relay demoted — fires on sessions with external C2 + internal lateral
-	"pivot-throughput-symmetry":           true,
-	"pivot-mixed-protocol-internal":       true,
-	"pivot-socks-candidate":              true,
+	"pivot-throughput-symmetry":     true,
+	"pivot-mixed-protocol-internal": true,
+	"pivot-socks-candidate":         true,
 	// pivot-reverse-tunnel-shape demoted — fires on sessions doing lateral movement
-	"pivot-conn-count-correlation":        true,
-	"pivot-named-pipe-c2-pattern":         true,
-	"pivot-admin-share-smb":              true,
-	"pivot-ssh-tunnel-flags":             true,
-	"pivot-proxy-lib-loaded":             true,
+	"pivot-conn-count-correlation": true,
+	"pivot-named-pipe-c2-pattern":  true,
+	"pivot-admin-share-smb":        true,
+	"pivot-ssh-tunnel-flags":       true,
+	"pivot-proxy-lib-loaded":       true,
 	// pivot-high-handle-count demoted — fires on every browser/Electron app
-	"pivot-elevated-relay":               true,
+	"pivot-elevated-relay": true,
 	// pivot-service-like-no-service demoted — fires on system services in session 0
-	"pivot-high-fd-count":                true,
-	"pivot-anon-exec-memory":             true,
-	"pivot-non-loopback-internal":        true,
+	"pivot-high-fd-count":         true,
+	"pivot-anon-exec-memory":      true,
+	"pivot-non-loopback-internal": true,
 }
 
 var outboundSignals = map[string]bool{
-	"outbound-multi-external-cdn":      true,
-	"outbound-standard-ports-only":     true,
-	"outbound-asn-org-aligned":         true,
-	"outbound-cdn-destination":         true,
+	"outbound-multi-external-cdn":  true,
+	"outbound-standard-ports-only": true,
+	"outbound-asn-org-aligned":     true,
+	"outbound-cdn-destination":     true,
 	// outbound-known-vendor demoted — identity-based (binary location), not
 	// behavioral. Static facts about vendor/path must not suppress detection;
 	// attackers inject into vendor binaries in system paths.
 	// outbound-system-path demoted — same reason.
-	"outbound-download-heavy":          true,
-	"outbound-lolbin-network":          true,
+	"outbound-download-heavy":           true,
+	"outbound-lolbin-network":           true,
 	"outbound-scripting-engine-network": true,
-	"outbound-baseline-verified":       true,
-	"outbound-established-service":     true,
+	"outbound-baseline-verified":        true,
+	"outbound-established-service":      true,
 	// Demoted to ML-only: outbound-push-notification (fires on C2 too),
 	// outbound-cert-validation, outbound-known-vendor, outbound-system-path
 }

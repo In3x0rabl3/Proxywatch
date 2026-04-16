@@ -504,4 +504,3 @@ func fillCmdLine(h windows.Handle, pi *shared.ProcessInfo) {
 	chars := unsafe.Slice((*uint16)(unsafe.Pointer(us.Buffer)), charCount)
 	pi.CmdLine = strings.TrimSpace(windows.UTF16ToString(chars))
 }
-

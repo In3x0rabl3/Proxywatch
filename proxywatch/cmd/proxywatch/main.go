@@ -19,14 +19,14 @@ import (
 	contourapi "proxywatch/internal/contour/api"
 	"proxywatch/internal/detection"
 	"proxywatch/internal/detection/features"
-	"proxywatch/internal/detection/output"
-	"proxywatch/internal/detection/ml"
 	gbdt "proxywatch/internal/detection/gbdt"
-	"proxywatch/internal/keystore"
+	"proxywatch/internal/detection/ml"
 	"proxywatch/internal/detection/model"
+	"proxywatch/internal/detection/output"
+	"proxywatch/internal/detection/telemetry"
+	"proxywatch/internal/keystore"
 	"proxywatch/internal/safeio"
 	"proxywatch/internal/shared"
-	"proxywatch/internal/detection/telemetry"
 	"proxywatch/internal/ui"
 )
 
@@ -59,11 +59,11 @@ func main() {
 	stopSvc := flag.Bool("stop", false, "Stop the Windows service")
 
 	// Contour tunnel server/client mode (headless, no TUI or detection scanning).
-	contourServer    := flag.Bool("contour-server", false, "Run as headless contour tunnel server (no TUI)")
-	contourClient    := flag.String("contour-client", "", "Run as headless contour tunnel client, connecting to this server address (e.g. 10.0.0.5)")
-	contourAPIAddr   := flag.String("contour-api", "", "Listen address for contour HTTP API (e.g. 127.0.0.1:7891). Exposes tunnel status and protocol verification.")
-	contourProto     := flag.String("contour-proto", "http", "Tunnel protocol for contour server/client mode (http, https, ws, dns, ssh, smtp, ftp, redis, postgres, socks5, ...)")
-	contourPorts     := flag.String("contour-ports", "8080", "Comma-separated port(s) for contour tunnel (e.g. 8080 or 8080,8443)")
+	contourServer := flag.Bool("contour-server", false, "Run as headless contour tunnel server (no TUI)")
+	contourClient := flag.String("contour-client", "", "Run as headless contour tunnel client, connecting to this server address (e.g. 10.0.0.5)")
+	contourAPIAddr := flag.String("contour-api", "", "Listen address for contour HTTP API (e.g. 127.0.0.1:7891). Exposes tunnel status and protocol verification.")
+	contourProto := flag.String("contour-proto", "http", "Tunnel protocol for contour server/client mode (http, https, ws, dns, ssh, smtp, ftp, redis, postgres, socks5, ...)")
+	contourPorts := flag.String("contour-ports", "8080", "Comma-separated port(s) for contour tunnel (e.g. 8080 or 8080,8443)")
 	contourDirection := flag.String("contour-direction", "Forward", "Tunnel direction: Forward (client has SOCKS) or Reverse (server has SOCKS)")
 
 	flag.Parse()

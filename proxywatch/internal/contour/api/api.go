@@ -198,10 +198,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleProtocols(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{
-		"carrier":     carrierProtocols,
-		"deaddrop":    deadDropProtocols,
-		"verifiable":  verifiableProtocols,
-		"total":       len(carrierProtocols) + len(deadDropProtocols),
+		"carrier":    carrierProtocols,
+		"deaddrop":   deadDropProtocols,
+		"verifiable": verifiableProtocols,
+		"total":      len(carrierProtocols) + len(deadDropProtocols),
 	})
 }
 

@@ -107,7 +107,6 @@ func (t *openAITransport) exchange(apiKey, sessionID string, outData []byte) ([]
 	return nil, nil
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Shared API tunnel framework
 // ═══════════════════════════════════════════════════════════════════════════
@@ -247,7 +246,6 @@ func connectAPITunnelClient(ctx context.Context, proto, proxyAddr string, emit f
 		relay(local, remote)
 	})
 }
-
 
 func getAPIKey(proto string) string {
 	// Read from keystore runtime values first, fall back to env vars.

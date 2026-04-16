@@ -27,10 +27,10 @@ type HostSummary struct {
 	Status    string
 	FirstSeen time.Time
 	LastSeen  time.Time
-	Processes  int
-	Watch      int
-	Tunneling  int
-	Roles      int
+	Processes int
+	Watch     int
+	Tunneling int
+	Roles     int
 }
 
 type AppState struct {
@@ -217,19 +217,19 @@ type AppState struct {
 	KeystorePasswordSave   bool   // true=saving, false=unlocking
 
 	// SIEM dashboard state.
-	SiemSelectedIdx  int
-	SiemActiveTab    int // 0=Splunk 1=KQL 2=Sigma 3=YARA 4=Suricata
-	SiemShowHelp     bool
-	SiemStatusText   string
-	SiemStatusUntil  time.Time
-	SiemStatusError  bool
-	SiemListOffset   int
-	SiemGenerated      bool                // Generate button was pressed
-	SiemGeneratedAt    time.Time           // when the snapshot was taken
-	SiemGeneratedSet   []Candidate         // frozen control-* candidates at Generate time
-	SiemField          int                 // 0=Action, 1=Output
-	SiemOutputPath     string              // last-used / default output path
-	SiemLastExportPath string              // most recent successful export path
+	SiemSelectedIdx    int
+	SiemActiveTab      int // 0=Splunk 1=KQL 2=Sigma 3=YARA 4=Suricata
+	SiemShowHelp       bool
+	SiemStatusText     string
+	SiemStatusUntil    time.Time
+	SiemStatusError    bool
+	SiemListOffset     int
+	SiemGenerated      bool        // Generate button was pressed
+	SiemGeneratedAt    time.Time   // when the snapshot was taken
+	SiemGeneratedSet   []Candidate // frozen control-* candidates at Generate time
+	SiemField          int         // 0=Action, 1=Output
+	SiemOutputPath     string      // last-used / default output path
+	SiemLastExportPath string      // most recent successful export path
 
 	// Legacy fields retained for the HTTP export endpoints + tests.
 	SiemSelectedKeys   map[string]bool // CandidateKey → checked
@@ -258,10 +258,10 @@ type AppState struct {
 	InspectScroll            int
 	InspectMaxScroll         int
 	InspectSectionStarts     []int
-	InspectEvidenceCache     []string  // cached evidence lines
-	InspectEvidenceCacheKey  string    // candidate key for cache validity
-	InspectEvidenceCacheTime int64     // unix timestamp of cache
-	InspectShowAllSignals    bool      // 'x' toggle: show all signals in evidence
+	InspectEvidenceCache     []string // cached evidence lines
+	InspectEvidenceCacheKey  string   // candidate key for cache validity
+	InspectEvidenceCacheTime int64    // unix timestamp of cache
+	InspectShowAllSignals    bool     // 'x' toggle: show all signals in evidence
 
 	// Training dashboard state.
 	TrainingDashboardActive bool
@@ -270,17 +270,17 @@ type AppState struct {
 	TrainingLastError       string
 
 	// Training control plane state.
-	TrainingField        int
-	TrainingShowHelp     bool
-	TrainingAutoRetrain  bool      // mirrors shared.AutoRetrainEnabled
-	TrainingRetraining   bool      // retrain in progress
-	TrainingRetrainStart time.Time
-	TrainingMetricsCache interface{} // *inference.ModelMetrics (avoid import cycle)
-	TrainingOrchestrator interface{} // *training.Orchestrator
-	TrainingLearner      interface{} // *inference.ContinuousLearner
-	TrainingSampleMode   bool
-	TrainingSampleIndex  int
-	TrainingSampleCount    int       // count of low-confidence samples
+	TrainingField         int
+	TrainingShowHelp      bool
+	TrainingAutoRetrain   bool // mirrors shared.AutoRetrainEnabled
+	TrainingRetraining    bool // retrain in progress
+	TrainingRetrainStart  time.Time
+	TrainingMetricsCache  interface{} // *inference.ModelMetrics (avoid import cycle)
+	TrainingOrchestrator  interface{} // *training.Orchestrator
+	TrainingLearner       interface{} // *inference.ContinuousLearner
+	TrainingSampleMode    bool
+	TrainingSampleIndex   int
+	TrainingSampleCount   int       // count of low-confidence samples
 	StartTrainingRetrain  func()    // wired callback for async retrain
 	TrainingResetConfirm  bool      // double-confirm for baseline reset
 	TrainingResetDeadline time.Time // confirmation window

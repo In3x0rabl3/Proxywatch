@@ -3,10 +3,10 @@ package keys
 import (
 	"time"
 
+	"proxywatch/internal/detection"
 	"proxywatch/internal/detection/ml"
 	"proxywatch/internal/detection/model"
 	"proxywatch/internal/shared"
-	"proxywatch/internal/detection"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -138,4 +138,3 @@ func handleTrainingAction(app *shared.AppState) bool {
 
 	return false
 }
-

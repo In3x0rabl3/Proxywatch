@@ -11,10 +11,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/gdamore/tcell/v2"
 
+	"proxywatch/internal/detection"
 	"proxywatch/internal/detection/ml"
 	"proxywatch/internal/detection/model"
 	"proxywatch/internal/shared"
-	"proxywatch/internal/detection"
 	"proxywatch/internal/ui/platform"
 )
 

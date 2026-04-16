@@ -11,10 +11,10 @@ import (
 // publisher_domains.go, without enumerating vendor-specific process names.
 //
 // Three checks, any one positive → returns (true, tags):
-//   1. PTR of destination ends in a publisher domain.
-//   2. Forward-resolved publisher domain shares a /24 with the destination.
-//   3. Connection remote-host field (when populated) has a hostname ending
-//      in a publisher domain — this catches pre-resolved TLS SNI-like data.
+//  1. PTR of destination ends in a publisher domain.
+//  2. Forward-resolved publisher domain shares a /24 with the destination.
+//  3. Connection remote-host field (when populated) has a hostname ending
+//     in a publisher domain — this catches pre-resolved TLS SNI-like data.
 //
 // Returns (false, nil) when:
 //   - publisher is unknown / not in the map

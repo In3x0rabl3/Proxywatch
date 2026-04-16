@@ -6,15 +6,15 @@ package telemetry
 import "golang.org/x/sys/windows"
 
 var (
-	ModKernel32              = windows.NewLazySystemDLL("kernel32.dll")
-	ProcGetProcessTimes      = ModKernel32.NewProc("GetProcessTimes")
-	ProcGetProcessIoCounters = ModKernel32.NewProc("GetProcessIoCounters")
-	ProcProcessIdToSessionId    = ModKernel32.NewProc("ProcessIdToSessionId")
+	ModKernel32               = windows.NewLazySystemDLL("kernel32.dll")
+	ProcGetProcessTimes       = ModKernel32.NewProc("GetProcessTimes")
+	ProcGetProcessIoCounters  = ModKernel32.NewProc("GetProcessIoCounters")
+	ProcProcessIdToSessionId  = ModKernel32.NewProc("ProcessIdToSessionId")
 	ProcGetProcessHandleCount = ModKernel32.NewProc("GetProcessHandleCount")
-	ModPsapi                 = windows.NewLazySystemDLL("psapi.dll")
-	ProcGetProcessMemoryInfo = ModPsapi.NewProc("GetProcessMemoryInfo")
-	ProcEnumProcessModules   = ModPsapi.NewProc("EnumProcessModules")
-	ProcGetModuleFileNameExW = ModPsapi.NewProc("GetModuleFileNameExW")
+	ModPsapi                  = windows.NewLazySystemDLL("psapi.dll")
+	ProcGetProcessMemoryInfo  = ModPsapi.NewProc("GetProcessMemoryInfo")
+	ProcEnumProcessModules    = ModPsapi.NewProc("EnumProcessModules")
+	ProcGetModuleFileNameExW  = ModPsapi.NewProc("GetModuleFileNameExW")
 
 	IPHlpapi           = windows.NewLazySystemDLL("iphlpapi.dll")
 	ProcGetExtendedTcp = IPHlpapi.NewProc("GetExtendedTcpTable")

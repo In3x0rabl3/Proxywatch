@@ -22,14 +22,14 @@ import (
 // /var/lib/pacman/local/*/files for pacman, /lib/apk/db/installed for apk.
 
 const (
-	dpkgInfoDir    = "/var/lib/dpkg/info"
-	pkgCacheTTL    = 5 * time.Minute
+	dpkgInfoDir = "/var/lib/dpkg/info"
+	pkgCacheTTL = 5 * time.Minute
 )
 
 type pkgCache struct {
-	mu        sync.RWMutex
+	mu          sync.RWMutex
 	ownerByPath map[string]string
-	builtAt   time.Time
+	builtAt     time.Time
 }
 
 var pkgCacheInst = &pkgCache{

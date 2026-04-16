@@ -29,16 +29,16 @@ var TrainingStartTime atomic.Int64
 // Training cycle phase — drives the UI state machine.
 // Updated by the orchestrator and retrain loop. Read by the dashboard.
 const (
-	CycleCollecting      = "collecting"       // gathering observations
-	CycleThresholdMet    = "threshold_met"    // obs threshold reached, waiting for buffer
-	CycleWaitingBuffer   = "waiting_buffer"   // obs threshold met but buffer < 50
-	CycleTrainingIngest  = "training_ingest"  // exporting + ingesting data
-	CycleTrainingFit     = "training_fit"     // fitting GBDT model
-	CycleTrainingEval    = "training_eval"    // evaluating with CV
-	CycleTrainingExport  = "training_export"  // exporting model
-	CycleTrainingDone    = "training_done"    // training completed, awaiting hot-swap
-	CycleTrainingFailed  = "training_failed"  // training failed
-	CycleWaitingLabels   = "waiting_labels"   // need operator labels
+	CycleCollecting     = "collecting"      // gathering observations
+	CycleThresholdMet   = "threshold_met"   // obs threshold reached, waiting for buffer
+	CycleWaitingBuffer  = "waiting_buffer"  // obs threshold met but buffer < 50
+	CycleTrainingIngest = "training_ingest" // exporting + ingesting data
+	CycleTrainingFit    = "training_fit"    // fitting GBDT model
+	CycleTrainingEval   = "training_eval"   // evaluating with CV
+	CycleTrainingExport = "training_export" // exporting model
+	CycleTrainingDone   = "training_done"   // training completed, awaiting hot-swap
+	CycleTrainingFailed = "training_failed" // training failed
+	CycleWaitingLabels  = "waiting_labels"  // need operator labels
 )
 
 // TrainingCyclePhase holds the current phase of the training cycle.
@@ -141,4 +141,3 @@ func EventLogSnapshot() []LogEvent {
 	copy(out, eventLog)
 	return out
 }
-

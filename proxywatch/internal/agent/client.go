@@ -13,9 +13,9 @@ import (
 	"proxywatch/internal/agent/auth"
 	"proxywatch/internal/agent/pb"
 	"proxywatch/internal/detection"
+	"proxywatch/internal/detection/telemetry"
 	"proxywatch/internal/keystore"
 	"proxywatch/internal/shared"
-	"proxywatch/internal/detection/telemetry"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"

@@ -20,17 +20,17 @@ import (
 
 // TrainRun records the outcome of a single training cycle.
 type TrainRun struct {
-	Version     string                 `json:"version"`
-	StartedAt   time.Time              `json:"started_at"`
-	CompletedAt time.Time              `json:"completed_at"`
-	DatasetSize int                    `json:"dataset_size"`
+	Version     string          `json:"version"`
+	StartedAt   time.Time       `json:"started_at"`
+	CompletedAt time.Time       `json:"completed_at"`
+	DatasetSize int             `json:"dataset_size"`
 	Metrics     ml.ModelMetrics `json:"metrics"`
-	Promoted    bool                   `json:"promoted"`
-	PromotedAt  time.Time              `json:"promoted_at,omitempty"`
-	RolledBack  bool                   `json:"rolled_back"`
-	RollbackAt  time.Time              `json:"rollback_at,omitempty"`
-	SchemaHash  string                 `json:"schema_hash"`
-	Error       string                 `json:"error,omitempty"`
+	Promoted    bool            `json:"promoted"`
+	PromotedAt  time.Time       `json:"promoted_at,omitempty"`
+	RolledBack  bool            `json:"rolled_back"`
+	RollbackAt  time.Time       `json:"rollback_at,omitempty"`
+	SchemaHash  string          `json:"schema_hash"`
+	Error       string          `json:"error,omitempty"`
 }
 
 // Orchestrator manages the training pipeline.

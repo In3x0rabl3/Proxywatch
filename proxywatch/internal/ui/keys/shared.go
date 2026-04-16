@@ -1010,7 +1010,6 @@ func InitMissingKeystoreKeys(app *shared.AppState) {
 	}
 }
 
-
 // SelectedWhitelistProcessCandidate returns the currently selected process candidate
 // in the whitelist panel.
 func SelectedWhitelistProcessCandidate(app *shared.AppState) (shared.Candidate, bool) {

@@ -34,9 +34,9 @@ type TrainingRecord struct {
 	ModelRole       *string  `json:"model_role"`
 	ModelConfidence *float64 `json:"model_confidence"`
 
-	OperatorLabel  *string `json:"operator_label,omitempty"`
-	UserVerdict    string  `json:"user_verdict,omitempty"`
-	CalibrationVerdict string `json:"calibration_verdict,omitempty"`
+	OperatorLabel      *string `json:"operator_label,omitempty"`
+	UserVerdict        string  `json:"user_verdict,omitempty"`
+	CalibrationVerdict string  `json:"calibration_verdict,omitempty"`
 
 	ExperienceRole         string  `json:"experience_role,omitempty"`
 	ExperienceObservations int     `json:"experience_observations"`

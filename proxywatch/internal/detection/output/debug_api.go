@@ -448,50 +448,50 @@ func handleDiff(w http.ResponseWriter, r *http.Request) {
 // It is intentionally derived from stateless heuristics so the same function
 // can be re-run after a rule change to diff before/after — no hidden state.
 type FPReportEntry struct {
-	PID                 int      `json:"pid"`
-	Host                string   `json:"host,omitempty"`
-	Name                string   `json:"name"`
-	ExePath             string   `json:"exe_path,omitempty"`
-	Company             string   `json:"company,omitempty"`
-	Role                string   `json:"role"`
-	Score               int      `json:"score"`
-	Signals             []string `json:"signals,omitempty"`
-	Reasons             []string `json:"reasons,omitempty"`
-	SHA256              string   `json:"sha256,omitempty"`
-	OperatorLabel       string   `json:"operator_label,omitempty"`
-	KnownVendorPath     bool     `json:"known_vendor_path"`
-	KnownNetworkActive  bool     `json:"known_network_active"`
-	KnownUpdater        bool     `json:"known_updater"`
-	Signed                 bool   `json:"signed"`
-	SignatureTrust         string `json:"signature_trust,omitempty"`
-	AuthenticodeTrust      string `json:"authenticode_trust,omitempty"`
-	AuthenticodePublisher  string `json:"authenticode_publisher,omitempty"`
-	AuthenticodeOCSPChecked bool  `json:"authenticode_ocsp_checked"`
-	OnlineKnownBenign      bool     `json:"online_known_benign"`
-	OnlineKnownMalicious   bool     `json:"online_known_malicious"`
-	PkgOwned               bool     `json:"pkg_owned"`
-	PkgOwnerName           string   `json:"pkg_owner_name,omitempty"`
-	PublisherDNSAligned    bool     `json:"publisher_dns_aligned"`
-	OnlineEvidence         []string `json:"online_evidence,omitempty"`
-	BenignControlClient bool     `json:"benign_control_client"`
-	BenignOverridden    bool     `json:"benign_overridden_by_behavior"`
-	TrafficVerified     bool     `json:"traffic_verified"`
-	StrongEvidence      bool     `json:"strong_evidence"`
-	ActiveProxying      bool     `json:"active_proxying"`
-	DecisiveSignal      string   `json:"decisive_signal,omitempty"`
-	VendorUpdateDemoted bool     `json:"vendor_update_demoted"`
-	FPShapeScore              int      `json:"fp_shape_score"`
-	FPShapeReasons            []string `json:"fp_shape_reasons,omitempty"`
-	FPShapeBlockers           []string `json:"fp_shape_blockers,omitempty"`
-	FPShapeHardBlockers       []string `json:"fp_shape_hard_blockers,omitempty"`
-	FPShapeSoftBlockers       []string `json:"fp_shape_soft_blockers,omitempty"`
-	FPShapeSoftOverride       bool     `json:"fp_shape_soft_override"`
-	FPShapeOverrideReason     string   `json:"fp_shape_override_reason,omitempty"`
-	FPShapeVendorSignalCount  int      `json:"fp_shape_vendor_signal_count"`
-	FPShapeWouldDemote        bool     `json:"fp_shape_would_demote"`
-	FPShapeDemoted            bool     `json:"fp_shape_demoted"`
-	WouldSuppress       bool     `json:"would_suppress"`
-	SuppressReason      string   `json:"suppress_reason,omitempty"`
+	PID                      int      `json:"pid"`
+	Host                     string   `json:"host,omitempty"`
+	Name                     string   `json:"name"`
+	ExePath                  string   `json:"exe_path,omitempty"`
+	Company                  string   `json:"company,omitempty"`
+	Role                     string   `json:"role"`
+	Score                    int      `json:"score"`
+	Signals                  []string `json:"signals,omitempty"`
+	Reasons                  []string `json:"reasons,omitempty"`
+	SHA256                   string   `json:"sha256,omitempty"`
+	OperatorLabel            string   `json:"operator_label,omitempty"`
+	KnownVendorPath          bool     `json:"known_vendor_path"`
+	KnownNetworkActive       bool     `json:"known_network_active"`
+	KnownUpdater             bool     `json:"known_updater"`
+	Signed                   bool     `json:"signed"`
+	SignatureTrust           string   `json:"signature_trust,omitempty"`
+	AuthenticodeTrust        string   `json:"authenticode_trust,omitempty"`
+	AuthenticodePublisher    string   `json:"authenticode_publisher,omitempty"`
+	AuthenticodeOCSPChecked  bool     `json:"authenticode_ocsp_checked"`
+	OnlineKnownBenign        bool     `json:"online_known_benign"`
+	OnlineKnownMalicious     bool     `json:"online_known_malicious"`
+	PkgOwned                 bool     `json:"pkg_owned"`
+	PkgOwnerName             string   `json:"pkg_owner_name,omitempty"`
+	PublisherDNSAligned      bool     `json:"publisher_dns_aligned"`
+	OnlineEvidence           []string `json:"online_evidence,omitempty"`
+	BenignControlClient      bool     `json:"benign_control_client"`
+	BenignOverridden         bool     `json:"benign_overridden_by_behavior"`
+	TrafficVerified          bool     `json:"traffic_verified"`
+	StrongEvidence           bool     `json:"strong_evidence"`
+	ActiveProxying           bool     `json:"active_proxying"`
+	DecisiveSignal           string   `json:"decisive_signal,omitempty"`
+	VendorUpdateDemoted      bool     `json:"vendor_update_demoted"`
+	FPShapeScore             int      `json:"fp_shape_score"`
+	FPShapeReasons           []string `json:"fp_shape_reasons,omitempty"`
+	FPShapeBlockers          []string `json:"fp_shape_blockers,omitempty"`
+	FPShapeHardBlockers      []string `json:"fp_shape_hard_blockers,omitempty"`
+	FPShapeSoftBlockers      []string `json:"fp_shape_soft_blockers,omitempty"`
+	FPShapeSoftOverride      bool     `json:"fp_shape_soft_override"`
+	FPShapeOverrideReason    string   `json:"fp_shape_override_reason,omitempty"`
+	FPShapeVendorSignalCount int      `json:"fp_shape_vendor_signal_count"`
+	FPShapeWouldDemote       bool     `json:"fp_shape_would_demote"`
+	FPShapeDemoted           bool     `json:"fp_shape_demoted"`
+	WouldSuppress            bool     `json:"would_suppress"`
+	SuppressReason           string   `json:"suppress_reason,omitempty"`
 
 	// Tier-2 hard-distinguisher trace. Populated from
 	// shared.HasHardDistinguisher so operators can see, per candidate,
@@ -499,16 +499,16 @@ type FPReportEntry struct {
 	// cases where a control-channel candidate unexpectedly demotes to
 	// outbound — if Tier2Hits is empty, DemoteShapeOnlyControlRole
 	// fell through to the demote path.
-	Tier2Hits               []string `json:"tier2_hits,omitempty"`
-	Tier2Preserved          bool     `json:"tier2_preserved"`
-	ShapeOnlyRole           bool     `json:"shape_only_role"`
-	BeaconIntervalMs        int      `json:"beacon_interval_ms,omitempty"`
-	BeaconJitter            float64  `json:"beacon_jitter,omitempty"`
-	HasInternalConn         bool     `json:"has_internal_conn"`
-	HasNonLoopbackListener  bool     `json:"has_non_loopback_listener"`
-	ConnInternalRemotes     int      `json:"conn_internal_remotes"`
-	ConnExternalRemotes     int      `json:"conn_external_remotes"`
-	TunnelingState          bool     `json:"tunneling_state"`
+	Tier2Hits              []string `json:"tier2_hits,omitempty"`
+	Tier2Preserved         bool     `json:"tier2_preserved"`
+	ShapeOnlyRole          bool     `json:"shape_only_role"`
+	BeaconIntervalMs       int      `json:"beacon_interval_ms,omitempty"`
+	BeaconJitter           float64  `json:"beacon_jitter,omitempty"`
+	HasInternalConn        bool     `json:"has_internal_conn"`
+	HasNonLoopbackListener bool     `json:"has_non_loopback_listener"`
+	ConnInternalRemotes    int      `json:"conn_internal_remotes"`
+	ConnExternalRemotes    int      `json:"conn_external_remotes"`
+	TunnelingState         bool     `json:"tunneling_state"`
 }
 
 // decisiveFPSignals are the signals that always defeat vendor-identity
@@ -537,19 +537,19 @@ func BuildFPReport(cands []shared.Candidate) []FPReportEntry {
 			continue
 		}
 		entry := FPReportEntry{
-			PID:                 c.Proc.Pid,
-			Host:                c.Host,
-			Name:                c.Proc.Name,
-			ExePath:             c.Proc.ExePath,
-			Company:             c.Proc.Company,
-			Role:                c.Role,
-			Score:               c.Score,
-			Signals:             append([]string(nil), c.Signals...),
-			Reasons:             append([]string(nil), c.Reasons...),
-			SHA256:              c.Proc.SHA256,
-			KnownVendorPath:     shared.IsKnownVendorProcess(c.Proc),
-			KnownNetworkActive:  shared.IsKnownNetworkActiveProcess(c.Proc),
-			KnownUpdater:        shared.IsKnownUpdaterProcess(c.Proc),
+			PID:                     c.Proc.Pid,
+			Host:                    c.Host,
+			Name:                    c.Proc.Name,
+			ExePath:                 c.Proc.ExePath,
+			Company:                 c.Proc.Company,
+			Role:                    c.Role,
+			Score:                   c.Score,
+			Signals:                 append([]string(nil), c.Signals...),
+			Reasons:                 append([]string(nil), c.Reasons...),
+			SHA256:                  c.Proc.SHA256,
+			KnownVendorPath:         shared.IsKnownVendorProcess(c.Proc),
+			KnownNetworkActive:      shared.IsKnownNetworkActiveProcess(c.Proc),
+			KnownUpdater:            shared.IsKnownUpdaterProcess(c.Proc),
 			Signed:                  c.Proc.Signed,
 			SignatureTrust:          c.Proc.SignatureTrust,
 			AuthenticodeTrust:       c.Proc.SignatureTrust,
@@ -561,11 +561,11 @@ func BuildFPReport(cands []shared.Candidate) []FPReportEntry {
 			PkgOwnerName:            c.Proc.PkgOwnerName,
 			PublisherDNSAligned:     c.Proc.PublisherDNSAligned,
 			OnlineEvidence:          append([]string(nil), c.Proc.OnlineEvidence...),
-			BenignControlClient: shared.IsLikelyBenignControlClient(c.Proc),
-			BenignOverridden:    shared.BenignOverriddenByBehavior(c),
-			TrafficVerified:     c.TrafficVerified,
-			StrongEvidence:      c.StrongEvidence,
-			ActiveProxying:      c.ActiveProxying,
+			BenignControlClient:     shared.IsLikelyBenignControlClient(c.Proc),
+			BenignOverridden:        shared.BenignOverriddenByBehavior(c),
+			TrafficVerified:         c.TrafficVerified,
+			StrongEvidence:          c.StrongEvidence,
+			ActiveProxying:          c.ActiveProxying,
 		}
 		for _, r := range c.Reasons {
 			if r == shared.VendorUpdateCadenceReason {

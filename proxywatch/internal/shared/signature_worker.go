@@ -27,15 +27,15 @@ const (
 // cache. Keyed by (path, mtime, size) — any of those changing evicts the
 // entry, since a binary whose contents rotated requires a fresh verdict.
 type VerdictEntry struct {
-	Path                 string    `json:"path"`
-	ModTimeUnixNanos     int64     `json:"mtime_unix_nanos"`
-	Size                 int64     `json:"size"`
-	Trust                string    `json:"trust"`
-	Publisher            string    `json:"publisher,omitempty"`
-	ChainSubjects        []string  `json:"chain_subjects,omitempty"`
-	CheckedAt            time.Time `json:"checked_at"`
-	OCSPResponseSeen     bool      `json:"ocsp_response_seen"`
-	LastErr              string    `json:"last_err,omitempty"`
+	Path             string    `json:"path"`
+	ModTimeUnixNanos int64     `json:"mtime_unix_nanos"`
+	Size             int64     `json:"size"`
+	Trust            string    `json:"trust"`
+	Publisher        string    `json:"publisher,omitempty"`
+	ChainSubjects    []string  `json:"chain_subjects,omitempty"`
+	CheckedAt        time.Time `json:"checked_at"`
+	OCSPResponseSeen bool      `json:"ocsp_response_seen"`
+	LastErr          string    `json:"last_err,omitempty"`
 
 	// Evidence is the multi-verifier trace — each verifier appends one
 	// entry. Authenticode is always present (from the legacy fields above);
@@ -401,13 +401,13 @@ func (w *signatureWorker) loadCache() error {
 
 // OnlineStatus is the JSON payload surfaced at /online/status.
 type OnlineStatus struct {
-	Mode                string    `json:"mode"`
-	QueueDepth          int       `json:"queue_depth"`
-	VerdictsCached      int       `json:"verdicts_cached"`
-	VerdictsDone        int64     `json:"verdicts_done"`
-	OCSPErrors          int64     `json:"ocsp_errors"`
-	LastVerdictAt       time.Time `json:"last_verdict_at"`
-	LastErr             string    `json:"last_err,omitempty"`
+	Mode           string    `json:"mode"`
+	QueueDepth     int       `json:"queue_depth"`
+	VerdictsCached int       `json:"verdicts_cached"`
+	VerdictsDone   int64     `json:"verdicts_done"`
+	OCSPErrors     int64     `json:"ocsp_errors"`
+	LastVerdictAt  time.Time `json:"last_verdict_at"`
+	LastErr        string    `json:"last_err,omitempty"`
 }
 
 // SnapshotOnlineStatus returns a read-only view of the worker's state.

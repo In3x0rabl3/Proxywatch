@@ -14,15 +14,15 @@ import (
 
 // ContinuousLearner manages the background retraining loop.
 type ContinuousLearner struct {
-	buffer          *TrainingBuffer
-	modelDir        string
-	predictor       *atomicPredictor
-	stopCh          chan struct{}
-	trainDoneCh     chan struct{} // signaled when training completes — triggers immediate model check
-	wg              sync.WaitGroup
-	lastModelMod    time.Time    // mod time of last loaded model file
-	OnModelSwapped  func()       // called after a successful model hot-swap
-	TriggerTrain    func(string) // called to invoke the training orchestrator
+	buffer         *TrainingBuffer
+	modelDir       string
+	predictor      *atomicPredictor
+	stopCh         chan struct{}
+	trainDoneCh    chan struct{} // signaled when training completes — triggers immediate model check
+	wg             sync.WaitGroup
+	lastModelMod   time.Time    // mod time of last loaded model file
+	OnModelSwapped func()       // called after a successful model hot-swap
+	TriggerTrain   func(string) // called to invoke the training orchestrator
 }
 
 // atomicPredictor allows hot-swapping the active predictor.

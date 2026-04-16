@@ -9,9 +9,9 @@ import (
 // SignalContext holds precomputed values from the detection package that the
 // behavior emitters need but cannot compute themselves (to avoid circular deps).
 type SignalContext struct {
-	ScopedPID    int
-	BehaviorKey  string
-	HostScope    string
+	ScopedPID   int
+	BehaviorKey string
+	HostScope   string
 }
 
 // IsLolbinProcess checks if a process name is a living-off-the-land binary.
@@ -100,26 +100,26 @@ func IsC2PipeName(name string) bool {
 // PrepareCommonState computes shared intermediate values used across multiple
 // role emitters. Called once per candidate to avoid redundant work.
 type CommonState struct {
-	HasNonStandardPort  bool
-	AllHTTPPorts        bool
-	InternalPorts             map[int]int
-	InternalHosts             map[string]bool
-	NonLoopbackInternalCount  int
-	ExtPortCounts       map[int]int
-	ExtHosts            map[string]bool
-	HasEncodingInCmdLine bool
-	HasCryptoLib        bool
-	HasProxyLib         bool
-	NameLower           string
-	IsLolbin            bool
-	IsScripting         bool
-	RareParentNetwork   bool
-	IOPerSec            float64
-	TotalIO             uint64
+	HasNonStandardPort       bool
+	AllHTTPPorts             bool
+	InternalPorts            map[int]int
+	InternalHosts            map[string]bool
+	NonLoopbackInternalCount int
+	ExtPortCounts            map[int]int
+	ExtHosts                 map[string]bool
+	HasEncodingInCmdLine     bool
+	HasCryptoLib             bool
+	HasProxyLib              bool
+	NameLower                string
+	IsLolbin                 bool
+	IsScripting              bool
+	RareParentNetwork        bool
+	IOPerSec                 float64
+	TotalIO                  uint64
 	// ASN resolution — computed once, shared across signal emitters.
-	ASNOrgs          []string
-	ASNAligned       bool // vendor company matches destination ASN
-	ASNIsCDN         bool // destination is a CDN
+	ASNOrgs    []string
+	ASNAligned bool // vendor company matches destination ASN
+	ASNIsCDN   bool // destination is a CDN
 }
 
 // PrepareCommonState builds the shared intermediate values from a candidate.
@@ -228,24 +228,24 @@ func PrepareCommonState(c *shared.Candidate, ctx SignalContext) CommonState {
 	}
 
 	return CommonState{
-		HasNonStandardPort:   hasNonStandardPort,
-		AllHTTPPorts:         allHTTPPorts,
-		InternalPorts:             internalPorts,
-		InternalHosts:             internalHosts,
-		NonLoopbackInternalCount:  nonLoopbackInternal,
-		ExtPortCounts:        extPortCounts,
-		ExtHosts:             extHosts,
-		HasEncodingInCmdLine: hasEncodingInCmdLine,
-		HasCryptoLib:         hasCryptoLib,
-		HasProxyLib:          hasProxyLib,
-		NameLower:            nameLower,
-		IsLolbin:             isLolbin,
-		IsScripting:          isScripting,
-		RareParentNetwork:    rareParentNetwork,
-		IOPerSec:             ioPerSec,
-		TotalIO:              totalIO,
-		ASNOrgs:              asnOrgs,
-		ASNAligned:           asnAligned,
-		ASNIsCDN:             asnIsCDN,
+		HasNonStandardPort:       hasNonStandardPort,
+		AllHTTPPorts:             allHTTPPorts,
+		InternalPorts:            internalPorts,
+		InternalHosts:            internalHosts,
+		NonLoopbackInternalCount: nonLoopbackInternal,
+		ExtPortCounts:            extPortCounts,
+		ExtHosts:                 extHosts,
+		HasEncodingInCmdLine:     hasEncodingInCmdLine,
+		HasCryptoLib:             hasCryptoLib,
+		HasProxyLib:              hasProxyLib,
+		NameLower:                nameLower,
+		IsLolbin:                 isLolbin,
+		IsScripting:              isScripting,
+		RareParentNetwork:        rareParentNetwork,
+		IOPerSec:                 ioPerSec,
+		TotalIO:                  totalIO,
+		ASNOrgs:                  asnOrgs,
+		ASNAligned:               asnAligned,
+		ASNIsCDN:                 asnIsCDN,
 	}
 }

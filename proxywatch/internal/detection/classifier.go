@@ -536,17 +536,17 @@ func Classify(
 			}
 
 			rec := gbdt.TrainingRecord{
-				Timestamp:   now.UTC(),
-				Host:        strings.TrimSpace(c.Host),
-				ProcessKey:  key,
-				ProcessName: c.Proc.Name,
-				ProcessPath: c.Proc.ExePath,
-				User:        c.Proc.UserName,
-				Company:     c.Proc.Company,
-				Features:    fv.ToMap(),
-				Signals:     c.Signals,
-				RuleRole:    c.SuggestedRole,
-				RuleScore:   c.Score,
+				Timestamp:       now.UTC(),
+				Host:            strings.TrimSpace(c.Host),
+				ProcessKey:      key,
+				ProcessName:     c.Proc.Name,
+				ProcessPath:     c.Proc.ExePath,
+				User:            c.Proc.UserName,
+				Company:         c.Proc.Company,
+				Features:        fv.ToMap(),
+				Signals:         c.Signals,
+				RuleRole:        c.SuggestedRole,
+				RuleScore:       c.Score,
 				StrongEvidence:  c.StrongEvidence,
 				TrafficVerified: c.TrafficVerified,
 			}
@@ -774,4 +774,3 @@ func isSuspiciousStagingPathForVisibility(exePath string) bool {
 	}
 	return false
 }
-
