@@ -157,6 +157,10 @@ func UpdateDebugAPISnapshot(cycle uint64, hostScope string, scored []shared.Cand
 	// outside the debugAPI lock — the alerts package dispatches POSTs
 	// asynchronously but acquires its own mutex for the dedup map.
 	alerts.ScanAndFire(hostScope, scored)
+
+	// Record timeline deltas so /timeline/<pid> can show the
+	// role/signal evolution of a candidate over time.
+	recordTimeline(hostScope, cycle, scored)
 }
 
 // AgentStoreProvider is the read-only interface the debug API uses to inspect
@@ -220,6 +224,8 @@ func StartDebugAPIServer(addr string) (*http.Server, error) {
 	mux.HandleFunc("/operator/label/", handleOperatorLabelByHash)
 	mux.HandleFunc("/ml/disagreements", handleMLDisagreements)
 	mux.HandleFunc("/ml/shadow", handleMLShadow)
+	mux.HandleFunc("/timeline", handleTimeline)
+	mux.HandleFunc("/timeline/", handleTimeline)
 	registerSIEMDebugRoutes(mux)
 
 	srv := &http.Server{
