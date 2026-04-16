@@ -1200,20 +1200,43 @@ func ScoreCandidate(c *shared.Candidate) {
 			outLongLived == 0 &&
 			inboundBurst == 0
 		if pureCallbackShape && !promoIsKnownVendor && shared.ShortLivedBurstHits[scopedPID] >= 3 {
-			// Unknown process with 3+ recurring short-lived callback bursts
-			// but no persistent control channel — consistent with C2 implant
-			// when the C2 server is down or connections drop quickly.
-			c.Role = "control-channel"
-			c.ControlSubtype = "beacon"
-			c.ActiveProxying = false
-			c.Reasons = append(c.Reasons, "Unknown process with recurring failed callback pattern (C2 may be offline)")
-			if c.Score < 48 {
-				c.Score = 48
+			// Offline-C2 disambiguation (plan Track 5): if the recurring
+			// target resolves to a CDN / major vendor ASN or a vendor
+			// domain, this is almost certainly a benign service that's
+			// temporarily offline — not a C2 server. Skip the C2 promotion
+			// and emit a shadow signal instead so /fp-report captures the
+			// decision for post-hoc review.
+			offlineBenign := false
+			if pch := shared.PendingControlByPID[scopedPID]; pch != nil {
+				if shared.IsLikelyBenignOfflineTarget(pch.Target) {
+					offlineBenign = true
+				}
 			}
-			hist.LastSuspicious = now
-			hist.SuspicionKind = shared.SuspicionControl
-			if hist.StickyScore < c.Score {
-				hist.StickyScore = c.Score
+			if !offlineBenign {
+				if sch := shared.SYNCycleByPID[scopedPID]; sch != nil {
+					if shared.IsLikelyBenignOfflineTarget(sch.Target) {
+						offlineBenign = true
+					}
+				}
+			}
+			if offlineBenign {
+				c.Signals = append(c.Signals, "benign-offline-service-shape")
+			} else {
+				// Unknown process with 3+ recurring short-lived callback bursts
+				// but no persistent control channel — consistent with C2 implant
+				// when the C2 server is down or connections drop quickly.
+				c.Role = "control-channel"
+				c.ControlSubtype = "beacon"
+				c.ActiveProxying = false
+				c.Reasons = append(c.Reasons, "Unknown process with recurring failed callback pattern (C2 may be offline)")
+				if c.Score < 48 {
+					c.Score = 48
+				}
+				hist.LastSuspicious = now
+				hist.SuspicionKind = shared.SuspicionControl
+				if hist.StickyScore < c.Score {
+					hist.StickyScore = c.Score
+				}
 			}
 		} else if pureCallbackShape {
 		} else if holdBenignReconnectingPromotion {

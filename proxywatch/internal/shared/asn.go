@@ -81,6 +81,93 @@ func ResolveExternalASNOrgs(conns []ConnectionInfo) (orgs []string, pending int,
 	return out, pending, failed
 }
 
+// LookupCachedASNOrgsForIP returns the cached ASN orgs for a single IP
+// without scheduling a new lookup when missing. Used by the offline-C2
+// disambiguator where we don't want the pure FP-gate check to incur a
+// DNS round-trip on every cycle — if the cache is empty the caller
+// should treat the target as "unknown" and fall back to the default
+// promotion path.
+func LookupCachedASNOrgsForIP(ip string) []string {
+	ip = strings.TrimSpace(ip)
+	if ip == "" || IsWildcardIP(ip) || IsLoopbackIP(ip) || IsInternalIP(ip) {
+		return nil
+	}
+	asnCacheMu.RLock()
+	rec, ok := asnCache[ip]
+	asnCacheMu.RUnlock()
+	if !ok || rec.err != "" || len(rec.orgs) == 0 {
+		return nil
+	}
+	if time.Since(rec.updatedAt) > asnCacheTTL {
+		return nil
+	}
+	out := make([]string, 0, len(rec.orgs))
+	for _, o := range rec.orgs {
+		if o = strings.TrimSpace(o); o != "" {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// IsLikelyBenignOfflineTarget returns true when a callback-retry
+// target's IP resolves (from ASN cache) to a CDN / major cloud org,
+// or its PTR / forward-cache host matches a well-known vendor
+// domain. The intent is to distinguish "benign service temporarily
+// offline" (Teams, Slack, vendor telemetry endpoint) from a C2
+// server the operator has taken down. target must be "ip:port" or
+// "ip".
+func IsLikelyBenignOfflineTarget(target string) bool {
+	ip := target
+	if i := strings.LastIndex(target, ":"); i > 0 {
+		ip = target[:i]
+	}
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return false
+	}
+	orgs := LookupCachedASNOrgsForIP(ip)
+	for _, org := range orgs {
+		if IsCDNOrg(org) {
+			return true
+		}
+		low := strings.ToLower(org)
+		// Major vendor backbones commonly host benign offline
+		// services — they're legit destinations that happen to be
+		// unreachable now. A C2 would more typically sit behind a
+		// redirector or fresh VPS.
+		for _, vendor := range []string{
+			"microsoft", "google", "amazon", "apple", "facebook",
+			"meta platforms", "netflix", "github", "atlassian",
+			"zoom", "slack", "discord", "dropbox", "spotify",
+		} {
+			if strings.Contains(low, vendor) {
+				return true
+			}
+		}
+	}
+	// Hostname-based check — if the PTR/fwd cache has a vendor
+	// suffix, it's a benign destination.
+	host := PTRLookupCached(ip)
+	if host == "" {
+		return false
+	}
+	low := strings.ToLower(host)
+	for _, suf := range []string{
+		".microsoft.com", ".azureedge.net", ".msedge.net",
+		".googleapis.com", ".google.com", ".gstatic.com",
+		".googleusercontent.com", ".amazonaws.com", ".cloudfront.net",
+		".apple.com", ".icloud.com", ".github.com",
+		".githubusercontent.com", ".atlassian.com", ".slack.com",
+		".discord.com", ".zoom.us", ".dropboxapi.com",
+	} {
+		if strings.HasSuffix(low, suf) {
+			return true
+		}
+	}
+	return false
+}
+
 // ASNOrgAlignedWithProcess returns true when any resolved ASN org token overlaps
 // with publisher/path context tokens for the process.
 func ASNOrgAlignedWithProcess(p *ProcessInfo, orgs []string) bool {
