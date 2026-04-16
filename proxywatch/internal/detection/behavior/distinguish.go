@@ -129,7 +129,7 @@ func hasProxyFlagPattern(cmdLower string) bool {
 		" --socks", " --proxy",
 		" -socks", " -proxy",
 		"socat ", "chisel ", "ngrok ", "frpc ", "stunnel ",
-		"gost ", "proxychains ",
+		"gost ", "proxychains ", "proxychains4 ",
 	} {
 		if strings.Contains(cmdLower, flag) {
 			return true
