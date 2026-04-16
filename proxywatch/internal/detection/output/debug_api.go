@@ -203,6 +203,7 @@ func StartDebugAPIServer(addr string) (*http.Server, error) {
 	mux.HandleFunc("/diff/", handleDiff)
 	mux.HandleFunc("/fp-report", handleFPReport)
 	mux.HandleFunc("/fp-report/", handleFPReport)
+	mux.HandleFunc("/fp-report/summary", handleFPReportSummary)
 	mux.HandleFunc("/online/status", handleOnlineStatus)
 	mux.HandleFunc("/online/verdict/", handleOnlineVerdict)
 	mux.HandleFunc("/operator/labels", handleOperatorLabels)
@@ -880,6 +881,96 @@ func handleOperatorLabelByHash(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "GET or DELETE", http.StatusMethodNotAllowed)
 	}
+}
+
+// handleFPReportSummary returns aggregate counts derived from BuildFPReport
+// — per-role, per-suppression-reason, per-signal, per-FP-shape-blocker.
+// Callers building dashboards or alerting on role mix don't have to pull
+// the full entry list and aggregate client-side.
+func handleFPReportSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	debugAPI.mu.RLock()
+	cands := append([]shared.Candidate(nil), debugAPI.latestRaw...)
+	host := debugAPI.hostScope
+	cycle := debugAPI.cycle
+	updated := debugAPI.updatedAt
+	debugAPI.mu.RUnlock()
+
+	entries := BuildFPReport(cands)
+
+	roleCounts := make(map[string]int)
+	stateCounts := make(map[string]int)
+	signalCounts := make(map[string]int)
+	blockerCounts := make(map[string]int)
+	suppressReasonCounts := make(map[string]int)
+	suppressed := 0
+	wouldDemote := 0
+	tier2Preserved := 0
+	strongEvidence := 0
+	activeProxying := 0
+	tunnelingNow := 0
+
+	for i := range entries {
+		e := &entries[i]
+		roleCounts[e.Role]++
+		if e.TunnelingState {
+			tunnelingNow++
+		}
+		if e.WouldSuppress {
+			suppressed++
+			if r := strings.TrimSpace(e.SuppressReason); r != "" {
+				suppressReasonCounts[r]++
+			}
+		}
+		if e.FPShapeWouldDemote {
+			wouldDemote++
+		}
+		if e.Tier2Preserved {
+			tier2Preserved++
+		}
+		if e.StrongEvidence {
+			strongEvidence++
+		}
+		if e.ActiveProxying {
+			activeProxying++
+		}
+		for _, s := range e.Signals {
+			signalCounts[s]++
+		}
+		for _, b := range e.FPShapeBlockers {
+			blockerCounts[b]++
+		}
+	}
+
+	// State histogram over the current candidate set (reused from classifier
+	// state rather than re-derived, so what the user sees on the dashboard
+	// matches what this endpoint reports).
+	for i := range cands {
+		s := shared.CandidateState(cands[i])
+		stateCounts[s]++
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"host":                  host,
+		"cycle":                 cycle,
+		"updated":               updated.Format(time.RFC3339),
+		"total":                 len(entries),
+		"suppressed":            suppressed,
+		"fp_shape_would_demote": wouldDemote,
+		"tier2_preserved":       tier2Preserved,
+		"strong_evidence":       strongEvidence,
+		"active_proxying":       activeProxying,
+		"tunneling_now":         tunnelingNow,
+		"role_counts":           roleCounts,
+		"state_counts":          stateCounts,
+		"signal_counts":         signalCounts,
+		"fp_shape_blockers":     blockerCounts,
+		"suppress_reasons":      suppressReasonCounts,
+	})
 }
 
 // handleMLShadow returns the current shadow-comparison summary — rolling
