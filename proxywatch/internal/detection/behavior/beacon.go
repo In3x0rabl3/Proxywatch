@@ -156,4 +156,45 @@ func EmitBeaconSignals(c *shared.Candidate, addSignal func(string), ctx SignalCo
 	if c.OutShortLived > 0 && c.OutLongLived == 0 && c.OutExternal > 0 {
 		addSignal("beacon-short-lived-callback")
 	}
+
+	// dns-tunnel-shape: shadow-only signal for DNS-channel C2
+	// (Sliver `dns`, Mythic `dns`). Existing rank.go has a coarse
+	// ≥5-conn threshold to port 53 that only catches high-volume DNS
+	// tunneling. This signal covers the complementary patterns
+	// without adding new per-process telemetry:
+	//
+	//  - Non-vendor, non-OS-trusted process
+	//  - Owns a UDP listener on port 53 (DNS tunnel client in
+	//    recursive-forward mode) OR every external TCP connection
+	//    goes to port 53 (TCP-only DNS tunnel shape)
+	//  - Minimum 2 DNS hits so random vendor apps with a single stray
+	//    DNS query don't trip the signal.
+	//
+	// Not in controlSignals / pivotSignals / outboundSignals — ship as
+	// shadow, measure FP rate, graduate later. DNS-resolver daemons
+	// (systemd-resolved, dnsmasq, unbound) are excluded via
+	// IsKnownNetworkActiveProcess.
+	if !shared.IsKnownVendorProcess(p) &&
+		!shared.IsKnownNetworkActiveProcess(p) &&
+		p.SignatureTrust != shared.SignatureTrustTrusted {
+		dnsTCPConns := 0
+		for i := range c.Conns {
+			if c.Conns[i].RemotePort == 53 {
+				dnsTCPConns++
+			}
+		}
+		dnsUDPListener := false
+		for _, ul := range c.UDPListeners {
+			if ul.LocalPort == 53 {
+				dnsUDPListener = true
+				break
+			}
+		}
+		if dnsUDPListener && dnsTCPConns >= 2 {
+			addSignal("dns-tunnel-shape")
+		} else if c.OutExternal >= 2 && dnsTCPConns == c.OutExternal {
+			// 100% of external conns are DNS.
+			addSignal("dns-tunnel-shape")
+		}
+	}
 }
