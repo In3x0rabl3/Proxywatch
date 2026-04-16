@@ -14,6 +14,7 @@ var (
 	ModPsapi                  = windows.NewLazySystemDLL("psapi.dll")
 	ProcGetProcessMemoryInfo  = ModPsapi.NewProc("GetProcessMemoryInfo")
 	ProcEnumProcessModules    = ModPsapi.NewProc("EnumProcessModules")
+	ProcEnumProcessModulesEx  = ModPsapi.NewProc("EnumProcessModulesEx")
 	ProcGetModuleFileNameExW  = ModPsapi.NewProc("GetModuleFileNameExW")
 
 	IPHlpapi           = windows.NewLazySystemDLL("iphlpapi.dll")
@@ -49,6 +50,13 @@ const (
 
 	// TCP states for SYN_SENT detection
 	MIB_TCP_STATE_SYN_SENT = 3
+
+	// EnumProcessModulesEx filter flags — use LIST_MODULES_ALL so
+	// WoW64 (32-bit-on-64-bit) modules are visible too. Relevant for
+	// injected x86 shellcode in 64-bit hosts.
+	LIST_MODULES_32BIT = 0x01
+	LIST_MODULES_64BIT = 0x02
+	LIST_MODULES_ALL   = 0x03
 )
 
 // UnicodeString matches the Windows UNICODE_STRING structure.

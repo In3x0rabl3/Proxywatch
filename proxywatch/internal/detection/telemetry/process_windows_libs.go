@@ -124,11 +124,16 @@ func enumerateNotableModules(h windows.Handle) []string {
 	modules := make([]windows.Handle, capSlots)
 	var cbNeeded uint32
 
-	r, _, _ := ProcEnumProcessModules.Call(
+	// EnumProcessModulesEx with LIST_MODULES_ALL enumerates both 32- and
+	// 64-bit modules, giving visibility into WoW64 processes where
+	// injected x86 shellcode loads x86 DLLs that EnumProcessModules
+	// (the non-Ex variant) would miss.
+	r, _, _ := ProcEnumProcessModulesEx.Call(
 		uintptr(h),
 		uintptr(unsafe.Pointer(&modules[0])),
 		uintptr(capSlots)*uintptr(handleSize),
 		uintptr(unsafe.Pointer(&cbNeeded)),
+		uintptr(LIST_MODULES_ALL),
 	)
 	if r == 0 {
 		return nil
@@ -139,11 +144,12 @@ func enumerateNotableModules(h windows.Handle) []string {
 		// Rare: process has > 512 modules. Grow once and retry.
 		capSlots = uint32(count)
 		modules = make([]windows.Handle, capSlots)
-		r, _, _ = ProcEnumProcessModules.Call(
+		r, _, _ = ProcEnumProcessModulesEx.Call(
 			uintptr(h),
 			uintptr(unsafe.Pointer(&modules[0])),
 			uintptr(capSlots)*uintptr(handleSize),
 			uintptr(unsafe.Pointer(&cbNeeded)),
+			uintptr(LIST_MODULES_ALL),
 		)
 		if r == 0 {
 			return nil
@@ -206,6 +212,21 @@ var notableLibPatternsWindows = []string{
 	"crypto", "ssl", "tls", "wolfssl", "gnutls",
 	"bcrypt", "ncrypt", "schannel", "cng",
 	"nss3", "nspr4",
+	"cryptsp", "cryptdll",
+
+	// HTTP client stacks — catches wininet-based + winhttp-based beacons
+	// (Cobalt Strike HTTP profile, custom .NET implants, legacy
+	// Authenticode-style downloaders). wininet and winhttp both count as
+	// crypto-lib for the static-crypto-likely gate — a process using
+	// either wraps TLS through schannel anyway, but having it visible
+	// lets the beacon fingerprint show HTTP-client-present.
+	"wininet", "winhttp", "urlmon",
+
+	// Auth / SSPI — beacons doing NTLM/Kerberos impersonation commonly
+	// load sspicli / secur32. Visibility helps the injection / pivot
+	// signal family without flipping false on plain browsers.
+	"sspicli", "secur32",
+
 	// Proxy / tunnel / HTTP-client (feeds pivot-has-proxy-lib).
 	"ssh", "proxy", "curl", "socks", "tun",
 	"nghttp", "pcap", "winpcap", "npcap",
