@@ -199,6 +199,7 @@ func StartDebugAPIServer(addr string) (*http.Server, error) {
 	mux.HandleFunc("/candidate/", handleCandidateByPID)
 	mux.HandleFunc("/metrics", handleMetrics)
 	mux.HandleFunc("/metrics/prom", handleMetricsProm)
+	mux.HandleFunc("/self", handleSelf)
 	mux.HandleFunc("/agents", handleAgents)
 	mux.HandleFunc("/agent/", handleAgentScoped)
 	mux.HandleFunc("/diff/", handleDiff)
@@ -308,6 +309,28 @@ func handleCandidateByPID(w http.ResponseWriter, r *http.Request) {
 // monitoring stacks (Prometheus, VictoriaMetrics, Grafana Agent) can
 // scrape ProxyWatch without a translation layer. Zero new counters —
 // just reshapes the same state /metrics exposes in JSON.
+// handleSelf mirrors /agent/<host>/candidates for local (non-server) mode
+// so monitoring tooling can use a stable path regardless of deployment mode.
+// In server mode, redirects to /agents; in local mode, returns the same
+// shape as /candidates with the host field populated.
+func handleSelf(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	debugAPI.mu.RLock()
+	items := debugAPI.latest
+	resp := map[string]interface{}{
+		"host":    debugAPI.hostScope,
+		"cycle":   debugAPI.cycle,
+		"updated": debugAPI.updatedAt.Format(time.RFC3339),
+		"count":   len(items),
+		"items":   items,
+	}
+	debugAPI.mu.RUnlock()
+	writeJSON(w, resp)
+}
+
 func handleMetricsProm(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

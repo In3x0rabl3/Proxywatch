@@ -23,12 +23,12 @@ func TestMatchesSaaSC2(t *testing.T) {
 
 		// Negative — substring-not-suffix, lookalikes, unrelated.
 		{"", false},
-		{"notslack.com", false},                     // not a subdomain of slack.com
-		{"slack.com.attacker.example", false},       // dot-suffix attack — NOT a match
-		{"discord.com.fake-phishing.org", false},    // same pattern
+		{"notslack.com", false},                  // not a subdomain of slack.com
+		{"slack.com.attacker.example", false},    // dot-suffix attack — NOT a match
+		{"discord.com.fake-phishing.org", false}, // same pattern
 		{"example.com", false},
 		{"10.0.0.1", false},
-		{"slack.attacker.example", false},           // reverse direction
+		{"slack.attacker.example", false}, // reverse direction
 	}
 	for _, tc := range cases {
 		if got := matchesSaaSC2(tc.host); got != tc.want {
