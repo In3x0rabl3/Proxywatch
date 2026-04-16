@@ -50,6 +50,20 @@ jobs:
         working-directory: proxywatch
         run: go vet ./...
 
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: proxywatch/go.sum
+      - name: Go test
+        working-directory: proxywatch
+        run: go test ./...
+
   gofmt:
     name: gofmt
     runs-on: ubuntu-latest
