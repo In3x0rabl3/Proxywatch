@@ -153,6 +153,7 @@ See [`docs/detection.md`](docs/detection.md) for the role taxonomy, disambiguati
 | Keystores | `~/.proxywatch/keystores/` |
 | Keystore registry | `~/.proxywatch/keystores.json` |
 | ProxyHound collections | `~/.proxywatch/collections/` |
+| SaaS C2 endpoint override | `~/.proxywatch/saas-endpoints.json` (optional — `{"suffixes":[…],"mode":"merge"\|"replace"}`) |
 | Contour reports | `~/.proxywatch/contour/` |
 | SIEM exports | `~/.proxywatch/siem/` |
 | Whitelist | `~/.proxywatch/whitelist.json` |

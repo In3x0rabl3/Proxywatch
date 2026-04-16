@@ -22,6 +22,34 @@ Before submitting an issue, please do the following:
 
 * Please create an issue with the "enhancement" tag.
 
+### Building and testing locally
+
+```bash
+cd proxywatch
+go build ./...                                    # linux
+GOOS=windows go build ./cmd/proxywatch             # windows cross-compile
+go vet ./...
+go test ./...
+gofmt -l .                                         # should be empty
+```
+
+CI enforces all four on every push to `main` and every PR —
+`.github/workflows/ci.yml`. A failing gate blocks merge.
+
+### Writing tests
+
+Tests live alongside the code in `*_test.go` files. Table-driven
+tests are preferred for pure functions — see
+[`internal/detection/scoring/roles_test.go`](proxywatch/internal/detection/scoring/roles_test.go)
+for the canonical style. Keep test fixtures inline; do not introduce
+a test-data directory unless the fixture genuinely needs file I/O.
+
+New detection signals ship as **shadow-only** (not in
+`controlSignals` / `pivotSignals` / `outboundSignals` maps in
+[`internal/shared/roles.go`](proxywatch/internal/shared/roles.go))
+until the shadow-disagreement feed (`/ml/disagreements` endpoint)
+shows enough real hits vs false positives to justify voting.
+
 ### Submitting a Pull Request
 
 The process described here has several goals:
