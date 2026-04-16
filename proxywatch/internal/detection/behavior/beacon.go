@@ -107,6 +107,12 @@ func EmitBeaconSignals(c *shared.Candidate, addSignal func(string), ctx SignalCo
 		addSignal("beacon-static-crypto-likely")
 	}
 
+	// lots-saas-c2-endpoint: persistent connection to a Slack/Discord/
+	// GitHub/MQTT/Telegram/Dropbox API endpoint from an unknown-vendor
+	// unsigned process. Mythic ships C2 profiles for each of these.
+	// Shadow-only: see behavior/saas.go for the full endpoint list.
+	emitSaaSC2Signal(c, addSignal)
+
 	// beacon-memory-stable: stable low memory footprint over time.
 	if c.OutTotal > 0 {
 		if hist := shared.ProcHistoryByPID[ctx.ScopedPID]; hist != nil && len(hist.MemSamples) >= 5 {
