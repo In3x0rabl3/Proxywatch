@@ -198,6 +198,7 @@ func StartDebugAPIServer(addr string) (*http.Server, error) {
 	mux.HandleFunc("/candidates", handleCandidates)
 	mux.HandleFunc("/candidate/", handleCandidateByPID)
 	mux.HandleFunc("/metrics", handleMetrics)
+	mux.HandleFunc("/metrics/prom", handleMetricsProm)
 	mux.HandleFunc("/agents", handleAgents)
 	mux.HandleFunc("/agent/", handleAgentScoped)
 	mux.HandleFunc("/diff/", handleDiff)
@@ -301,6 +302,85 @@ func handleCandidateByPID(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.NotFound(w, r)
+}
+
+// handleMetricsProm emits Prometheus text-format metrics so standard
+// monitoring stacks (Prometheus, VictoriaMetrics, Grafana Agent) can
+// scrape ProxyWatch without a translation layer. Zero new counters —
+// just reshapes the same state /metrics exposes in JSON.
+func handleMetricsProm(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+
+	roleCounts := make(map[string]int)
+	stateCounts := make(map[string]int)
+	debugAPI.mu.RLock()
+	total := len(debugAPI.latest)
+	cycle := debugAPI.cycle
+	host := debugAPI.hostScope
+	for _, c := range debugAPI.latest {
+		roleCounts[c.Role]++
+		stateCounts[c.State]++
+	}
+	debugAPI.mu.RUnlock()
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# HELP proxywatch_candidates_total Total candidates classified in the current cycle.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_candidates_total gauge\n")
+	fmt.Fprintf(&b, "proxywatch_candidates_total{host=%q} %d\n", host, total)
+
+	fmt.Fprintf(&b, "# HELP proxywatch_cycle Monotonic classifier cycle counter.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_cycle counter\n")
+	fmt.Fprintf(&b, "proxywatch_cycle{host=%q} %d\n", host, cycle)
+
+	fmt.Fprintf(&b, "# HELP proxywatch_candidates_by_role Candidates grouped by assigned role.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_candidates_by_role gauge\n")
+	for role, n := range roleCounts {
+		fmt.Fprintf(&b, "proxywatch_candidates_by_role{host=%q,role=%q} %d\n", host, role, n)
+	}
+
+	fmt.Fprintf(&b, "# HELP proxywatch_candidates_by_state Candidates grouped by display state.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_candidates_by_state gauge\n")
+	for state, n := range stateCounts {
+		fmt.Fprintf(&b, "proxywatch_candidates_by_state{host=%q,state=%q} %d\n", host, state, n)
+	}
+
+	// ML health — single-instance metrics so an alert rule can page on
+	// DEGRADED without scraping /ml/shadow separately.
+	agree, disagree := model.ShadowCounts()
+	shadowTotal := agree + disagree
+	rate := 0.0
+	if shadowTotal > 0 {
+		rate = float64(agree) / float64(shadowTotal)
+	}
+	fmt.Fprintf(&b, "# HELP proxywatch_ml_shadow_agreement_rate Rolling ML-vs-rule agreement rate [0,1].\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_ml_shadow_agreement_rate gauge\n")
+	fmt.Fprintf(&b, "proxywatch_ml_shadow_agreement_rate{host=%q} %f\n", host, rate)
+
+	fmt.Fprintf(&b, "# HELP proxywatch_ml_shadow_total Total ML-vs-rule comparisons in the rolling window.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_ml_shadow_total gauge\n")
+	fmt.Fprintf(&b, "proxywatch_ml_shadow_total{host=%q} %d\n", host, shadowTotal)
+
+	qualified := 0
+	if model.MLQualified() {
+		qualified = 1
+	}
+	fmt.Fprintf(&b, "# HELP proxywatch_ml_qualified 1 when the ML predictor is primary; 0 when shadow.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_ml_qualified gauge\n")
+	fmt.Fprintf(&b, "proxywatch_ml_qualified{host=%q} %d\n", host, qualified)
+
+	demoted := 0
+	if model.MLDemoted() {
+		demoted = 1
+	}
+	fmt.Fprintf(&b, "# HELP proxywatch_ml_demoted 1 when a previously-qualified ML model dropped below the degrade floor.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_ml_demoted gauge\n")
+	fmt.Fprintf(&b, "proxywatch_ml_demoted{host=%q} %d\n", host, demoted)
+
+	_, _ = w.Write([]byte(b.String()))
 }
 
 func handleMetrics(w http.ResponseWriter, r *http.Request) {
