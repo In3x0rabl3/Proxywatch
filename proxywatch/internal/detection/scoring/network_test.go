@@ -148,9 +148,9 @@ func TestOutboundActivity(t *testing.T) {
 		// Different port, same target.
 		{State: "ESTABLISHED", LocalPort: 50004, RemoteAddress: "1.2.3.4", RemotePort: 80},
 		// Skipped paths.
-		{State: "ESTABLISHED", LocalPort: 8080, RemoteAddress: "9.9.9.9", RemotePort: 443},       // listener
-		{State: "ESTABLISHED", LocalPort: 50005, RemoteAddress: "127.0.0.1", RemotePort: 80},     // loopback
-		{State: "ESTABLISHED", LocalPort: 50006, RemoteAddress: "0.0.0.0", RemotePort: 443},      // wildcard
+		{State: "ESTABLISHED", LocalPort: 8080, RemoteAddress: "9.9.9.9", RemotePort: 443},   // listener
+		{State: "ESTABLISHED", LocalPort: 50005, RemoteAddress: "127.0.0.1", RemotePort: 80}, // loopback
+		{State: "ESTABLISHED", LocalPort: 50006, RemoteAddress: "0.0.0.0", RemotePort: 443},  // wildcard
 	}
 	total, targets, distinctPorts, prefixes := OutboundActivity(conns, ports)
 	if total != 4 {
