@@ -434,6 +434,29 @@ func EvaluateVendorFPShape(c *Candidate, threshold int) FPShape {
 			shape.OverrideReason = "vendor-signals:" + strings.Join(vendorTags, ",")
 			reasons = append(reasons, "soft-blocker-override:"+shape.OverrideReason)
 			shape.Reasons = reasons
+			// Structured observability for FP-threshold tuning: every
+			// override fires a single LogInfo with the full vendor-
+			// signal set, soft-blocker set, and process identity. When
+			// PROXYWATCH_LOG_JSON is set these surface as NDJSON lines
+			// consumable by SIEM bridges; otherwise they collect in the
+			// in-memory event log visible to the TUI. Over time the
+			// population of overrides reveals whether
+			// SoftBlockerOverrideMin is tuned correctly per process
+			// class — see Track 7 in the enhancement plan.
+			pid := 0
+			name := ""
+			exePath := ""
+			if c.Proc != nil {
+				pid = c.Proc.Pid
+				name = c.Proc.Name
+				exePath = c.Proc.ExePath
+			}
+			LogInfo("fp-shape-override",
+				"pid=%d name=%s exe=%s vendor_signals=[%s] soft_blockers=[%s]",
+				pid, name, exePath,
+				strings.Join(vendorTags, ","),
+				strings.Join(soft, ","),
+			)
 		} else {
 			// Not enough vendor evidence to waive. Soft blockers win — zero
 			// the score and surface them in Blockers for /fp-report.
