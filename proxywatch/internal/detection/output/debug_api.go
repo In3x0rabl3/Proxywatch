@@ -340,6 +340,10 @@ func handleMetricsProm(w http.ResponseWriter, r *http.Request) {
 
 	roleCounts := make(map[string]int)
 	stateCounts := make(map[string]int)
+	signalCounts := make(map[string]int)
+	tunnelingCount := 0
+	strongEvidenceCount := 0
+	activeProxyingCount := 0
 	debugAPI.mu.RLock()
 	total := len(debugAPI.latest)
 	cycle := debugAPI.cycle
@@ -347,8 +351,61 @@ func handleMetricsProm(w http.ResponseWriter, r *http.Request) {
 	for _, c := range debugAPI.latest {
 		roleCounts[c.Role]++
 		stateCounts[c.State]++
+		for _, sig := range c.Signals {
+			signalCounts[sig]++
+		}
+		if c.StrongEvidence {
+			strongEvidenceCount++
+		}
+		if c.ActiveProxying {
+			activeProxyingCount++
+		}
 	}
+	latestRaw := append([]shared.Candidate(nil), debugAPI.latestRaw...)
 	debugAPI.mu.RUnlock()
+
+	// FP-shape-override counter: how many candidates currently have a
+	// soft-override active. Recomputed on each scrape (O(N) over the
+	// candidate snapshot) — cheap relative to a network RTT, avoids
+	// adding global state for a pure observability read.
+	fpShapeSoftOverrideCount := 0
+	fpShapeWouldDemoteCount := 0
+	for i := range latestRaw {
+		shape := shared.EvaluateVendorFPShape(&latestRaw[i], shared.DefaultFPShapeThreshold)
+		if shape.SoftOverride {
+			fpShapeSoftOverrideCount++
+		}
+		if shape.WouldDemote {
+			fpShapeWouldDemoteCount++
+		}
+		if shared.CandidateState(latestRaw[i]) == "tunneling" {
+			tunnelingCount++
+		}
+	}
+
+	// Operator labels — stable across restarts.
+	labelBenignCount := 0
+	labelMaliciousCount := 0
+	for _, l := range shared.ListOperatorLabels() {
+		switch l.Verdict {
+		case shared.VerdictBenign:
+			labelBenignCount++
+		case shared.VerdictMalicious:
+			labelMaliciousCount++
+		}
+	}
+
+	// Agent-store state (server mode only).
+	agentsConnected := 0
+	agentsTotal := 0
+	if store := currentAgentStore(); store != nil {
+		for _, info := range store.HostList() {
+			agentsTotal++
+			if info.Connected {
+				agentsConnected++
+			}
+		}
+	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "# HELP proxywatch_candidates_total Total candidates classified in the current cycle.\n")
@@ -402,6 +459,51 @@ func handleMetricsProm(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "# HELP proxywatch_ml_demoted 1 when a previously-qualified ML model dropped below the degrade floor.\n")
 	fmt.Fprintf(&b, "# TYPE proxywatch_ml_demoted gauge\n")
 	fmt.Fprintf(&b, "proxywatch_ml_demoted{host=%q} %d\n", host, demoted)
+
+	// Per-signal histogram — useful for alert rules that watch shadow
+	// signal rates (e.g. injection-rwx-external spikes, cdn-fronted-c2-
+	// candidate prevalence) without scraping /candidates end-to-end.
+	fmt.Fprintf(&b, "# HELP proxywatch_signal_total Candidates emitting each signal in the current cycle.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_signal_total gauge\n")
+	for sig, n := range signalCounts {
+		fmt.Fprintf(&b, "proxywatch_signal_total{host=%q,signal=%q} %d\n", host, sig, n)
+	}
+
+	fmt.Fprintf(&b, "# HELP proxywatch_candidates_tunneling Candidates currently classified as tunneling.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_candidates_tunneling gauge\n")
+	fmt.Fprintf(&b, "proxywatch_candidates_tunneling{host=%q} %d\n", host, tunnelingCount)
+
+	fmt.Fprintf(&b, "# HELP proxywatch_candidates_strong_evidence Candidates with StrongEvidence set.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_candidates_strong_evidence gauge\n")
+	fmt.Fprintf(&b, "proxywatch_candidates_strong_evidence{host=%q} %d\n", host, strongEvidenceCount)
+
+	fmt.Fprintf(&b, "# HELP proxywatch_candidates_active_proxying Candidates observed actively relaying.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_candidates_active_proxying gauge\n")
+	fmt.Fprintf(&b, "proxywatch_candidates_active_proxying{host=%q} %d\n", host, activeProxyingCount)
+
+	// FP-shape override instrumentation — Track 7: detect whether the
+	// soft-override threshold is firing more often than expected (sign
+	// that the vendor-signal bar is too low).
+	fmt.Fprintf(&b, "# HELP proxywatch_fp_shape_soft_override_total Candidates with an active FP-shape soft override.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_fp_shape_soft_override_total gauge\n")
+	fmt.Fprintf(&b, "proxywatch_fp_shape_soft_override_total{host=%q} %d\n", host, fpShapeSoftOverrideCount)
+
+	fmt.Fprintf(&b, "# HELP proxywatch_fp_shape_would_demote_total Candidates the FP-shape rule would demote.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_fp_shape_would_demote_total gauge\n")
+	fmt.Fprintf(&b, "proxywatch_fp_shape_would_demote_total{host=%q} %d\n", host, fpShapeWouldDemoteCount)
+
+	fmt.Fprintf(&b, "# HELP proxywatch_operator_labels Operator-applied labels keyed by verdict.\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_operator_labels gauge\n")
+	fmt.Fprintf(&b, "proxywatch_operator_labels{host=%q,verdict=%q} %d\n", host, shared.VerdictBenign, labelBenignCount)
+	fmt.Fprintf(&b, "proxywatch_operator_labels{host=%q,verdict=%q} %d\n", host, shared.VerdictMalicious, labelMaliciousCount)
+
+	fmt.Fprintf(&b, "# HELP proxywatch_agents_connected Connected agents (server mode only; 0 in local mode).\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_agents_connected gauge\n")
+	fmt.Fprintf(&b, "proxywatch_agents_connected{host=%q} %d\n", host, agentsConnected)
+
+	fmt.Fprintf(&b, "# HELP proxywatch_agents_known_total All agents the server has ever seen (server mode only).\n")
+	fmt.Fprintf(&b, "# TYPE proxywatch_agents_known_total gauge\n")
+	fmt.Fprintf(&b, "proxywatch_agents_known_total{host=%q} %d\n", host, agentsTotal)
 
 	_, _ = w.Write([]byte(b.String()))
 }
