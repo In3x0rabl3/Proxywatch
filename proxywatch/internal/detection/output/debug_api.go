@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"proxywatch/internal/alerts"
 	"proxywatch/internal/detection/model"
 	"proxywatch/internal/shared"
 )
@@ -150,6 +151,12 @@ func UpdateDebugAPISnapshot(cycle uint64, hostScope string, scored []shared.Cand
 	debugAPI.hostScope = hostScope
 	debugAPI.updatedAt = time.Now().UTC()
 	debugAPI.mu.Unlock()
+
+	// Fire outbound webhook alerts for freshly promoted malicious
+	// candidates. No-op when PROXYWATCH_WEBHOOK_URL is unset. Must run
+	// outside the debugAPI lock — the alerts package dispatches POSTs
+	// asynchronously but acquires its own mutex for the dedup map.
+	alerts.ScanAndFire(hostScope, scored)
 }
 
 // AgentStoreProvider is the read-only interface the debug API uses to inspect
