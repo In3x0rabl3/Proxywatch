@@ -209,7 +209,86 @@ func HandleInspectKey(app *shared.AppState, tev *tcell.EventKey) bool {
 		}
 	}
 
+	// L / M / W — operator-label + whitelist shortcuts (plan Track 10).
+	// L tags the inspected process as benign, M tags it malicious; both
+	// are keyed by SHA256 so the label follows the binary across
+	// process restarts. W adds the process to the whitelist and records
+	// a model.FeedbackEntry so the learner sees the signal. All three
+	// require a current selection; messaging goes through app.LastError.
+	if tev.Rune() == 'l' || tev.Rune() == 'L' {
+		LabelInspectedCandidate(app, shared.VerdictBenign)
+	}
+	if tev.Rune() == 'm' || tev.Rune() == 'M' {
+		LabelInspectedCandidate(app, shared.VerdictMalicious)
+	}
+	if tev.Rune() == 'w' || tev.Rune() == 'W' {
+		WhitelistInspectedCandidate(app)
+	}
+
 	return false
+}
+
+// LabelInspectedCandidate applies an operator verdict to the SHA256 of
+// the currently-inspected candidate. Safe when no candidate is
+// selected or the executable has no SHA256 yet (first-observation
+// race — hashing is async).
+func LabelInspectedCandidate(app *shared.AppState, verdict string) {
+	cand := findInspectedCandidate(app)
+	if cand == nil || cand.Proc == nil {
+		app.LastError = "no candidate selected"
+		return
+	}
+	sha := strings.TrimSpace(cand.Proc.SHA256)
+	if sha == "" {
+		app.LastError = "SHA256 not yet computed for " + cand.Proc.Name + " — try again in a second"
+		return
+	}
+	reason := "operator TUI " + verdict
+	if err := shared.SetOperatorLabel(sha, verdict, reason); err != nil {
+		app.LastError = "label failed: " + err.Error()
+		return
+	}
+	app.LastError = "Operator label " + verdict + " → " + cand.Proc.Name
+}
+
+// WhitelistInspectedCandidate adds the inspected candidate to the
+// whitelist file and records the action as learner feedback, same as
+// the dashboard's W shortcut but sourced from the InspectKey.
+func WhitelistInspectedCandidate(app *shared.AppState) {
+	if app.Whitelist == nil {
+		app.LastError = "whitelist not configured"
+		return
+	}
+	cand := findInspectedCandidate(app)
+	if cand == nil || cand.Proc == nil {
+		app.LastError = "no candidate selected to whitelist"
+		return
+	}
+	if _, err := app.Whitelist.AddCandidate(*cand); err != nil {
+		app.LastError = "whitelist failed: " + err.Error()
+		return
+	}
+	model.RecordFeedback(model.FeedbackEntry{
+		Timestamp:   time.Now().UTC(),
+		Action:      "whitelist",
+		ProcessKey:  detection.ProcessBehaviorKey(cand),
+		ProcessName: cand.Proc.Name,
+		Role:        cand.Role,
+		Score:       cand.Score,
+		Signals:     cand.Signals,
+	})
+	app.LastError = "Whitelisted " + cand.Proc.Name
+}
+
+// findInspectedCandidate returns a pointer into app.Candidates for the
+// current InspectKey, or nil if the key is unknown.
+func findInspectedCandidate(app *shared.AppState) *shared.Candidate {
+	for i := range app.Candidates {
+		if shared.CandidateKey(app.Candidates[i]) == app.InspectKey {
+			return &app.Candidates[i]
+		}
+	}
+	return nil
 }
 
 func inspectorMenuOptions() []string {
@@ -218,11 +297,15 @@ func inspectorMenuOptions() []string {
 		"UP/DOWN      Scroll details",
 		"TAB/BTAB     Jump sections",
 		"LEFT/RIGHT   Cycle workflows",
+		"p            Jump to parent process",
 		"",
 		"[Actions]",
 		"x            Toggle explain view",
 		"k            Kill process (k then y)",
 		"t            Cycle training label",
+		"l            Mark operator-label benign (by SHA256)",
+		"m            Mark operator-label malicious (by SHA256)",
+		"w            Whitelist this process",
 		"",
 		"?            Close this menu",
 		"ESC          Back to dashboard",
