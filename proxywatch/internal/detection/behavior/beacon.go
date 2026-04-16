@@ -83,6 +83,30 @@ func EmitBeaconSignals(c *shared.Candidate, addSignal func(string), ctx SignalCo
 		addSignal("beacon-crypto-lib-loaded")
 	}
 
+	// beacon-static-crypto-likely: external traffic (typically HTTPS) with
+	// ZERO dynamic crypto libraries loaded. Classic fingerprint of
+	// statically-linked Go / Rust / Nim / Zig beacons — Sliver, Merlin,
+	// Poseidon, Thanatos, Nimplant, Freyja all bundle crypto/tls into the
+	// binary instead of linking schannel / bcrypt / libssl. Legitimate
+	// Windows apps making HTTPS calls go through one of those system DLLs
+	// and fire beacon-crypto-lib-loaded; an unknown-vendor, unsigned
+	// process with external traffic and no crypto DLLs is suspicious.
+	//
+	// Gated on:
+	//   1. OutExternal > 0 — external traffic exists.
+	//   2. !HasCryptoLib — no schannel/bcrypt/openssl etc. observed.
+	//   3. !IsKnownVendorProcess — known-vendor Electron / Slack / Teams
+	//      / VS Code bundle their own crypto but are NOT a threat.
+	//   4. SignatureTrust != trusted — OS-signed binaries from
+	//      unrecognized vendors are also excluded. Only unsigned or
+	//      distrusted binaries trip the signal.
+	if c.OutExternal > 0 &&
+		!cs.HasCryptoLib &&
+		!shared.IsKnownVendorProcess(p) &&
+		p.SignatureTrust != shared.SignatureTrustTrusted {
+		addSignal("beacon-static-crypto-likely")
+	}
+
 	// beacon-memory-stable: stable low memory footprint over time.
 	if c.OutTotal > 0 {
 		if hist := shared.ProcHistoryByPID[ctx.ScopedPID]; hist != nil && len(hist.MemSamples) >= 5 {
