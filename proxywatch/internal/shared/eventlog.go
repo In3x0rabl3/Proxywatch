@@ -4,11 +4,30 @@
 package shared
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// jsonLoggingEnabled is set once at init based on PROXYWATCH_LOG_JSON.
+// When true, addEvent also emits each event as a single-line JSON
+// object to stderr — one record per line, NDJSON — for SIEM ingestion.
+// Never enable this while running the TUI (the stderr writes would
+// corrupt the screen). Intended for headless / service-mode deployments
+// where the process stdout/stderr is being consumed by a log collector.
+var jsonLoggingEnabled atomic.Bool
+
+func init() {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("PROXYWATCH_LOG_JSON")))
+	switch raw {
+	case "1", "true", "on", "yes", "enable", "enabled":
+		jsonLoggingEnabled.Store(true)
+	}
+}
 
 // TrainingBufferSizeAtomic is updated by the classifier and read by the training dashboard.
 // Uses atomic to avoid lock contention between scoring goroutine and UI.
@@ -118,19 +137,56 @@ func LogError(source, format string, args ...interface{}) {
 }
 
 func addEvent(sev EventSeverity, source, msg string) {
-	eventLogMu.Lock()
-	defer eventLogMu.Unlock()
-
 	ev := LogEvent{
 		Time:     time.Now().UTC(),
 		Severity: sev,
 		Source:   source,
 		Message:  msg,
 	}
+
+	eventLogMu.Lock()
 	eventLog = append(eventLog, ev)
 	if len(eventLog) > maxEventLogSize {
 		eventLog = eventLog[len(eventLog)-maxEventLogSize:]
 	}
+	eventLogMu.Unlock()
+
+	// Optional NDJSON emission to stderr for SIEM ingestion. Gated on
+	// PROXYWATCH_LOG_JSON so the TUI default stays quiet. The lock is
+	// released before the write so a slow stderr (e.g. blocked pipe)
+	// doesn't stall classification.
+	if jsonLoggingEnabled.Load() {
+		emitEventJSON(ev)
+	}
+}
+
+// severityString maps the internal enum to lowercase labels matching
+// common log-aggregator conventions (info / warn / error).
+func severityString(s EventSeverity) string {
+	switch s {
+	case EventInfo:
+		return "info"
+	case EventWarn:
+		return "warn"
+	case EventError:
+		return "error"
+	}
+	return "info"
+}
+
+func emitEventJSON(ev LogEvent) {
+	record := map[string]string{
+		"ts":     ev.Time.Format(time.RFC3339Nano),
+		"level":  severityString(ev.Severity),
+		"source": ev.Source,
+		"msg":    ev.Message,
+	}
+	b, err := json.Marshal(record)
+	if err != nil {
+		return
+	}
+	b = append(b, '\n')
+	_, _ = os.Stderr.Write(b)
 }
 
 // EventLogSnapshot returns a copy of the recent event log.
