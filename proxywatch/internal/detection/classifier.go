@@ -249,7 +249,25 @@ func Classify(
 						hist.LastRole = c.Role
 
 						// Maturity tracking.
-						model.RecordShadowComparison(result.TopRole == ruleRole)
+						agree := result.TopRole == ruleRole
+						model.RecordShadowComparison(agree)
+						if !agree {
+							// Capture the full disagreement context for the
+							// /ml/disagreements debug endpoint so operators
+							// can tune the model from the actual population
+							// without tailing logs or waiting for retrain.
+							entry := model.ShadowDisagreement{
+								PID:          c.Proc.Pid,
+								Host:         c.Host,
+								Name:         c.Proc.Name,
+								ExePath:      c.Proc.ExePath,
+								SHA256:       c.Proc.SHA256,
+								RuleRole:     ruleRole,
+								MLRole:       result.TopRole,
+								MLConfidence: result.TopProb,
+							}
+							model.RecordShadowDisagreement(entry)
+						}
 						committed := ""
 						if profile != nil {
 							committed = profile.ExperienceLastRole

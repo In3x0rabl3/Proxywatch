@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"proxywatch/internal/detection/model"
 	"proxywatch/internal/shared"
 )
 
@@ -207,6 +208,8 @@ func StartDebugAPIServer(addr string) (*http.Server, error) {
 	mux.HandleFunc("/operator/labels", handleOperatorLabels)
 	mux.HandleFunc("/operator/label", handleOperatorLabel)
 	mux.HandleFunc("/operator/label/", handleOperatorLabelByHash)
+	mux.HandleFunc("/ml/disagreements", handleMLDisagreements)
+	mux.HandleFunc("/ml/shadow", handleMLShadow)
 	registerSIEMDebugRoutes(mux)
 
 	srv := &http.Server{
@@ -877,6 +880,49 @@ func handleOperatorLabelByHash(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "GET or DELETE", http.StatusMethodNotAllowed)
 	}
+}
+
+// handleMLShadow returns the current shadow-comparison summary — rolling
+// agreement rate, qualify / degrade thresholds, and the demoted flag.
+// Useful for operators tracking ML health without opening the TUI.
+func handleMLShadow(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	agree, disagree := model.ShadowCounts()
+	total := agree + disagree
+	rate := 0.0
+	if total > 0 {
+		rate = float64(agree) / float64(total)
+	}
+	writeJSON(w, map[string]interface{}{
+		"agree":               agree,
+		"disagree":            disagree,
+		"total":               total,
+		"agreement_rate":      rate,
+		"qualified":           model.MLQualified(),
+		"demoted":             model.MLDemoted(),
+		"qualify_threshold":   model.ShadowQualifyAgreement,
+		"qualify_predictions": model.ShadowQualifyPredictions,
+		"degrade_floor":       model.ShadowDegradeFloor,
+	})
+}
+
+// handleMLDisagreements returns the last N ML-vs-rule disagreements
+// captured by RecordShadowDisagreement, in chronological order (oldest
+// first). Operators use this to tune the model by inspecting the
+// actual disagreement population instead of tailing logs.
+func handleMLDisagreements(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	entries := model.ShadowDisagreements()
+	writeJSON(w, map[string]interface{}{
+		"count":   len(entries),
+		"entries": entries,
+	})
 }
 
 func writeNotServerMode(w http.ResponseWriter) {

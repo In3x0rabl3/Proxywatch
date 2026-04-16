@@ -1,6 +1,7 @@
 package model
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -182,6 +183,66 @@ func RecordShadowComparison(agree bool) {
 		shadowAgree.Store(a / 2)
 		shadowDisagree.Store(d / 2)
 	}
+}
+
+// ShadowDisagreement is a single captured event where the ML predictor
+// disagreed with the rule engine's verdict. Surfaced via the
+// /ml/disagreements debug API so operators can tune the model from the
+// actual disagreement population without needing to tail logs.
+type ShadowDisagreement struct {
+	Timestamp    time.Time `json:"timestamp"`
+	Host         string    `json:"host"`
+	PID          int       `json:"pid"`
+	Name         string    `json:"name"`
+	ExePath      string    `json:"exe_path,omitempty"`
+	SHA256       string    `json:"sha256,omitempty"`
+	RuleRole     string    `json:"rule_role"`
+	MLRole       string    `json:"ml_role"`
+	MLConfidence float64   `json:"ml_confidence"`
+}
+
+const shadowDisagreementBufferSize = 100
+
+var (
+	shadowDisagreementsMu  sync.Mutex
+	shadowDisagreementsBuf [shadowDisagreementBufferSize]ShadowDisagreement
+	shadowDisagreementsN   int // next write index (wraps)
+	shadowDisagreementsLen int // how many valid entries (≤ buffer size)
+)
+
+// RecordShadowDisagreement captures a single ML-vs-rule disagreement for
+// the /ml/disagreements debug endpoint. Ring buffer of the last 100 —
+// cheap to call from the hot path, and the snapshot getter returns a
+// copy so callers don't hold the lock while they read.
+func RecordShadowDisagreement(d ShadowDisagreement) {
+	if d.Timestamp.IsZero() {
+		d.Timestamp = time.Now().UTC()
+	}
+	shadowDisagreementsMu.Lock()
+	shadowDisagreementsBuf[shadowDisagreementsN] = d
+	shadowDisagreementsN = (shadowDisagreementsN + 1) % shadowDisagreementBufferSize
+	if shadowDisagreementsLen < shadowDisagreementBufferSize {
+		shadowDisagreementsLen++
+	}
+	shadowDisagreementsMu.Unlock()
+}
+
+// ShadowDisagreements returns a snapshot of up to the last 100 ML-vs-rule
+// disagreements in chronological order (oldest first).
+func ShadowDisagreements() []ShadowDisagreement {
+	shadowDisagreementsMu.Lock()
+	defer shadowDisagreementsMu.Unlock()
+	if shadowDisagreementsLen == 0 {
+		return nil
+	}
+	out := make([]ShadowDisagreement, shadowDisagreementsLen)
+	// The ring buffer may have wrapped. Walk from the oldest entry
+	// forward so the caller sees chronological order.
+	start := (shadowDisagreementsN - shadowDisagreementsLen + shadowDisagreementBufferSize) % shadowDisagreementBufferSize
+	for i := 0; i < shadowDisagreementsLen; i++ {
+		out[i] = shadowDisagreementsBuf[(start+i)%shadowDisagreementBufferSize]
+	}
+	return out
 }
 
 // ShadowAgreementRate returns the fraction of predictions where ML agrees with rules.
