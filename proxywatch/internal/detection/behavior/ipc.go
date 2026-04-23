@@ -51,7 +51,26 @@ func emitRichLocalIPCSignal(c *shared.Candidate, addSignal func(string)) {
 			loopbackFlows++
 		}
 	}
-	if loopbackFlows < 2 {
+
+	// Two firing shapes:
+	//
+	//   a) listeners >= 2 AND flows >= 2 — classic Electron helper
+	//      mesh actively servicing multiple clients right now
+	//      (Zoom + helpers, VS Code + LSPs).
+	//   b) listeners >= 3 AND flows >= 1 — idle-between-polls shape
+	//      common to Electron apps like CloudSync that hold three
+	//      or more bound loopback ports but only have one active
+	//      flow between polling bursts. The >= 3 listener bar keeps
+	//      the shape tight enough that trivial two-socket implant
+	//      impersonation still fails; the flow requirement ensures
+	//      the listeners are alive and servicing real clients
+	//      rather than being dummy sockets.
+	switch {
+	case loopbackFlows >= 2:
+		// path (a) — classic.
+	case loopbackListeners >= 3 && loopbackFlows >= 1:
+		// path (b) — idle helper mesh.
+	default:
 		return
 	}
 

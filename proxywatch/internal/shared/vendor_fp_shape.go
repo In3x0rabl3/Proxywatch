@@ -595,9 +595,26 @@ func ApplyVendorIPCRescue(c *Candidate) bool {
 		return false
 	}
 
-	// Count additional independent identity signals beyond the
-	// baseline (signed + publisher + authenticode-or-trusted-path).
+	// Count independent identity signals. Each entry here is a
+	// distinct verification source. AuthenticodeOCSPSeen (OCSP-
+	// verified crypto chain from Microsoft's CA) and
+	// IsLikelyBenignControlClient (trusted install-path convention —
+	// Program Files, /usr/bin, /Applications) are deliberately
+	// counted here even though one-of-the-two is also a gate above:
+	// the gate is "proceed when at least one verification source
+	// exists"; the count is "how many independent proofs converge."
+	// On Windows, OCSP + Program Files install are two genuinely
+	// independent verification systems, and counting both reflects
+	// the actual identity-convergence picture rather than forcing
+	// Windows binaries to acquire Linux-shaped evidence (PkgOwned
+	// etc.) they structurally cannot have.
 	identitySignals := 0
+	if c.Proc.AuthenticodeOCSPSeen {
+		identitySignals++
+	}
+	if IsLikelyBenignControlClient(c.Proc) {
+		identitySignals++
+	}
 	if c.Proc.PublisherDNSAligned {
 		identitySignals++
 	}
