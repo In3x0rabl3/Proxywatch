@@ -44,6 +44,8 @@ func Collect() (*shared.Snapshot, error) {
 	}
 	procs = mergeProcessMaps(preProcs, procs)
 
+	pipes := collectUnixSocketsDarwin()
+
 	return &shared.Snapshot{
 		Timestamp:     time.Now().UTC(),
 		Processes:     procs,
@@ -52,7 +54,7 @@ func Collect() (*shared.Snapshot, error) {
 		UDPListeners:  udpListeners,
 		RawConns:      nil,
 		RawSocketPIDs: map[int]bool{},
-		NamedPipes:    nil,
+		NamedPipes:    pipes,
 	}, nil
 }
 
@@ -223,6 +225,77 @@ func KillProcess(pid int) error {
 		return fmt.Errorf("invalid pid: %d", pid)
 	}
 	return syscall.Kill(pid, syscall.SIGKILL)
+}
+
+// collectUnixSocketsDarwin enumerates Unix-domain-socket handles
+// held by each process via `lsof -nP -U -F pn` (bounded 5s). lsof's
+// -U flag filters to unix-family sockets; they're the macOS analogue
+// of the Linux named-pipe / Windows-named-pipe set that the
+// classifier feeds into pivot-named-pipe-c2-pattern and
+// listener-named-pipe-server signals.
+//
+// The 'n' field carries the socket path (e.g. "/tmp/foo.sock") for
+// named bindings and "->0x..." for anonymous pairs. Anonymous pairs
+// show up extensively on macOS (launchd IPC, XPC bootstrap, mach
+// port helpers) and are too noisy to feed into pattern-matching, so
+// we filter those out and keep only path-bound sockets — the shape
+// that matches both legitimate SMB/Samba equivalents and C2 pipe
+// abuse.
+func collectUnixSocketsDarwin() []shared.NamedPipeInfo {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "lsof", "-nP", "-U", "-F", "pn")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	out, err := cmd.Output()
+	if err != nil && len(out) == 0 {
+		return nil
+	}
+
+	var (
+		pipes  []shared.NamedPipeInfo
+		curPID int
+		seen   = map[string]struct{}{}
+	)
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 {
+			continue
+		}
+		tag := line[0]
+		val := line[1:]
+		switch tag {
+		case 'p':
+			if pid, perr := strconv.Atoi(strings.TrimSpace(val)); perr == nil {
+				curPID = pid
+			}
+		case 'n':
+			name := strings.TrimSpace(val)
+			if name == "" {
+				continue
+			}
+			// Anonymous pair endpoints look like "->0x...". Drop
+			// those — they have no operator-meaningful name and
+			// flood the pipe list.
+			if strings.HasPrefix(name, "->") {
+				continue
+			}
+			// Dedup per-(pid|name) so the same socket reported
+			// from multiple fd entries doesn't inflate the list.
+			dedup := strconv.Itoa(curPID) + "|" + name
+			if _, dup := seen[dedup]; dup {
+				continue
+			}
+			seen[dedup] = struct{}{}
+			pipes = append(pipes, shared.NamedPipeInfo{
+				Pid:      curPID,
+				PipeName: name,
+			})
+		}
+	}
+	return pipes
 }
 
 // mergeProcessMaps merges two process-map snapshots taken moments

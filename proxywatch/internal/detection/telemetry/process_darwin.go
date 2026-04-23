@@ -4,8 +4,10 @@ package telemetry
 
 import (
 	"bytes"
+	"debug/macho"
 	"encoding/binary"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -81,6 +83,18 @@ func GetProcessInfoMap() (map[int]*shared.ProcessInfo, error) {
 		if exe, cmdline, err := readProcArgs2Darwin(pid); err == nil {
 			pi.ExePath = exe
 			pi.CmdLine = cmdline
+		}
+
+		// LoadedLibs — Mach-O LC_LOAD_DYLIB parse of the executable
+		// image. Only observes static dependencies (runtime-loaded
+		// frameworks via dlopen won't show up), but that's enough to
+		// feed beacon-crypto-lib-loaded for the common case where a
+		// vendor app links OpenSSL / libcurl / libssh directly. A
+		// statically-linked Go beacon will emit an empty list here —
+		// which the classifier's beacon-static-crypto-likely signal
+		// uses as positive evidence.
+		if pi.ExePath != "" {
+			pi.LoadedLibs = readMachoDylibs(pi.ExePath)
 		}
 
 		// Signature trust + publisher via shared cache. The sync path
@@ -220,4 +234,107 @@ func darwinProcStatus(s int8) string {
 		return "Zombie"
 	}
 	return ""
+}
+
+// notableLibPatternsDarwin mirrors notableLibPatternsWindows +
+// notableLibPatterns (linux) for macOS dylib naming. Apple ships TLS
+// primitives under LibreSSL (libssl / libcrypto variants), so we keep
+// the cross-platform keywords plus macOS-specific framework names.
+var notableLibPatternsDarwin = []string{
+	// Crypto / TLS — feeds beacon-crypto-lib-loaded.
+	"libssl", "libcrypto", "libssh", "libgnutls", "libwolfssl",
+	"libnss3", "libnspr4",
+	"security.framework", "securityfoundation",
+	"commoncrypto",
+	// HTTP client stacks.
+	"libcurl", "libnghttp",
+	// Proxy / tunnel / packet-capture — feeds pivot-proxy-lib-loaded.
+	"libproxy", "libsocks", "libtun", "libpcap", "libnet",
+}
+
+// readMachoDylibs opens the executable and returns a deduplicated
+// list of notable LC_LOAD_DYLIB entries. Pure-Go via debug/macho;
+// handles both thin (single-arch) and fat (universal) binaries. A
+// parse failure returns nil so callers can treat it as "no evidence"
+// without surfacing errors up the classifier stack.
+//
+// Limitations: static deps only. A runtime dlopen("libsomething.dylib")
+// won't show up. That's acceptable — the classifier's static-crypto-
+// likely signal specifically targets beacons that avoid linking crypto
+// DLLs/dylibs (Go's crypto/tls, Rust's rustls, Nim's stdlib) and fires
+// positively when the dylib list is empty.
+func readMachoDylibs(exePath string) []string {
+	if exePath == "" {
+		return nil
+	}
+
+	// Try thin first; fall back to fat (universal) binary.
+	if libs := readMachoDylibsThin(exePath); libs != nil {
+		return libs
+	}
+	return readMachoDylibsFat(exePath)
+}
+
+func readMachoDylibsThin(exePath string) []string {
+	f, err := macho.Open(exePath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	libs, lerr := f.ImportedLibraries()
+	if lerr != nil {
+		return nil
+	}
+	return filterMachoDylibs(libs)
+}
+
+func readMachoDylibsFat(exePath string) []string {
+	f, err := macho.OpenFat(exePath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	if len(f.Arches) == 0 {
+		return nil
+	}
+	// All archs of a universal binary link the same libs in
+	// practice — read from the first arch.
+	libs, lerr := f.Arches[0].ImportedLibraries()
+	if lerr != nil {
+		return nil
+	}
+	return filterMachoDylibs(libs)
+}
+
+// filterMachoDylibs keeps only the notable-pattern matches (so the
+// classifier's HasCryptoLib / HasProxyLib computations have a
+// manageable slice to scan), de-duplicates, and caps at 20 entries
+// to match Linux / Windows behavior.
+func filterMachoDylibs(libs []string) []string {
+	if len(libs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(libs))
+	out := make([]string, 0, 8)
+	for _, full := range libs {
+		if full == "" {
+			continue
+		}
+		base := strings.ToLower(filepath.Base(full))
+		for _, pat := range notableLibPatternsDarwin {
+			if !strings.Contains(base, pat) {
+				continue
+			}
+			if _, dup := seen[base]; dup {
+				break
+			}
+			seen[base] = struct{}{}
+			out = append(out, base)
+			break
+		}
+		if len(out) >= 20 {
+			break
+		}
+	}
+	return out
 }
