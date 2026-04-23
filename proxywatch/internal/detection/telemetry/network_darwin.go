@@ -193,17 +193,28 @@ func splitLsofEndpoints(name string) (local, remote string, hasRemote bool) {
 	return strings.TrimSpace(name), "", false
 }
 
-// parseLsofEndpoint parses "addr:port" (IPv4/IPv6). IPv6 addresses
-// from lsof are bracket-free — the separator is the last colon.
-// Wildcards ("*") are returned as-is; callers compare via
-// shared.IsWildcardIP which handles both "*" and "0.0.0.0".
+// parseLsofEndpoint parses "addr:port". Supports IPv4, IPv6 (both
+// bare "fe80::1:443" and bracketed "[::1]:443" forms), and the "*"
+// wildcard. Returns ("", 0) for empty input so callers can treat
+// parse failure as "absent". The last colon splits host/port when
+// the address isn't bracketed.
 func parseLsofEndpoint(s string) (string, int) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return "", 0
 	}
+	// Bracketed IPv6: "[::1]:443". Split at "]:" cleanly.
+	if strings.HasPrefix(s, "[") {
+		if j := strings.Index(s, "]:"); j > 0 {
+			addr := strings.TrimPrefix(s[:j], "[")
+			port, _ := strconv.Atoi(s[j+2:])
+			return addr, port
+		}
+		// Malformed bracket form — return as-is to avoid losing data.
+		return strings.Trim(s, "[]"), 0
+	}
 	// Last colon splits host/port for both IPv4 ("1.2.3.4:443") and
-	// IPv6 ("fe80::1:443").
+	// IPv6 without brackets ("fe80::1:443").
 	idx := strings.LastIndex(s, ":")
 	if idx < 0 {
 		return s, 0

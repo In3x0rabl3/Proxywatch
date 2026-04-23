@@ -3,13 +3,17 @@
 package telemetry
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"debug/macho"
 	"encoding/binary"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -45,6 +49,12 @@ func GetProcessInfoMap() (map[int]*shared.ProcessInfo, error) {
 		return out, err
 	}
 
+	// One-shot thread-count lookup across all PIDs — much cheaper
+	// than forking per-PID. Best-effort; a failed `ps` call leaves
+	// ThreadCount at zero, which the classifier treats as "unknown"
+	// (the beacon-thread-minimal signal gates on > 0 && <= 3).
+	threadCounts := readDarwinThreadCounts()
+
 	userCache := make(map[uint32]string)
 	lookupUser := func(uid uint32) string {
 		if name, ok := userCache[uid]; ok {
@@ -74,6 +84,9 @@ func GetProcessInfoMap() (map[int]*shared.ProcessInfo, error) {
 		}
 		if sec := kp.Proc.P_starttime.Sec; sec > 0 {
 			pi.StartTime = time.Unix(int64(sec), int64(kp.Proc.P_starttime.Usec)*1000).UTC()
+		}
+		if n, ok := threadCounts[pid]; ok {
+			pi.ThreadCount = n
 		}
 
 		// ExePath + CmdLine come from KERN_PROCARGS2. Best-effort: a
@@ -161,11 +174,23 @@ func readProcArgs2Darwin(pid int) (string, string, error) {
 		return "", "", nil
 	}
 	argc := int(binary.LittleEndian.Uint32(raw[:4]))
+	// Sanity: real argc is typically 1-50. A value over 4096 is
+	// corrupt sysctl data (stale / racy read during process exit).
+	// Clamp to a sane ceiling so we don't pre-allocate gigabytes if
+	// argc comes back as 0x7fffffff.
+	if argc < 0 || argc > 4096 {
+		return "", "", nil
+	}
 	rest := raw[4:]
 
-	// First null-terminated string after argc is the exec path. There
-	// may be NUL padding between the path and the first argv entry.
-	end := bytes.IndexByte(rest, 0)
+	// First null-terminated string after argc is the exec path.
+	// Cap the search window to avoid scanning pathologically large
+	// buffers; POSIX PATH_MAX on darwin is 1024, so 4KB is plenty.
+	searchLimit := len(rest)
+	if searchLimit > 4096 {
+		searchLimit = 4096
+	}
+	end := bytes.IndexByte(rest[:searchLimit], 0)
 	if end < 0 {
 		return "", "", nil
 	}
@@ -234,6 +259,51 @@ func darwinProcStatus(s int8) string {
 		return "Zombie"
 	}
 	return ""
+}
+
+// readDarwinThreadCounts runs `ps -A -o pid=,thcount=` once and
+// returns a pid → thread-count map. One subprocess for all PIDs
+// beats forking per-PID. Bounded via context timeout so a hung ps
+// (unusual but possible on I/O-saturated systems) can't stall the
+// classifier. Empty or malformed lines are skipped silently.
+func readDarwinThreadCounts() map[int]int {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ps", "-A", "-o", "pid=,thcount=")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	out, err := cmd.Output()
+	if err != nil && len(out) == 0 {
+		return nil
+	}
+	return parseThreadCounts(string(out))
+}
+
+// parseThreadCounts splits `ps -A -o pid=,thcount=` output into a
+// pid → threadcount map. Separated from the subprocess call for
+// unit testability against fixed fixtures.
+func parseThreadCounts(raw string) map[int]int {
+	out := make(map[int]int)
+	scanner := bufio.NewScanner(strings.NewReader(raw))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		tc, err := strconv.Atoi(fields[1])
+		if err != nil || tc < 0 {
+			continue
+		}
+		out[pid] = tc
+	}
+	return out
 }
 
 // notableLibPatternsDarwin mirrors notableLibPatternsWindows +
