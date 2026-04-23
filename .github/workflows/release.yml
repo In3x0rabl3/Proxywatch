@@ -19,6 +19,9 @@ jobs:
           - goos: linux
             goarch: amd64
             ext: ''
+          - goos: linux
+            goarch: arm64
+            ext: ''
           - goos: windows
             goarch: amd64
             ext: '.exe'
@@ -74,6 +77,7 @@ jobs:
         run: |
           gh release upload "${{ github.ref_name }}" \
             dist/proxywatch-linux-amd64 \
+            dist/proxywatch-linux-arm64 \
             dist/proxywatch-windows-amd64.exe \
             dist/proxywatch-darwin-amd64 \
             dist/proxywatch-darwin-arm64 \

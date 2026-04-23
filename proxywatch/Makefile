@@ -2,7 +2,7 @@ OUT_DIR ?= build
 GOOS ?= windows
 GOARCH ?= amd64
 GOCACHE ?= $(abspath $(OUT_DIR)/.go-cache)
-TARGETS ?= windows/amd64 linux/amd64 darwin/amd64 darwin/arm64
+TARGETS ?= windows/amd64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 LDFLAGS :=
 STRAY_BINARIES := proxywatch proxywatch.exe proxywatch-windows.exe proxywatch-linux-amd64 proxywatch-windows-amd64.exe pwa-linux-amd64 pwa-windows-amd64.exe
 

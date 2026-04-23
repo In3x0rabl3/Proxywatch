@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **darwin/arm64 release target.** Apple Silicon builds now ship alongside darwin/amd64 in the release workflow, with CI coverage in the build matrix and a `darwin/arm64` entry in the Makefile `TARGETS`.
+- **linux/arm64 release target.** ARM Linux builds (Graviton, Ampere Altra, Raspberry Pi 4/5 64-bit, etc.) ship alongside linux/amd64 in the release workflow, with CI coverage and a `linux/arm64` Makefile entry.
 - `docs/api-reference.md` — complete HTTP API reference covering the local/server-mode Debug API, the per-agent Debug API for connect-mode agents, and the headless Contour API. Documents every endpoint with methods, query parameters, request/response schemas, and operator usage patterns (polling during scans, capturing baselines for regression diffing, training operator labels).
 - `docs/detection.md` — single presentation-friendly detection overview. Covers the role taxonomy, how roles are decided (rule engine + on-device ML), pivot linger, tunneling state semantics, role disambiguation, FP suppression tiers, worked examples, and code pointers.
 - **`beacon-static-crypto-likely` shadow signal.** Fires when a process has external HTTPS traffic with zero dynamic crypto libraries loaded, is not a known vendor, and is unsigned. Fingerprints statically-linked Go / Rust / Nim beacons (Sliver, Merlin, Poseidon, Thanatos, Nimplant, Freyja) whose `crypto/tls` is bundled, not linked to schannel/bcrypt. Shadow-only — not in role-vote maps.
