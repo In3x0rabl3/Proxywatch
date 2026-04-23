@@ -448,6 +448,10 @@ func (r *RemoteScanner) Refresh(app *shared.AppState) {
 			// Classify(). Blocker set (shared.VendorFPBlockerSignals) is
 			// the single source of truth for "preserve control-*/tunneling".
 			shared.ApplyVendorFPShape(c)
+			// Narrow rescue for signed desktop/Electron apps with
+			// rich-local-ipc-shape. See shared/vendor_fp_shape.go —
+			// parity with standalone Classify().
+			shared.ApplyVendorIPCRescue(c)
 
 			// Feed training buffer — parity with standalone classifier.Classify().
 			if r.BufferCandidate != nil {

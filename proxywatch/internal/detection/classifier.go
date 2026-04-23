@@ -401,6 +401,12 @@ func Classify(
 		if c.Proc != nil {
 			shared.ApplyVendorUpdateSuppression(c)
 			shared.ApplyVendorFPShape(c)
+			// Narrow rescue for signed vendor desktop/Electron apps
+			// (Zoom, Slack, CloudSync) whose helper-mesh IPC trips
+			// ActiveProxying in rank.go and blocks the broader
+			// demotion paths. Gated on rich-local-ipc-shape + multi-
+			// source identity convergence. See vendor_fp_shape.go.
+			shared.ApplyVendorIPCRescue(c)
 		}
 
 		// ActiveProxying is set by ScoreCandidate (rank.go) which has deep

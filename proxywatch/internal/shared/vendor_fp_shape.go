@@ -493,6 +493,146 @@ func ApplyVendorFPShape(c *Candidate) bool {
 	return true
 }
 
+// VendorIPCRescueReason is the sentinel appended to c.Reasons when the
+// rich-local-ipc-shape rescue demotes a control-* role. Distinct from
+// VendorFPShapeReason so operators can filter/aggregate the two demotion
+// paths separately in /fp-report.
+const VendorIPCRescueReason = "vendor-ipc-rescue-suppressed"
+
+// rescueImplantDecisiveSignals — if any of these fire, the rescue must
+// not trigger. Deliberately narrower than HasHardDistinguisher: we
+// exclude ActiveProxying (the gate we're bypassing for this narrow
+// profile) and instead rely on implant-specific signals that a signed
+// vendor app never legitimately emits.
+var rescueImplantDecisiveSignals = map[string]bool{
+	"pivot-ssh-tunnel-flags":      true,
+	"pivot-named-pipe-c2-pattern": true,
+	"beacon-syn-cycle-cadence":    true,
+	"raw-socket":                  true,
+	"child-tunnel-relay":          true,
+	"injection-rwx-external":      true,
+	"pivot-anon-exec-memory":      true,
+	"beacon-static-crypto-likely": true,
+}
+
+// ApplyVendorIPCRescue demotes a shape-only control-* role to outbound /
+// listener when the candidate exhibits the legitimate desktop-app IPC
+// profile: rich-local-ipc-shape plus convergent vendor identity (signed,
+// trusted install path, Authenticode-OCSP verified or Unix trusted
+// heuristic, non-empty publisher, at least one independent identity
+// signal — publisher-dns-aligned, pkg-owned, publisher/company match,
+// or destination-ASN alignment).
+//
+// Runs AFTER ApplyVendorFPShape so if that demoted already we no-op.
+// Bypasses the ActiveProxying hard-blocker that the existing demotion
+// paths treat as decisive — rank.go sets ActiveProxying on legitimate
+// helper-mesh IPC (Zoom, Slack, CloudSync Electron) because the
+// topology matches a relay shape. The rescue trades that topology-
+// derived signal for a multi-source identity stack that an implant
+// would have to forge end-to-end.
+//
+// Implant-safety rails (any of these blocks the rescue):
+//   - rescueImplantDecisiveSignals present (pipe-C2, SSH-tunnel flags,
+//     syn-cycle cadence, raw sockets, child-tunnel, injection-rwx-
+//     external, pivot-anon-exec, static-crypto beacon fingerprint)
+//   - Operator label = malicious
+//   - Authenticode distrust (SignatureTrustUntrusted)
+//   - LOLbin process (certutil / rundll32 / mshta / etc. injected-into-
+//     trusted-path scenarios shouldn't be rescued by identity signals)
+//
+// Electron apps legitimately allocate RWX memory for V8 JIT. When
+// HasRWXMemory is true the rescue requires 2+ additional independent
+// identity signals (rather than 1) to compensate — a stolen-cert
+// implant that *also* forges two independent identity proofs is a
+// much higher bar than signing alone.
+//
+// Returns true when the rescue demoted the role.
+func ApplyVendorIPCRescue(c *Candidate) bool {
+	if c == nil || c.Proc == nil {
+		return false
+	}
+	if !isShapeOnlyCandidateRole(c.Role) {
+		return false
+	}
+	if !hasSignal(c, "rich-local-ipc-shape") {
+		return false
+	}
+
+	// Authenticode distrust / LOLbin / untrusted-signature gates.
+	if c.Proc.SignatureTrust != SignatureTrustTrusted {
+		return false
+	}
+	if c.Proc.SignatureTrust == SignatureTrustUntrusted {
+		return false
+	}
+	if strings.TrimSpace(c.Proc.Publisher) == "" {
+		return false
+	}
+	if IsLOLBinProcess(c.Proc) {
+		return false
+	}
+
+	// Implant-decisive signal blocks the rescue unconditionally.
+	for _, s := range c.Signals {
+		if rescueImplantDecisiveSignals[s] {
+			return false
+		}
+	}
+
+	// Operator-labeled malicious: respect the human verdict.
+	if c.Proc.SHA256 != "" {
+		if label := LookupOperatorLabel(c.Proc.SHA256); label != nil {
+			if label.Verdict == VerdictMalicious {
+				return false
+			}
+		}
+	}
+
+	// Require Authenticode-OCSP (Windows live posture) OR the Unix
+	// install-path trust fallback. The trusted-path check mirrors the
+	// existing countVendorSignals pathway.
+	if !c.Proc.AuthenticodeOCSPSeen && !IsLikelyBenignControlClient(c.Proc) {
+		return false
+	}
+
+	// Count additional independent identity signals beyond the
+	// baseline (signed + publisher + authenticode-or-trusted-path).
+	identitySignals := 0
+	if c.Proc.PublisherDNSAligned {
+		identitySignals++
+	}
+	if c.Proc.PkgOwned {
+		identitySignals++
+	}
+	if c.Proc.Publisher != "" && c.Proc.Company != "" &&
+		strings.EqualFold(strings.TrimSpace(c.Proc.Publisher), strings.TrimSpace(c.Proc.Company)) {
+		identitySignals++
+	}
+	if hasSignal(c, "outbound-asn-org-aligned") {
+		identitySignals++
+	}
+
+	// Electron / JIT runtime apps legitimately carry HasRWXMemory —
+	// raise the identity bar to 2 independent signals in that case to
+	// compensate for the lost RWX-memory check.
+	required := 1
+	if c.Proc.HasRWXMemory || c.Proc.AnonExecCount > 0 {
+		required = 2
+	}
+	if identitySignals < required {
+		return false
+	}
+
+	// Demote. Reuse the existing role-aware target: control-pivot with
+	// listeners → listener; everything else → outbound. Zero out
+	// ActiveProxying so the Inspector's tunneling-state display doesn't
+	// continue to show "actively relaying" on a demoted process.
+	demoteToRoleAwareTarget(c)
+	c.ActiveProxying = false
+	appendReasonUnique(c, VendorIPCRescueReason)
+	return true
+}
+
 func countDistinctExternalRemotes(c *Candidate) int {
 	if c == nil || len(c.Conns) == 0 {
 		return 0
