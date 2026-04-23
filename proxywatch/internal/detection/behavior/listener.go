@@ -90,4 +90,10 @@ doneInboundExternal:
 	if p.ThreadCount > 0 && p.ThreadCount <= 5 && len(c.Listeners) > 0 {
 		addSignal("listener-low-thread-count")
 	}
+
+	// rich-local-ipc-shape: shadow-only signal for desktop / Electron
+	// app IPC pattern (Zoom helpers mesh, Slack, CloudSync, Docker
+	// Desktop, IDE ↔ language-server). See behavior/ipc.go for the
+	// full rationale. Not in voting maps.
+	emitRichLocalIPCSignal(c, addSignal)
 }
