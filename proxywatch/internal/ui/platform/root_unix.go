@@ -1,12 +1,12 @@
-//go:build linux
+//go:build linux || darwin
 
 package platform
 
 import "strings"
 
 // padViewToTerminal clamps/pads the view to the terminal dimensions.
-// On Linux the terminal background color is set via OSC escape, so
-// empty lines are sufficient for padding.
+// On Linux + macOS the terminal background color is set via OSC
+// escape, so empty lines are sufficient for padding.
 func PadViewToTerminal(view string, w, h int) string {
 	if h <= 0 {
 		return view

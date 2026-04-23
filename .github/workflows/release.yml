@@ -25,6 +25,9 @@ jobs:
           - goos: darwin
             goarch: amd64
             ext: ''
+          - goos: darwin
+            goarch: arm64
+            ext: ''
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -73,6 +76,7 @@ jobs:
             dist/proxywatch-linux-amd64 \
             dist/proxywatch-windows-amd64.exe \
             dist/proxywatch-darwin-amd64 \
+            dist/proxywatch-darwin-arm64 \
             dist/SHA256SUMS \
             dist/SHA256SUMS.cosign-bundle \
             --clobber \
