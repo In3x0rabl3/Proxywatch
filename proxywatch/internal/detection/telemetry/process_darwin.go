@@ -83,6 +83,33 @@ func GetProcessInfoMap() (map[int]*shared.ProcessInfo, error) {
 			pi.CmdLine = cmdline
 		}
 
+		// Signature trust + publisher via shared cache. The sync path
+		// calls signature_darwin.go's verifyBinaryTrust (path + uid
+		// heuristic); the async worker thread upgrades the verdict to
+		// codesign-based Authority / TeamIdentifier via
+		// performAuthenticodeVerify. First observation returns the
+		// heuristic verdict; subsequent cycles pick up the richer
+		// codesign data from the VerdictEntry cache.
+		if pi.ExePath != "" {
+			pi.SignatureTrust, pi.Publisher = shared.VerifyBinaryTrust(pi.ExePath)
+			pi.Signed = pi.SignatureTrust == shared.SignatureTrustTrusted
+			if pi.Signed {
+				// Best-effort package-ownership lookup — empty string
+				// for untracked binaries. Cache-first, bounded 2s
+				// subprocess on miss.
+				if owner := shared.LookupPackageOwner(pi.ExePath); owner != "" {
+					pi.PkgOwned = true
+					pi.PkgOwnerName = owner
+					if pi.Company == "" {
+						pi.Company = owner
+					}
+				}
+			}
+			// SHA256 — async-cached, same flow as linux. Feeds
+			// operator-label lookup.
+			pi.SHA256 = shared.LookupExeSHA256(pi.ExePath)
+		}
+
 		out[pid] = pi
 	}
 
