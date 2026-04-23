@@ -138,7 +138,7 @@ func ScoreCandidate(c *shared.Candidate) {
 	}
 
 	ports, loopbackOnly, anyWildcard := SocksListenerPorts(c.Listeners)
-	hasListener := len(ports) > 0
+	hasListener := HasAnyListener(c)
 
 	// Model intelligence: check for generalized training patterns early.
 	// If the model has learned a pattern from 3+ operator labels that matches

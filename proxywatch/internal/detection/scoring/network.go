@@ -36,6 +36,19 @@ func SocksListenerPorts(listeners []shared.ListenerInfo) (map[int]struct{}, bool
 	return ports, loopbackOnly, anyWildcard
 }
 
+// HasAnyListener returns true when a candidate is bound to ANY kind of
+// listener socket — TCP or UDP. SocksListenerPorts operates on TCP only
+// because SOCKS is a TCP concept, but role assignment in DeriveRole is
+// protocol-agnostic: DHCP clients, mDNS daemons, NTP, SNMP trap
+// listeners, and DNS resolvers are all UDP-only listeners that belong
+// in the "listen" role, not "outbound".
+func HasAnyListener(c *shared.Candidate) bool {
+	if c == nil {
+		return false
+	}
+	return len(c.Listeners) > 0 || len(c.UDPListeners) > 0
+}
+
 func CountActiveClientSessions(
 	conns []shared.ConnectionInfo,
 	ports map[int]struct{},
