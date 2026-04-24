@@ -83,7 +83,22 @@ func readProcess(pid int) *shared.ProcessInfo {
 	fdCount := readFDCount(pid)
 	hasRWX, anonExec, libs := readMaps(pid)
 
-	sigTrust, _ := shared.VerifyBinaryTrust(exePath)
+	// Prefer the full VerdictEntry from the reputation cache — carries
+	// Publisher + OCSPResponseSeen in addition to Trust. Fallback to
+	// the sync VerifyBinaryTrust path when no entry is cached yet
+	// (async worker hasn't reached this PID's binary).
+	var (
+		sigTrust     string
+		sigPublisher string
+		ocspSeen     bool
+	)
+	if v := shared.LookupVerdictForPath(exePath); v != nil {
+		sigTrust = v.Trust
+		sigPublisher = v.Publisher
+		ocspSeen = v.OCSPResponseSeen
+	} else {
+		sigTrust, sigPublisher = shared.VerifyBinaryTrust(exePath)
+	}
 
 	// Dpkg ownership — local disk walk, no network. Returns "" when
 	// either the binary isn't dpkg-tracked or dpkg isn't installed.
@@ -95,29 +110,31 @@ func readProcess(pid int) *shared.ProcessInfo {
 	exeHash := shared.LookupExeSHA256(exePath)
 
 	return &shared.ProcessInfo{
-		Pid:            pid,
-		ParentPid:      ppid,
-		Name:           name,
-		ExePath:        exePath,
-		UserName:       username,
-		IOReadBytes:    ioRead,
-		IOWriteBytes:   ioWrite,
-		IOOtherBytes:   ioOther,
-		CpuTime:        cpuTime,
-		StartTime:      readStartTime(fields),
-		CmdLine:        readCmdLine(pid),
-		LoadedLibs:     libs,
-		ThreadCount:    threadCount,
-		FDCount:        fdCount,
-		HasRWXMemory:   hasRWX,
-		AnonExecCount:  anonExec,
-		CapEffective:   status.capEffective,
-		Seccomp:        status.seccomp,
-		SignatureTrust: sigTrust,
-		Signed:         sigTrust == shared.SignatureTrustTrusted,
-		PkgOwned:       pkgOwner != "",
-		PkgOwnerName:   pkgOwner,
-		SHA256:         exeHash,
+		Pid:                  pid,
+		ParentPid:            ppid,
+		Name:                 name,
+		ExePath:              exePath,
+		UserName:             username,
+		IOReadBytes:          ioRead,
+		IOWriteBytes:         ioWrite,
+		IOOtherBytes:         ioOther,
+		CpuTime:              cpuTime,
+		StartTime:            readStartTime(fields),
+		CmdLine:              readCmdLine(pid),
+		LoadedLibs:           libs,
+		ThreadCount:          threadCount,
+		FDCount:              fdCount,
+		HasRWXMemory:         hasRWX,
+		AnonExecCount:        anonExec,
+		CapEffective:         status.capEffective,
+		Seccomp:              status.seccomp,
+		SignatureTrust:       sigTrust,
+		Signed:               sigTrust == shared.SignatureTrustTrusted,
+		Publisher:            sigPublisher,
+		AuthenticodeOCSPSeen: ocspSeen,
+		PkgOwned:             pkgOwner != "",
+		PkgOwnerName:         pkgOwner,
+		SHA256:               exeHash,
 		// Linux has no PE metadata, so Company stays empty unless we
 		// populate it from the package name. This gives
 		// EvaluatePublisherDNSAlignment a lookup key on Linux (it falls

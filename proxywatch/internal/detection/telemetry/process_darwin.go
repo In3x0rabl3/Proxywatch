@@ -110,15 +110,20 @@ func GetProcessInfoMap() (map[int]*shared.ProcessInfo, error) {
 			pi.LoadedLibs = readMachoDylibs(pi.ExePath)
 		}
 
-		// Signature trust + publisher via shared cache. The sync path
-		// calls signature_darwin.go's verifyBinaryTrust (path + uid
-		// heuristic); the async worker thread upgrades the verdict to
-		// codesign-based Authority / TeamIdentifier via
-		// performAuthenticodeVerify. First observation returns the
-		// heuristic verdict; subsequent cycles pick up the richer
-		// codesign data from the VerdictEntry cache.
+		// Signature trust + publisher via shared cache. Prefer the full
+		// VerdictEntry (Trust + Publisher + OCSPResponseSeen) when the
+		// async worker has already verified the binary; fall back to
+		// the sync verifyBinaryTrust path (path + uid heuristic) on
+		// first observation. Subsequent cycles pick up codesign-based
+		// Authority / TeamIdentifier via performAuthenticodeVerify.
 		if pi.ExePath != "" {
-			pi.SignatureTrust, pi.Publisher = shared.VerifyBinaryTrust(pi.ExePath)
+			if v := shared.LookupVerdictForPath(pi.ExePath); v != nil {
+				pi.SignatureTrust = v.Trust
+				pi.Publisher = v.Publisher
+				pi.AuthenticodeOCSPSeen = v.OCSPResponseSeen
+			} else {
+				pi.SignatureTrust, pi.Publisher = shared.VerifyBinaryTrust(pi.ExePath)
+			}
 			pi.Signed = pi.SignatureTrust == shared.SignatureTrustTrusted
 			if pi.Signed {
 				// Best-effort package-ownership lookup — empty string

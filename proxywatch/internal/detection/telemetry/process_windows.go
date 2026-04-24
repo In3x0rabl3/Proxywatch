@@ -76,19 +76,25 @@ func GetProcessInfoMap() (map[int]*shared.ProcessInfo, error) {
 					fillIntegrity(h, pi)
 					fillTokenDetails(h, pi)
 					fillCompany(pi)
-					// fillSignatureTrust is safe in cache-only posture
-					// (default): it only consults the in-memory verdict
-					// cache and enqueues lookups. The hang we saw earlier
-					// was exclusively in fillLoadedLibs's
-					// EnumProcessModulesEx call on protected service
-					// hosts — unrelated to signature verification.
-					fillSignatureTrust(pi)
-					// SHA256 — async-cached, same flow as Linux. Feeds
-					// operator-label lookup (Phase 9). First observation
-					// returns ""; next cycle picks up the computed hash.
-					pi.SHA256 = shared.LookupExeSHA256(pi.ExePath)
 				}
 				windows.CloseHandle(h)
+				// Signature trust + publisher + OCSP seen MUST run on
+				// every cycle, not just cache-miss cycles. The async
+				// signature worker populates the verdict cache after
+				// the first observation, so skipping on metaOK would
+				// freeze SignatureTrust at "" / Signed at false for
+				// the full 60s meta-cache TTL even after the worker
+				// landed a real verdict. That broke the FP-shape +
+				// ApplyVendorIPCRescue identity stack (both gate on
+				// AuthenticodeOCSPSeen + Publisher). Cheap — pure
+				// in-memory map lookup, no handle needed.
+				fillSignatureTrust(pi)
+				// SHA256 — async-cached, same flow as Linux. Feeds
+				// operator-label lookup. First observation returns "";
+				// next cycle picks up the computed hash.
+				if pi.ExePath != "" {
+					pi.SHA256 = shared.LookupExeSHA256(pi.ExePath)
+				}
 			}
 
 			if !metaOK {
@@ -329,16 +335,56 @@ func fillCompany(pi *shared.ProcessInfo) {
 	pi.Company = company
 }
 
-// fillSignatureTrust calls the shared cross-platform verifier. The Windows
-// implementation is currently a stub returning Unknown — see
-// shared/signature_windows.go for the WinVerifyTrust TODO.
+// fillSignatureTrust reads the full VerdictEntry from the reputation
+// cache so candidates carry SignatureTrust, Publisher, and
+// AuthenticodeOCSPSeen — not just the trust level. The old
+// implementation only set Trust + Signed, dropping Publisher on the
+// floor and leaving AuthenticodeOCSPSeen at false even when the
+// async worker had verified the OCSP chain. That broke the
+// ApplyVendorIPCRescue identity stack (which checks
+// AuthenticodeOCSPSeen and Publisher != "") and any FP-shape path
+// that votes based on those two fields.
+//
+// When no verdict is cached yet, fall back to the sync path —
+// VerifyBinaryTrust returns the trust + publisher from the lightweight
+// verifier (path-prefix heuristic on unix, stub on windows pending
+// WinVerifyTrust integration). AuthenticodeOCSPSeen stays false in
+// that case; the next scan cycle picks up the async OCSP result.
 func fillSignatureTrust(pi *shared.ProcessInfo) {
 	if pi == nil || pi.ExePath == "" {
 		return
 	}
-	trust, _ := shared.VerifyBinaryTrust(pi.ExePath)
-	pi.SignatureTrust = trust
-	pi.Signed = trust == shared.SignatureTrustTrusted
+	if v := shared.LookupVerdictForPath(pi.ExePath); v != nil {
+		pi.SignatureTrust = v.Trust
+		pi.Publisher = v.Publisher
+		pi.AuthenticodeOCSPSeen = v.OCSPResponseSeen
+		pi.Signed = v.Trust == shared.SignatureTrustTrusted
+		if v.PkgOwned {
+			pi.PkgOwned = true
+			pi.PkgOwnerName = v.PkgOwnerName
+		}
+	} else {
+		trust, publisher := shared.VerifyBinaryTrust(pi.ExePath)
+		pi.SignatureTrust = trust
+		pi.Publisher = publisher
+		pi.Signed = trust == shared.SignatureTrustTrusted
+	}
+
+	// Publisher fallback. The Authenticode signer-cert extraction in
+	// signature_windows.go can return empty CN on some systems (root-
+	// first cert-store ordering, multi-signer PKCS#7 blobs). When the
+	// binary is signed + trusted but Publisher is empty, fall back to
+	// the PE Company string from VERSIONINFO. Company isn't as strong
+	// as the cert CN — an attacker-controlled PE resource could lie —
+	// but pi.Signed gate already requires a cryptographically valid
+	// Authenticode chain, so a mismatching Company string on a signed
+	// binary is a benign inconsistency rather than a spoof vector. The
+	// rescue + FP-shape gates only need Publisher to be non-empty to
+	// proceed; any mismatch is caught by the broader identity-stack
+	// convergence count.
+	if pi.Signed && strings.TrimSpace(pi.Publisher) == "" && strings.TrimSpace(pi.Company) != "" {
+		pi.Publisher = pi.Company
+	}
 }
 
 func queryCompanyName(path string) (string, error) {
