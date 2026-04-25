@@ -240,9 +240,30 @@ func DecideRole(processKey string, suggestedRole string, score int, p *shared.Pr
 		expRole := profile.DominantRole
 		suggestedSuspicious := isSuspiciousRole(suggestedRole)
 		expSuspicious := isSuspiciousRole(expRole)
+		// Listener-state transitions are OS-level ground truth, not
+		// historical inference. If the kernel reports a bound port and
+		// the rule engine suggested listen / control-* accordingly, the
+		// model's stale dominant role (e.g. an outbound history from
+		// before this PID started binding a port, or a PID-reuse
+		// transition) must not override. Same in reverse for a process
+		// that has stopped listening. Without these gates, a process
+		// like `nc -lnvp 666` whose past 200+ observations were
+		// recorded as outbound stays locked at outbound forever even
+		// while it actively listens — a self-reinforcing FP loop.
+		listenerStateContradicts := false
+		if hasListener && (suggestedRole == "listen" || suggestedRole == "listener") &&
+			(expRole == "outbound") {
+			listenerStateContradicts = true
+		}
+		if !hasListener && (expRole == "listen" || expRole == "listener") &&
+			suggestedRole == "outbound" {
+			listenerStateContradicts = true
+		}
 		// Block downgrade: rule engine says suspicious, history says benign.
 		if suggestedSuspicious && !expSuspicious {
 			// Skip model authority — trust the live suspicious detection.
+		} else if listenerStateContradicts {
+			// Skip model authority — listener state is observable now.
 		} else {
 			sameFamily := expSuspicious == suggestedSuspicious
 			minStability := 0.70 // cross-family needs stronger evidence
