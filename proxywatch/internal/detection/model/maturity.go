@@ -49,18 +49,32 @@ const (
 	// ShadowQualifyAgreement is the minimum fraction of ML predictions that
 	// must match the rule engine's verdict before ML takes over role
 	// assignment. Measured on the rolling shadow window.
-	ShadowQualifyAgreement = 0.70
+	//
+	// Raised from 0.70 → 0.85: 70% agreement leaves the model wrong on
+	// nearly a third of predictions, which on a busy host translates to
+	// dozens of misclassified candidates per cycle. 85% means the
+	// predictor must consistently match the rule engine before it gets
+	// to override it. Raises the bar without changing what counts as
+	// "agreement" or what the ML output looks like.
+	ShadowQualifyAgreement = 0.85
 
 	// ShadowQualifyPredictions is the minimum number of shadow-mode
-	// predictions that must be accumulated before ML can qualify. Matches
-	// the retrain buffer size so "enough to have triggered at least one
-	// retrain" is the floor.
-	ShadowQualifyPredictions int64 = 200
+	// predictions that must be accumulated before ML can qualify.
+	//
+	// Raised from 200 → 1000. 200 was the retrain-buffer floor (enough
+	// observations to attempt retraining), but ML qualification —
+	// taking over role assignment globally — needs orders of magnitude
+	// more evidence. On a busy host, 200 predictions accumulate within
+	// a couple of hours; ML was overriding the rule engine before any
+	// meaningful diversity of process behavior had been observed.
+	// 1000 ≈ a working day of observations.
+	ShadowQualifyPredictions int64 = 1000
 
 	// ShadowDegradeFloor is the rolling-window agreement rate below which a
 	// previously-qualified model is un-qualified and reverts to shadow.
 	// Lower than the qualify threshold so we don't flip-flop on noise.
-	ShadowDegradeFloor = 0.60
+	// Raised from 0.60 → 0.70 to track the new qualify threshold.
+	ShadowDegradeFloor = 0.70
 
 	// shadowWindow caps how many shadow outcomes are tracked. When the
 	// running total exceeds this, counters halve — same sliding-window

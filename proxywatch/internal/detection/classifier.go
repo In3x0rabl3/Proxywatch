@@ -63,7 +63,10 @@ func Classify(
 	defer shared.ClassifyMu.Unlock()
 
 	candidates := buildCandidates(snap)
-	now := time.Now()
+	now := snap.Timestamp
+	if now.IsZero() {
+		now = time.Now()
+	}
 	refreshObservedExternalPortProfile(candidates)
 	hostScope := strings.TrimSpace(opts.HostScope)
 	if hostScope == "" {
@@ -97,25 +100,25 @@ func Classify(
 				if prev, ok := prevCands[c.Proc.Pid]; ok {
 					if prevSig, ok := prevSigs[c.Proc.Pid]; ok && prevSig == sig {
 						if shouldRescoreUnchangedCandidate(c, &prev, now) {
-							scoring.ScoreCandidate(c)
+							scoring.ScoreCandidate(c, now)
 						} else {
 							reuseCandidate(c, &prev)
 							touchHistoryFromCandidate(c, now)
 						}
 					} else {
-						scoring.ScoreCandidate(c)
+						scoring.ScoreCandidate(c, now)
 					}
 				} else {
-					scoring.ScoreCandidate(c)
+					scoring.ScoreCandidate(c, now)
 				}
 			} else {
-				scoring.ScoreCandidate(c)
+				scoring.ScoreCandidate(c, now)
 			}
 
 			nextSignatures[c.Proc.Pid] = sig
 			// nextCandidates stored after model override + ActiveProxying (below).
 		} else {
-			scoring.ScoreCandidate(c)
+			scoring.ScoreCandidate(c, now)
 		}
 
 		// Record observation for maturity — ALWAYS, regardless of ML state.
@@ -174,6 +177,32 @@ func Classify(
 						if model.MLQualified() {
 							c.Role = result.TopRole
 							c.Score = confidenceToScore(result.TopProb)
+						}
+
+						// Listener-state OS-truth override: if the kernel
+						// reports a bound port for this PID, the rule
+						// engine's listen / control-* verdict is observable
+						// ground truth and MUST NOT be overridden by an ML
+						// prediction — no matter how confident. The
+						// classic FP this prevents: `nc -lnvp 666` (or any
+						// service that begins listening mid-run) where the
+						// ML model's training data carried 200+ historical
+						// "outbound" observations of the same PID/identity
+						// before the listener appeared, so the predictor
+						// becomes 100%-confident outbound and overrides the
+						// rule engine's correct listen verdict. The reverse
+						// case (ML says listen but no listener present)
+						// also surrenders to the rule engine — listener
+						// removal is equally observable.
+						hasListenerNow := len(c.Listeners) > 0 || len(c.UDPListeners) > 0
+						if hasListenerNow && (scoreRole == "listen" || scoreRole == "listener") &&
+							(c.Role == "outbound") {
+							c.Role = scoreRole
+							c.Score = 50
+						}
+						if !hasListenerNow && (c.Role == "listen" || c.Role == "listener") &&
+							(scoreRole == "outbound") {
+							c.Role = scoreRole
 						}
 
 						// Signal-based override: trust live signals/topology over the
@@ -461,7 +490,7 @@ func Classify(
 	// Aggregate child process tunnel evidence to parents with listeners.
 	// SSH SOCKS proxy: parent sshd forks children that exit quickly.
 	// Transfer children's internal connection evidence to the parent.
-	scoring.AggregateChildTunnelEvidence(candidates)
+	scoring.AggregateChildTunnelEvidence(candidates, now)
 
 	// Time-lingered control-pivot promotion. Any candidate observed forwarding
 	// internal-only traffic in a relay context (own listener, parent listener,
@@ -470,7 +499,7 @@ func Classify(
 	// AggregateChildTunnelEvidence so parent-has-listener evidence is
 	// up-to-date, and after per-candidate ScoreCandidate + model.DecideRole so
 	// the ML model's committed role hold cannot un-promote the pivot.
-	scoring.ApplyPivotLinger(candidates, snap.Processes)
+	scoring.ApplyPivotLinger(candidates, snap.Processes, now)
 
 	// Re-sync ActiveProxying from candidates→interesting after child aggregation.
 	// AggregateChildTunnelEvidence updates the candidates slice but interesting
