@@ -84,14 +84,24 @@ func DecideRole(processKey string, suggestedRole string, score int, p *shared.Pr
 			} else {
 				// Both committed and suggested are benign — hold committed role
 				// UNLESS current behavior clearly contradicts it.
-				// A committed "outbound" process that now has a listener with
-				// significant inbound activity is no longer outbound — let the
-				// rule engine's classification through.
+				//
+				// Listener presence is OS-level ground truth: if the kernel
+				// reports a bound port for this PID, the process IS listening,
+				// regardless of whether anyone has connected yet. A committed
+				// "outbound" process that suddenly has a listener (`nc -lnvp`,
+				// `python -m http.server`, ssh -D, etc.) must surface as
+				// listen / control-* — the rule engine already classified it
+				// from the live network state, and overriding that with stale
+				// memory hides legitimate role transitions.
 				behaviorContradicts := false
-				if committed == "outbound" && hasListener && inboundTotal >= 3 {
+				if committed == "outbound" && hasListener {
 					behaviorContradicts = true
 				}
-				if committed == "listener" && !hasListener && outExternal > 0 {
+				// Conversely, a committed "listener" process that no longer
+				// has any listener is no longer a listener. Drop the committed
+				// role regardless of outbound activity (a process can stop
+				// listening without ever making external connections).
+				if (committed == "listener" || committed == "listen") && !hasListener {
 					behaviorContradicts = true
 				}
 				// Tunnel shape: a committed-benign process now showing
