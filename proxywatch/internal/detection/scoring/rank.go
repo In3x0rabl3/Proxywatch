@@ -14,7 +14,7 @@ import (
 // Declared at package level to avoid re-allocating on every ScoreCandidate call.
 var ProxyPorts = map[int]struct{}{3128: {}, 8080: {}, 8118: {}, 8888: {}}
 
-func ScoreCandidate(c *shared.Candidate) {
+func ScoreCandidate(c *shared.Candidate, now time.Time) {
 	scoreVal := 0
 	reasons := make([]string, 0, 16)
 	signals := make([]string, 0, 16)
@@ -32,7 +32,6 @@ func ScoreCandidate(c *shared.Candidate) {
 		c.Score = 0
 		return
 	}
-	now := time.Now()
 	// Detection treats ALL processes equally — no benign suppression.
 	wasBenignClient := shared.IsLikelyBenignControlClient(p)
 	benignClient := false

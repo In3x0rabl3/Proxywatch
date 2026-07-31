@@ -13,7 +13,7 @@ import (
 // child processes to their parent when the parent has a listener.
 // This catches SSH SOCKS proxies where sshd forks children for each forwarded
 // connection — the children exit quickly but the parent stays alive.
-func AggregateChildTunnelEvidence(candidates []shared.Candidate) {
+func AggregateChildTunnelEvidence(candidates []shared.Candidate, now time.Time) {
 	// Build parent PID → candidate index map for processes with listeners.
 	parentIdx := make(map[int]int) // PID → index in candidates
 	for i := range candidates {
@@ -65,7 +65,7 @@ func AggregateChildTunnelEvidence(candidates []shared.Candidate) {
 
 		// Remember that this parent is tunneling — persists across refresh cycles
 		// so tunneling shows even after the short-lived child exits.
-		shared.TunnelingSeen[parent.Proc.Pid] = time.Now()
+		shared.TunnelingSeen[parent.Proc.Pid] = now
 
 		// Add child's internal connection count to parent's counters.
 		parent.OutInternal += childInternal
@@ -109,7 +109,7 @@ const pivotLingerWindow = 60 * time.Second
 // loopback targets, so benign external-talking processes never qualify.
 // Requiring parent.InboundTotal>0 for C3 excludes daemon-chatter cases where
 // a service daemon has a listener but no actual inbound connections.
-func ApplyPivotLinger(candidates []shared.Candidate, processes map[int]*shared.ProcessInfo) {
+func ApplyPivotLinger(candidates []shared.Candidate, processes map[int]*shared.ProcessInfo, now time.Time) {
 	if len(candidates) == 0 {
 		return
 	}
@@ -151,7 +151,6 @@ func ApplyPivotLinger(candidates []shared.Candidate, processes map[int]*shared.P
 		return 0, 0, false
 	}
 
-	now := time.Now()
 	for i := range candidates {
 		c := &candidates[i]
 		if c.Proc == nil {
