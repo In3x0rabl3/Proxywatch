@@ -78,11 +78,16 @@ const (
 	KeystoreFieldAgentToken
 	KeystoreFieldDisableClientCert
 	KeystoreFieldTrustOnFirstUse
+	KeystoreFieldSentinelAuth
+	KeystoreFieldSentinelEndpoint
+	KeystoreFieldSentinelDCRID
+	KeystoreFieldSentinelStream
 	KeystoreFieldMethod
 	KeystoreFieldGitHubToken
 	KeystoreFieldBuildkiteToken
 	KeystoreFieldAWSAccessKey
 	KeystoreFieldAWSSecretKey
+	KeystoreFieldAzureTenantID
 	KeystoreFieldAzureClientID
 	KeystoreFieldAzureClientSecret
 	KeystoreFieldGCPServiceKey
@@ -160,10 +165,15 @@ const (
 	keystoreFieldAgentToken         = KeystoreFieldAgentToken
 	keystoreFieldDisableClientCert  = KeystoreFieldDisableClientCert
 	keystoreFieldTrustOnFirstUse    = KeystoreFieldTrustOnFirstUse
+	keystoreFieldSentinelAuth       = KeystoreFieldSentinelAuth
+	keystoreFieldSentinelEndpoint   = KeystoreFieldSentinelEndpoint
+	keystoreFieldSentinelDCRID      = KeystoreFieldSentinelDCRID
+	keystoreFieldSentinelStream     = KeystoreFieldSentinelStream
 	keystoreFieldGitHubToken        = KeystoreFieldGitHubToken
 	keystoreFieldBuildkiteToken     = KeystoreFieldBuildkiteToken
 	keystoreFieldAWSAccessKey       = KeystoreFieldAWSAccessKey
 	keystoreFieldAWSSecretKey       = KeystoreFieldAWSSecretKey
+	keystoreFieldAzureTenantID      = KeystoreFieldAzureTenantID
 	keystoreFieldAzureClientID      = KeystoreFieldAzureClientID
 	keystoreFieldAzureClientSecret  = KeystoreFieldAzureClientSecret
 	keystoreFieldGCPServiceKey      = KeystoreFieldGCPServiceKey

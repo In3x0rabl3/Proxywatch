@@ -1,0 +1,210 @@
+[
+  {
+    "TimeGenerated": "2026-07-31T19:30:00.123456Z",
+    "SchemaVersion": "proxywatch.sentinel.v1",
+    "EventType": "DetectionCreated",
+    "EntityId": "sensor-01-4242",
+    "DetectionId": "sensor-01-beacon.exe-4242-control-channel",
+    "Cycle": 1842,
+    "Host": "sensor-01",
+    "ProcessId": 4242,
+    "ProcessName": "beacon.exe",
+    "ProcessPath": "C:\\Users\\operator\\AppData\\Local\\Temp\\beacon.exe",
+    "User": "CONTOSO\\operator",
+    "Role": "control-channel",
+    "RoleFamily": "control",
+    "State": "watch",
+    "Score": 91,
+    "Confidence": 97,
+    "StrongEvidence": true,
+    "ActiveProxying": false,
+    "TrafficVerified": true,
+    "InboundTotal": 0,
+    "OutboundTotal": 1,
+    "OutboundExternal": 1,
+    "OutboundInternal": 0,
+    "OutboundLoopback": 0,
+    "TcpListenerCount": 0,
+    "UdpListenerCount": 0,
+    "ControlDurationSeconds": 120,
+    "ControlRemoteAddress": "203.0.113.25",
+    "ControlRemotePort": 443,
+    "Signals": [
+      "beacon-http-channel",
+      "beacon-periodic-cadence"
+    ],
+    "Reasons": [
+      "Periodic outbound connection cadence",
+      "Long-lived external control channel"
+    ],
+    "Connections": [
+      {
+        "proto": "tcp",
+        "local_address": "10.10.20.15",
+        "local_port": 51844,
+        "remote_address": "203.0.113.25",
+        "remote_port": 443,
+        "state": "ESTABLISHED",
+        "scope": "external"
+      }
+    ],
+    "TcpListeners": [],
+    "UdpListeners": []
+  },
+  {
+    "TimeGenerated": "2026-07-31T19:31:14.987654Z",
+    "SchemaVersion": "proxywatch.sentinel.v1",
+    "EventType": "DetectionUpdated",
+    "EntityId": "sensor-01-4242",
+    "DetectionId": "sensor-01-beacon.exe-4242-control-pivot",
+    "Cycle": 2141,
+    "Host": "sensor-01",
+    "ProcessId": 4242,
+    "ProcessName": "beacon.exe",
+    "ProcessPath": "C:\\Users\\operator\\AppData\\Local\\Temp\\beacon.exe",
+    "User": "CONTOSO\\operator",
+    "Role": "control-pivot",
+    "RoleFamily": "control",
+    "State": "tunneling",
+    "Score": 96,
+    "Confidence": 99,
+    "StrongEvidence": true,
+    "ActiveProxying": true,
+    "TrafficVerified": true,
+    "InboundTotal": 1,
+    "OutboundTotal": 3,
+    "OutboundExternal": 1,
+    "OutboundInternal": 2,
+    "OutboundLoopback": 0,
+    "TcpListenerCount": 1,
+    "UdpListenerCount": 0,
+    "ControlDurationSeconds": 194,
+    "ControlRemoteAddress": "203.0.113.25",
+    "ControlRemotePort": 443,
+    "Signals": [
+      "beacon-http-channel",
+      "beacon-periodic-cadence",
+      "pivot-non-loopback-internal"
+    ],
+    "Reasons": [
+      "Periodic outbound connection cadence",
+      "Process is relaying traffic to non-loopback internal targets"
+    ],
+    "Connections": [
+      {
+        "proto": "tcp",
+        "local_address": "10.10.20.15",
+        "local_port": 51844,
+        "remote_address": "203.0.113.25",
+        "remote_port": 443,
+        "state": "ESTABLISHED",
+        "scope": "external"
+      },
+      {
+        "proto": "tcp",
+        "local_address": "10.10.20.15",
+        "local_port": 52001,
+        "remote_address": "10.20.30.40",
+        "remote_port": 445,
+        "state": "ESTABLISHED",
+        "scope": "internal"
+      },
+      {
+        "proto": "tcp",
+        "local_address": "10.10.20.15",
+        "local_port": 52002,
+        "remote_address": "10.20.30.41",
+        "remote_port": 3389,
+        "state": "ESTABLISHED",
+        "scope": "internal"
+      }
+    ],
+    "TcpListeners": [
+      {
+        "proto": "tcp",
+        "local_address": "127.0.0.1",
+        "local_port": 1080,
+        "state": "LISTEN"
+      }
+    ],
+    "UdpListeners": []
+  },
+  {
+    "TimeGenerated": "2026-07-31T19:35:02.456789Z",
+    "SchemaVersion": "proxywatch.sentinel.v1",
+    "EventType": "DetectionResolved",
+    "EntityId": "sensor-01-4242",
+    "DetectionId": "sensor-01-beacon.exe-4242-control-pivot",
+    "Cycle": 3052,
+    "Host": "sensor-01",
+    "ProcessId": 4242,
+    "ProcessName": "beacon.exe",
+    "ProcessPath": "C:\\Users\\operator\\AppData\\Local\\Temp\\beacon.exe",
+    "User": "CONTOSO\\operator",
+    "Role": "control-pivot",
+    "RoleFamily": "control",
+    "State": "resolved",
+    "Score": 96,
+    "Confidence": 99,
+    "StrongEvidence": true,
+    "ActiveProxying": false,
+    "TrafficVerified": true,
+    "InboundTotal": 1,
+    "OutboundTotal": 3,
+    "OutboundExternal": 1,
+    "OutboundInternal": 2,
+    "OutboundLoopback": 0,
+    "TcpListenerCount": 1,
+    "UdpListenerCount": 0,
+    "ControlDurationSeconds": 194,
+    "ControlRemoteAddress": "203.0.113.25",
+    "ControlRemotePort": 443,
+    "Signals": [
+      "beacon-http-channel",
+      "beacon-periodic-cadence",
+      "pivot-non-loopback-internal"
+    ],
+    "Reasons": [
+      "Periodic outbound connection cadence",
+      "Process is relaying traffic to non-loopback internal targets"
+    ],
+    "Connections": [
+      {
+        "proto": "tcp",
+        "local_address": "10.10.20.15",
+        "local_port": 51844,
+        "remote_address": "203.0.113.25",
+        "remote_port": 443,
+        "state": "ESTABLISHED",
+        "scope": "external"
+      },
+      {
+        "proto": "tcp",
+        "local_address": "10.10.20.15",
+        "local_port": 52001,
+        "remote_address": "10.20.30.40",
+        "remote_port": 445,
+        "state": "ESTABLISHED",
+        "scope": "internal"
+      },
+      {
+        "proto": "tcp",
+        "local_address": "10.10.20.15",
+        "local_port": 52002,
+        "remote_address": "10.20.30.41",
+        "remote_port": 3389,
+        "state": "ESTABLISHED",
+        "scope": "internal"
+      }
+    ],
+    "TcpListeners": [
+      {
+        "proto": "tcp",
+        "local_address": "127.0.0.1",
+        "local_port": 1080,
+        "state": "LISTEN"
+      }
+    ],
+    "UdpListeners": []
+  }
+]

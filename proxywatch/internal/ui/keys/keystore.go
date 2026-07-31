@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"proxywatch/internal/detection"
+	"proxywatch/internal/detection/output"
 	"proxywatch/internal/keystore"
 	"proxywatch/internal/shared"
 
@@ -18,7 +19,18 @@ import (
 func ApplyDetectionOutputRuntimeConfig() error {
 	debugOutputPath := keystore.RuntimeValue("PROXYWATCH_DETECT_DEBUG_LOG")
 	defenderOutputPath := keystore.RuntimeValue("PROXYWATCH_DETECT_RULES_JSON")
-	return detection.ConfigureDetectionOutputs(debugOutputPath, defenderOutputPath)
+	if err := detection.ConfigureDetectionOutputs(debugOutputPath, defenderOutputPath); err != nil {
+		return err
+	}
+	return output.ConfigureSentinelOutput(output.SentinelConfig{
+		AuthMode:     keystore.RuntimeValue("PROXYWATCH_SENTINEL_AUTH"),
+		Endpoint:     keystore.RuntimeValue("PROXYWATCH_SENTINEL_DCE_ENDPOINT"),
+		DCRID:        keystore.RuntimeValue("PROXYWATCH_SENTINEL_DCR_ID"),
+		StreamName:   keystore.RuntimeValue("PROXYWATCH_SENTINEL_STREAM_NAME"),
+		TenantID:     keystore.RuntimeValue("AZURE_TENANT_ID"),
+		ClientID:     keystore.RuntimeValue("AZURE_CLIENT_ID"),
+		ClientSecret: keystore.RuntimeValue("AZURE_CLIENT_SECRET"),
+	})
 }
 
 func HandleKeystoreKey(app *shared.AppState, tev *tcell.EventKey) bool {

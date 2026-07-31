@@ -732,7 +732,22 @@ func buildServiceArgs(serverAddr, hostID string) []string {
 func configureDetectionOutputsFromRuntime() error {
 	debugOutputPath := strings.TrimSpace(keystore.RuntimeValue("PROXYWATCH_DETECT_DEBUG_LOG"))
 	defenderOutputPath := strings.TrimSpace(keystore.RuntimeValue("PROXYWATCH_DETECT_RULES_JSON"))
-	return detection.ConfigureDetectionOutputs(debugOutputPath, defenderOutputPath)
+	if err := detection.ConfigureDetectionOutputs(debugOutputPath, defenderOutputPath); err != nil {
+		return err
+	}
+	return output.ConfigureSentinelOutput(sentinelConfigFromRuntime())
+}
+
+func sentinelConfigFromRuntime() output.SentinelConfig {
+	return output.SentinelConfig{
+		AuthMode:     keystore.RuntimeValue("PROXYWATCH_SENTINEL_AUTH"),
+		Endpoint:     keystore.RuntimeValue("PROXYWATCH_SENTINEL_DCE_ENDPOINT"),
+		DCRID:        keystore.RuntimeValue("PROXYWATCH_SENTINEL_DCR_ID"),
+		StreamName:   keystore.RuntimeValue("PROXYWATCH_SENTINEL_STREAM_NAME"),
+		TenantID:     keystore.RuntimeValue("AZURE_TENANT_ID"),
+		ClientID:     keystore.RuntimeValue("AZURE_CLIENT_ID"),
+		ClientSecret: keystore.RuntimeValue("AZURE_CLIENT_SECRET"),
+	}
 }
 
 // runContourMode runs a headless contour tunnel server or client (and/or the

@@ -75,11 +75,16 @@ const (
 	KeystoreFieldAgentToken
 	KeystoreFieldDisableClientCert
 	KeystoreFieldTrustOnFirstUse
+	KeystoreFieldSentinelAuth
+	KeystoreFieldSentinelEndpoint
+	KeystoreFieldSentinelDCRID
+	KeystoreFieldSentinelStream
 	KeystoreFieldMethod
 	KeystoreFieldGitHubToken
 	KeystoreFieldBuildkiteToken
 	KeystoreFieldAWSAccessKey
 	KeystoreFieldAWSSecretKey
+	KeystoreFieldAzureTenantID
 	KeystoreFieldAzureClientID
 	KeystoreFieldAzureClientSecret
 	KeystoreFieldGCPServiceKey
@@ -893,7 +898,7 @@ func KeystoreFieldVisible(field int) bool {
 		KeystoreFieldDisableClientCert, KeystoreFieldTrustOnFirstUse,
 		KeystoreFieldMethod, KeystoreFieldNew,
 		KeystoreFieldBuildkiteToken, KeystoreFieldAWSAccessKey, KeystoreFieldAWSSecretKey,
-		KeystoreFieldAzureClientID, KeystoreFieldAzureClientSecret, KeystoreFieldGCPServiceKey,
+		KeystoreFieldGCPServiceKey,
 		KeystoreFieldSlackBotToken, KeystoreFieldDiscordBotToken, KeystoreFieldTelegramBotKey,
 		KeystoreFieldFirebaseKey, KeystoreFieldTeamsAuth, KeystoreFieldGitLabToken:
 		return false
@@ -954,6 +959,14 @@ func KeystoreFieldEnvKey(field int) (string, bool) {
 		return "PROXYWATCH_DISABLE_CLIENT_CERT", true
 	case KeystoreFieldTrustOnFirstUse:
 		return "PROXYWATCH_TRUST_ON_FIRST_USE", true
+	case KeystoreFieldSentinelAuth:
+		return "PROXYWATCH_SENTINEL_AUTH", true
+	case KeystoreFieldSentinelEndpoint:
+		return "PROXYWATCH_SENTINEL_DCE_ENDPOINT", true
+	case KeystoreFieldSentinelDCRID:
+		return "PROXYWATCH_SENTINEL_DCR_ID", true
+	case KeystoreFieldSentinelStream:
+		return "PROXYWATCH_SENTINEL_STREAM_NAME", true
 	case KeystoreFieldGitHubToken:
 		return "GITHUB_TOKEN", true
 	case KeystoreFieldBuildkiteToken:
@@ -962,6 +975,8 @@ func KeystoreFieldEnvKey(field int) (string, bool) {
 		return "AWS_ACCESS_KEY_ID", true
 	case KeystoreFieldAWSSecretKey:
 		return "AWS_SECRET_ACCESS_KEY", true
+	case KeystoreFieldAzureTenantID:
+		return "AZURE_TENANT_ID", true
 	case KeystoreFieldAzureClientID:
 		return "AZURE_CLIENT_ID", true
 	case KeystoreFieldAzureClientSecret:

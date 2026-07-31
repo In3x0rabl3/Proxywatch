@@ -185,7 +185,7 @@ func EmitDetectionOutputs(
 	// the API is always available if started via --debug-api flag.
 	UpdateDebugAPISnapshot(cycle, hostScope, scored)
 
-	if cfg.DebugLogPath == "" && cfg.DefenderPath == "" {
+	if cfg.DebugLogPath == "" && cfg.DefenderPath == "" && !SentinelOutputConfigured() {
 		return
 	}
 
@@ -201,6 +201,7 @@ func EmitDetectionOutputs(
 			ReportDetectionOutputError(err)
 		}
 	}
+	EmitSentinelDetections(now, cycle, hostScope, flagged)
 }
 
 func AppendDebugDetectionLog(
