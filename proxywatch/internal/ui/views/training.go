@@ -862,22 +862,6 @@ func formatMilDateTime(t time.Time) string {
 	return fmt.Sprintf("%02d%s%s J%03d %02d%02dZ", day, month, year, julian, hour, minute)
 }
 
-// formatMilDate formats date as military: 01MAY26 J121
-func formatMilDate(t time.Time) string {
-	t = t.UTC()
-	day := t.Day()
-	month := strings.ToUpper(t.Format("Jan"))
-	year := t.Format("06")
-	julian := t.YearDay()
-	return fmt.Sprintf("%02d%s%s J%03d", day, month, year, julian)
-}
-
-// formatZuluTime formats time as Zulu: 0146Z
-func formatZuluTime(t time.Time) string {
-	t = t.UTC()
-	return fmt.Sprintf("%02d%02dZ", t.Hour(), t.Minute())
-}
-
 // formatZuluTimeSec formats time as Zulu with seconds: 014632Z
 func formatZuluTimeSec(t time.Time) string {
 	t = t.UTC()
@@ -893,17 +877,6 @@ func formatTacticalElapsed(d time.Duration) string {
 	min := totalSec / 60
 	sec := totalSec % 60
 	return fmt.Sprintf("T+%02d:%02d", min, sec)
-}
-
-func clampPct(value, max float64) float64 {
-	if max <= 0 {
-		return 0
-	}
-	pct := value / max * 100
-	if pct > 100 {
-		return 100
-	}
-	return pct
 }
 
 func trainingLine(_ time.Time) string {

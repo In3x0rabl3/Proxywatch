@@ -130,49 +130,6 @@ var proxywatchBannerContent = []string{
 
 const proxywatchBannerW = 88
 
-// proxywatchEyeW is the width of the rendered tower emblem.
-const proxywatchEyeW = 11
-
-// renderEyeOfSauron returns 5 styled lines for the Tower of Barad-dûr with
-// the Eye of Sauron at the top, looking around randomly.
-func renderEyeOfSauron() []string {
-	// Animation: pupil looks around in a random-seeming pattern
-	lookPattern := []int{1, 3, 0, 2, 4, 1, 3, 2, 0, 4, 2, 1, 3, 0, 2, 4}
-	ms := time.Now().UnixMilli()
-	idx := (ms / 500) % int64(len(lookPattern))
-	phase := lookPattern[idx] // 0-4: left to right positions
-
-	// Purple palette
-	dark := lipgloss.NewStyle().Foreground(lipgloss.Color("#3A2A5E")).Background(common.ColorBg)
-	stone := lipgloss.NewStyle().Foreground(common.ColorLogoDim).Background(common.ColorBg)
-	bright := lipgloss.NewStyle().Foreground(common.ColorLogo).Background(common.ColorBg)
-	glow := lipgloss.NewStyle().Foreground(lipgloss.Color("#C9A0FF")).Background(common.ColorBg)
-	hot := lipgloss.NewStyle().Foreground(lipgloss.Color("#E8D0FF")).Background(common.ColorBg)
-	pupil := lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(common.ColorBg)
-	bg := common.Bg()
-
-	// Build the eye row with moving pupil (5 positions)
-	eyeChars := []string{"▒", "▒", "▓", "▒", "▒"}
-	for i := range eyeChars {
-		if i == phase {
-			eyeChars[i] = pupil.Render("●")
-		} else if i == phase-1 || i == phase+1 {
-			eyeChars[i] = hot.Render("░")
-		} else {
-			eyeChars[i] = glow.Render("▒")
-		}
-	}
-	eyeRow := stone.Render("╱") + bright.Render("(") + eyeChars[0] + eyeChars[1] + eyeChars[2] + eyeChars[3] + eyeChars[4] + bright.Render(")") + stone.Render("╲")
-
-	return []string{
-		bg.Render(" ") + dark.Render("╱") + stone.Render("▔") + bright.Render("▔▔▔▔▔") + stone.Render("▔") + dark.Render("╲") + bg.Render(" "),
-		bg.Render("") + eyeRow + bg.Render(" "),
-		bg.Render(" ") + dark.Render("╲") + stone.Render("▁") + bright.Render("▁▁▁▁▁") + stone.Render("▁") + dark.Render("╱") + bg.Render(" "),
-		bg.Render("  ") + dark.Render("║") + stone.Render("▓") + bright.Render("███") + stone.Render("▓") + dark.Render("║") + bg.Render("  "),
-		bg.Render(" ") + dark.Render("╱") + stone.Render("▀") + bright.Render("▀▀▀▀▀") + stone.Render("▀") + dark.Render("╲") + bg.Render(" "),
-	}
-}
-
 // shellBannerHeight reports how many rows shellBanner occupies at width w:
 // the full banner when wide, or a single compact line when narrow.
 func shellBannerHeight(w int) int {
@@ -285,17 +242,6 @@ func (m DashboardModel) renderCollectProgress(w int) string {
 		statusPass.Render(strings.Repeat("━", filled)) +
 		dimText.Render(strings.Repeat("─", barW-filled)) +
 		dimText.Render(fmt.Sprintf(" %s remaining", remaining))
-}
-
-func (m DashboardModel) renderStatusBanners(w int) string {
-	return ""
-}
-
-func (m DashboardModel) renderMultiHostSummary(w int) string {
-	summaryLine := buildMultiHostSummary(m.app)
-	titleLine := rightLabelStyle.Render(fmt.Sprintf("  HOST SUMMARY (%d hosts)", len(m.app.HostSummaries)))
-	detail := mutedText.Render("    " + TruncateToWidth(summaryLine, max(10, w-8)))
-	return titleLine + "\n" + detail
 }
 
 // ── Body ────────────────────────────────────────────────────────────────────
@@ -587,33 +533,6 @@ func stateCellStyle(state string) lipgloss.Style {
 		return base.Foreground(common.ColorCyan)
 	default:
 		return base.Foreground(common.ColorText)
-	}
-}
-
-// scoreSeverity maps a 0–100 threat score to a severity label + kind.
-func scoreSeverity(score int) (label, kind string) {
-	switch {
-	case score >= 80:
-		return "CRITICAL", "critical"
-	case score >= 60:
-		return "HIGH", "high"
-	case score >= 35:
-		return "MEDIUM", "medium"
-	default:
-		return "LOW", "low"
-	}
-}
-
-// severityColor returns just the foreground colour for a severity kind (for
-// meters and inline severity text, where the filled critical pill is unwanted).
-func severityColor(kind string) lipgloss.Color {
-	switch kind {
-	case "critical", "high":
-		return common.ColorAlert
-	case "medium":
-		return common.ColorWarn
-	default:
-		return common.ColorCyan
 	}
 }
 

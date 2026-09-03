@@ -133,11 +133,6 @@ var listenerSignals = map[string]bool{
 	// Demoted to ML-only: listener-no-children, listener-low-thread-count
 }
 
-// IsBeaconSignal returns true if the signal is in the beaconSignals or pivotSignals map.
-func IsBeaconSignal(sig string) bool {
-	return beaconSignals[sig] || pivotSignals[sig]
-}
-
 // IsSuppressionSignal returns true if the signal is one of the
 // FP-suppression-class signals — outbound-* / vendor-* / pkg-*
 // markers that fire when the rule engine has reasons to believe the

@@ -1,8 +1,6 @@
 package pcap
 
 import (
-	"strings"
-
 	"proxywatch/internal/shared"
 )
 
@@ -255,46 +253,4 @@ func enrichPcapWithCrossCandidatePivotSignals(candidates []shared.Candidate) {
 			c.Signals = appendUniqueSignal(c.Signals, "listener-egress-tunnel-shape")
 		}
 	}
-}
-
-// appendUniqueSignal — defined in apply_labels.go but redeclared here
-// for symmetry. This file's pass and apply_labels.go run in different
-// post-pass slots; sharing the helper avoids cycles.
-func appendUniqueSignalCC(slice []string, s string) []string {
-	for _, x := range slice {
-		if x == s {
-			return slice
-		}
-	}
-	return append(slice, s)
-}
-
-// pcapInternalPrefix returns true for RFC1918 / link-local prefixes.
-// Mirror of isInternalPrefix in ingest.go but keyed via two-octet
-// strings the cross-candidate pass needs to inspect cluster names.
-func pcapInternalPrefix(prefix string) bool {
-	if strings.HasPrefix(prefix, "10.") {
-		return true
-	}
-	if strings.HasPrefix(prefix, "192.168") {
-		return true
-	}
-	if strings.HasPrefix(prefix, "169.254") {
-		return true
-	}
-	if strings.HasPrefix(prefix, "172.") {
-		rest := strings.TrimPrefix(prefix, "172.")
-		oct := 0
-		for _, r := range rest {
-			if r < '0' || r > '9' {
-				oct = -1
-				break
-			}
-			oct = oct*10 + int(r-'0')
-		}
-		if oct >= 16 && oct <= 31 {
-			return true
-		}
-	}
-	return false
 }

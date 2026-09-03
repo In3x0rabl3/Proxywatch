@@ -206,16 +206,6 @@ func (m InspectorModel) renderBottomBar(w int) string {
 	return line
 }
 
-// inspectCandidate returns the candidate currently being inspected, or nil.
-func (m InspectorModel) inspectCandidate() *shared.Candidate {
-	for i := range m.app.Candidates {
-		if shared.CandidateKey(m.app.Candidates[i]) == m.app.InspectKey {
-			return &m.app.Candidates[i]
-		}
-	}
-	return nil
-}
-
 // inspectorReserved is the number of rows consumed by the flat header (identity
 // line + nav line + rule) plus a bottom margin — everything that is not the
 // scrolling body.
@@ -278,28 +268,6 @@ func (m InspectorModel) renderBody() string {
 		body += "\n" + bgSp(pad) + ind
 	}
 	return body
-}
-
-func inspRoleStyle(role string) lipgloss.Style {
-	switch shared.RoleFamily(role) {
-	case "beacon":
-		return inspSession
-	case "pivot":
-		return inspPivot
-	default:
-		return inspValue
-	}
-}
-
-func inspStateStyle(state string) lipgloss.Style {
-	switch state {
-	case "tunneling":
-		return inspAlert
-	case "exited":
-		return inspDim
-	default: // "watch"
-		return lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-	}
 }
 
 func inspScopeStyle(scope string) lipgloss.Style {

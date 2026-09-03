@@ -116,7 +116,6 @@ func wireBridge() {
 	views.DashboardHostListMode = keys.DashboardHostListMode
 	views.DashboardProcessCandidates = keys.DashboardProcessCandidates
 	views.SelectedDashboardProcessIndex = keys.SelectedDashboardProcessIndex
-	views.BuildMultiHostSummary = render.BuildMultiHostSummary
 	views.SafeRolePreset = uicommon.SafeRolePreset
 	views.FormatDashboardAge = uicommon.FormatDashboardAge
 	views.NormalizeDashboardRole = uicommon.NormalizeDashboardRole

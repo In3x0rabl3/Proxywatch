@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -123,27 +122,6 @@ func ClearPcapTLSLabel(kind PcapTLSLabelKind, value string) error {
 		return err
 	}
 	return nil
-}
-
-// ListPcapTLSLabels returns a sorted snapshot of all TLS labels.
-func ListPcapTLSLabels() []PcapTLSLabel {
-	ensurePcapTLSLabelsLoaded()
-	pcapTLSLabelMu.RLock()
-	out := make([]PcapTLSLabel, 0, len(pcapTLSLabelStore))
-	for _, v := range pcapTLSLabelStore {
-		out = append(out, v)
-	}
-	pcapTLSLabelMu.RUnlock()
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Kind != out[j].Kind {
-			return out[i].Kind < out[j].Kind
-		}
-		if out[i].Verdict != out[j].Verdict {
-			return out[i].Verdict < out[j].Verdict
-		}
-		return out[i].Value < out[j].Value
-	})
-	return out
 }
 
 // LoadPcapTLSLabels — call once at startup. Idempotent.

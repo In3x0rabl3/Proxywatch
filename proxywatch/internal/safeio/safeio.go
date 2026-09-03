@@ -16,31 +16,6 @@ func ReadFile(path string) ([]byte, error) {
 	return root.ReadFile(name)
 }
 
-func Open(path string) (*os.File, func() error, error) {
-	root, name, err := openPathRoot(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	f, err := root.Open(name)
-	if err != nil {
-		_ = root.Close()
-		return nil, nil, err
-	}
-	return f, func() error {
-		var out error
-		if err := f.Close(); err != nil {
-			out = err
-		}
-		if err := root.Close(); err != nil {
-			if out != nil {
-				return errors.Join(out, err)
-			}
-			return err
-		}
-		return out
-	}, nil
-}
-
 func OpenFile(path string, flag int, perm os.FileMode) (*os.File, func() error, error) {
 	root, name, err := openPathRoot(path)
 	if err != nil {

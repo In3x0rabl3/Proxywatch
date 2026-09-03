@@ -29,15 +29,6 @@ func init() {
 	}
 }
 
-// EnableJSONLogging flips the NDJSON-to-stderr emitter on at runtime.
-// Equivalent to setting PROXYWATCH_LOG_JSON=1 at process launch but
-// callable from code paths that detect headless mode after init().
-// Never call this while a TUI is rendering — the stderr writes will
-// corrupt the screen.
-func EnableJSONLogging() {
-	jsonLoggingEnabled.Store(true)
-}
-
 // TrainingBufferSizeAtomic is updated by the classifier and read by the training dashboard.
 // Uses atomic to avoid lock contention between scoring goroutine and UI.
 var TrainingBufferSizeAtomic atomic.Int64

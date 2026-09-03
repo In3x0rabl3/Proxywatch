@@ -279,7 +279,6 @@ func renderHelpPanel(title string, options []string, w int) string {
 func TruncateToWidth(s string, w int) string { return common.TruncateToWidth(s, w) }
 func ClipToWidth(s string, w int) string     { return common.ClipToWidth(s, w) }
 func FormatBytes(n uint64) string            { return common.FormatBytes(n) }
-func FormatBytesPerSec(n uint64) string      { return common.FormatBytesPerSec(n) }
 
 // Help option functions from common.
 func contourMenuHelpOptions() []string      { return common.ContourMenuHelpOptions() }
@@ -313,7 +312,6 @@ var (
 	DashboardHostListMode         func(*shared.AppState) bool
 	DashboardProcessCandidates    func(*shared.AppState) []shared.Candidate
 	SelectedDashboardProcessIndex func(*shared.AppState, []shared.Candidate) int
-	BuildMultiHostSummary         func(*shared.AppState) string
 	SafeRolePreset                func(*shared.AppState) string
 	FormatDashboardAge            func(int) string
 	NormalizeDashboardRole        func(string) string
@@ -462,13 +460,6 @@ func selectedDashboardProcessIndex(app *shared.AppState, view []shared.Candidate
 	return 0
 }
 
-func buildMultiHostSummary(app *shared.AppState) string {
-	if BuildMultiHostSummary != nil {
-		return BuildMultiHostSummary(app)
-	}
-	return ""
-}
-
 func safeRolePreset(app *shared.AppState) string {
 	if SafeRolePreset != nil {
 		return SafeRolePreset(app)
@@ -606,23 +597,6 @@ var (
 	inspSession = lipgloss.NewStyle().Foreground(common.ColorSession).Bold(true).Background(common.ColorBg)
 	inspPivot   = lipgloss.NewStyle().Foreground(common.ColorWarn).Bold(true).Background(common.ColorBg)
 )
-
-// ── sparkGauge renders a simple percentage gauge ────────────────────────────
-
-func sparkGauge(pct float64, w int, fg lipgloss.Color) string {
-	if pct < 0 {
-		pct = 0
-	}
-	if pct > 100 {
-		pct = 100
-	}
-	filled := int(pct * float64(w) / 100)
-	empty := w - filled
-	// Square blocks: ■ for filled, □ for empty (matches ML dashboard)
-	bar := lipgloss.NewStyle().Foreground(fg).Render(strings.Repeat("■", filled)) +
-		lipgloss.NewStyle().Foreground(common.ColorDim).Render(strings.Repeat("□", empty))
-	return bar
-}
 
 // ── quickHash is a simple string hash for content dedup ─────────────────────
 

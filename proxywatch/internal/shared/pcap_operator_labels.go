@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -108,24 +107,6 @@ func ClearPcapOperatorLabel(clusterName string) error {
 		return err
 	}
 	return nil
-}
-
-// ListPcapOperatorLabels returns a sorted snapshot of all pcap labels.
-func ListPcapOperatorLabels() []PcapOperatorLabel {
-	ensurePcapOperatorLabelsLoaded()
-	pcapLabelMu.RLock()
-	out := make([]PcapOperatorLabel, 0, len(pcapLabelStore))
-	for _, v := range pcapLabelStore {
-		out = append(out, v)
-	}
-	pcapLabelMu.RUnlock()
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Verdict != out[j].Verdict {
-			return out[i].Verdict < out[j].Verdict
-		}
-		return out[i].ClusterName < out[j].ClusterName
-	})
-	return out
 }
 
 // LoadPcapOperatorLabels is invoked from main.go at startup. Safe to
