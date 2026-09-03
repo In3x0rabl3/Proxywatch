@@ -1,0 +1,526 @@
+package views
+
+import (
+	"fmt"
+	"proxywatch/internal/ui/platform"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/gdamore/tcell/v2"
+
+	"proxywatch/internal/keystore"
+	"proxywatch/internal/shared"
+)
+
+type KeystoreModel struct {
+	app    *shared.AppState
+	width  int
+	height int
+}
+
+func NewKeystoreModel(app *shared.AppState) KeystoreModel {
+	return KeystoreModel{app: app}
+}
+
+func (m KeystoreModel) Init() tea.Cmd { return nil }
+
+func (m KeystoreModel) Update(msg tea.Msg) (KeystoreModel, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
+	case tea.KeyMsg:
+		if m.app.KeystoreEditing && msg.Type == tea.KeyRunes && len(msg.Runes) > 1 {
+			key, ok := keystoreFieldEnvKey(m.app.KeystoreField)
+			if ok {
+				ensureKeystoreValues(m.app)
+				for _, r := range msg.Runes {
+					if r >= 32 && r <= 126 {
+						m.app.KeystoreValues[key] += string(r)
+					}
+				}
+				keystore.ApplyToRuntime(m.app.KeystoreValues)
+			}
+			return m, nil
+		}
+
+		tev := convertKeyMsg(msg)
+
+		handled, shouldQuit := handleQuitConfirmKey(m.app, tev)
+		if handled {
+			if shouldQuit {
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+
+		// Number key workflow jumping.
+		if !m.app.KeystoreEditing {
+			if jumpToWorkflow(m.app, tev.Rune()) {
+				return m, nil
+			}
+		}
+
+		if m.app.KeystoreEditing {
+			switch tev.Key() {
+			case tcell.KeyLeft, tcell.KeyRight:
+				return m, nil
+			}
+		} else {
+			switch tev.Key() {
+			case tcell.KeyLeft:
+				if stepWorkflowMenu(m.app, -1) {
+					return m, nil
+				}
+			case tcell.KeyRight:
+				if stepWorkflowMenu(m.app, 1) {
+					return m, nil
+				}
+			}
+		}
+
+		if handleKeystoreKey(m.app, tev) {
+			return m, tea.Quit
+		}
+	}
+
+	return m, nil
+}
+
+func (m KeystoreModel) View() string {
+	w := m.width
+	h := m.height
+	if w <= 0 || h <= 0 {
+		return ""
+	}
+
+	m.refreshKeystoreList()
+
+	var sections []string
+	sections = append(sections, m.renderHeader())
+	sections = append(sections, m.renderSecurity())
+	if m.app.KeystoreUnlocked && m.app.KeystoreActiveEntry != "" {
+		sections = append(sections, m.renderFields())
+	}
+	sections = append(sections, m.renderSetup())
+	sections = append(sections, m.renderKeystoreList())
+	sections = append(sections, m.renderBottomBar(w))
+
+	view := lipgloss.JoinVertical(lipgloss.Left, sections...)
+
+	if m.app.KeystorePasswordPrompt {
+		pwMask := strings.Repeat("*", len(m.app.KeystorePasswordInput))
+		if pwMask == "" {
+			pwMask = "(type password)"
+		}
+		pwContent := dimText.Render("  Password: ") + bodyText.Render(pwMask) + "\n" +
+			dimText.Render("  ENTER unlock   Esc cancel")
+		view = overlayCenter(view, renderPanel(40, 4, "UNLOCK KEYSTORE", "", "", pwContent), w, h)
+	} else if m.app.KeystoreWizardOpen {
+		view = overlayCenter(view, m.renderWizard(), w, h)
+	} else if m.app.KeystoreShowHelp {
+		view = overlayCenter(view, renderHelpPanel("Keystore Menu", keystoreMenuHelpOptions(), w), w, h)
+	}
+	if m.app.ShowQuitConfirm && m.app.QuitConfirmDeadline.After(time.Now()) {
+		quitPanel := renderQuitConfirm(m.app.QuitConfirmDeadline, w)
+		view = overlayCenter(view, quitPanel, w, m.height)
+	}
+	return view
+}
+
+func (m KeystoreModel) refreshKeystoreList() {
+	entries := keystore.ListKeystores()
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		label := e.Name
+		if e.Secure {
+			label += " [secure]"
+		}
+		names[i] = label
+	}
+	m.app.KeystoreEntries = names
+}
+
+func (m KeystoreModel) renderHeader() string {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	return shellBanner(w)
+}
+
+func (m KeystoreModel) renderBottomBar(w int) string {
+	line := bgSp(1) + dimText.Render("esc dashboard    ↑↓ select    enter edit    ? menu")
+	if pad := w - lipgloss.Width(line); pad > 0 {
+		line += bgSp(pad)
+	}
+	return line
+}
+
+func (m KeystoreModel) renderSecurity() string {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+
+	hwAvail, hwDetail := keystore.HardwareKeyAvailable()
+	slots := keystore.DetectKeySlotsCached()
+
+	var badges []string
+	if hwAvail {
+		activeCount := 0
+		for _, s := range slots {
+			if s.InUse {
+				activeCount++
+			}
+		}
+		slotInfo := "NO ACTIVE SLOTS"
+		if activeCount == 1 {
+			slotInfo = "0001 SLOT ACTIVE"
+		} else if activeCount > 1 {
+			slotInfo = fmt.Sprintf("%04d SLOTS ACTIVE", activeCount)
+		}
+		badges = append(badges, statusPass.Render("YUBIKEY")+bgSp(2)+dimText.Render("("+slotInfo+")"))
+	} else {
+		badges = append(badges, dimText.Render("HARDWARE KEY")+bgSp(2)+dimText.Render("("+strings.ToUpper(hwDetail)+")"))
+	}
+
+	lockLabel := "[LOCKED]"
+	lockStyle := lipgloss.NewStyle().Foreground(colorAlert).Bold(true).Background(colorBg)
+	if m.app.KeystoreUnlocked {
+		lockLabel = "[UNLOCKED]"
+		lockStyle = lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Background(colorBg)
+	}
+
+	left := "  " + strings.Join(badges, "")
+	right := lockStyle.Render(lockLabel)
+	contentW := w - 2
+	gap := max(1, contentW-lipgloss.Width(left)-len(lockLabel))
+
+	line := left + bgSp(gap) + right
+	return renderPanel(w, 3, "SECURITY", "", "", line)
+}
+
+func (m KeystoreModel) renderSetup() string {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+
+	rows := []FormRow{
+		{Field: keystoreFieldLoad, Label: "Create", Value: platform.IconPlay + " New keystore (ENTER to select type)"},
+	}
+	return renderSetupPanel("SETUP", rows, m.app.KeystoreField, false, w)
+}
+
+func (m KeystoreModel) renderFields() string {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+
+	vals := m.app.KeystoreValues
+	if vals == nil {
+		vals = map[string]string{}
+	}
+
+	// Helper to format values - show -- for empty
+	fmtVal := func(envKey string) string {
+		v := keystore.MaskValue(envKey, vals[envKey])
+		if v == "" || v == "(empty)" {
+			return "--"
+		}
+		return strings.ToUpper(v)
+	}
+
+	type ksField struct {
+		field int
+		label string
+		value string
+	}
+
+	allFields := []ksField{
+		{keystoreFieldOpenAIKey, "OPENAI KEY", fmtVal("OPENAI_API_KEY")},
+		{keystoreFieldOpenAIBaseURL, "OPENAI URL", fmtVal("OPENAI_BASE_URL")},
+		{keystoreFieldAnthropicKey, "ANTHROPIC KEY", fmtVal("ANTHROPIC_API_KEY")},
+		{keystoreFieldAnthropicBaseURL, "ANTHROPIC URL", fmtVal("ANTHROPIC_BASE_URL")},
+		{keystoreFieldLocalLLMURL, "LOCAL LLM URL", fmtVal("LOCAL_LLM_URL")},
+		{keystoreFieldLocalLLMAPIKey, "LOCAL LLM KEY", fmtVal("LOCAL_LLM_API_KEY")},
+		{keystoreFieldCalibrationTimeout, "CAL TIMEOUT", fmtVal("CALIBRATION_HTTP_TIMEOUT")},
+		{keystoreFieldProxyhoundURL, "PH URL", fmtVal("BLOODHOUND_API_URL")},
+		{keystoreFieldProxyhoundToken, "PH TOKEN", fmtVal("BLOODHOUND_API_TOKEN")},
+		{keystoreFieldProxyhoundTokenID, "PH TOKEN ID", fmtVal("BLOODHOUND_API_TOKEN_ID")},
+		{keystoreFieldTLSDir, "TLS DIR", fmtVal("PROXYWATCH_TLS_DIR")},
+		{keystoreFieldAgentToken, "AGENT TOKEN", fmtVal("PROXYWATCH_AGENT_TOKEN")},
+		{keystoreFieldDisableClientCert, "NO CLIENT CRT", fmtVal("PROXYWATCH_DISABLE_CLIENT_CERT")},
+		{keystoreFieldTrustOnFirstUse, "TRUST TOFU", fmtVal("PROXYWATCH_TRUST_ON_FIRST_USE")},
+		{keystoreFieldGitHubToken, "GITHUB TOKEN", fmtVal("GITHUB_TOKEN")},
+		{keystoreFieldSave, "SAVE", "SAVE KEYSTORE"},
+		{keystoreFieldApply, "APPLY", "APPLY TO RUNTIME"},
+		{keystoreFieldLock, "LOCK", "LOCK (ENCRYPT & CLEAR)"},
+	}
+
+	var rows []FormRow
+	for _, f := range allFields {
+		if !keystoreFieldVisible(f.field) {
+			continue
+		}
+		_, editable := keystoreFieldEnvKey(f.field)
+		rows = append(rows, FormRow{
+			Field:    f.field,
+			Label:    f.label,
+			Value:    f.value,
+			Editable: editable,
+		})
+	}
+
+	title := "FIELDS  " + m.app.KeystoreActiveEntry
+	if m.app.KeystoreSecure {
+		title = "FIELDS  " + m.app.KeystoreActiveEntry + " [secure]"
+	}
+	return renderSetupPanel(title, rows, m.app.KeystoreField, m.app.KeystoreEditing, w)
+}
+
+func (m KeystoreModel) renderKeystoreList() string {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+
+	entries := keystore.ListKeystores()
+
+	listH := m.height - shellBannerHeight(m.width) - 3 - m.setupHeight() - 1
+	if m.app.KeystoreStatusText != "" && time.Now().Before(m.app.KeystoreStatusUntil) {
+		listH--
+	}
+	contentH := len(entries) + 4
+	if m.app.KeystoreStatusText != "" && time.Now().Before(m.app.KeystoreStatusUntil) {
+		contentH += 2
+	}
+	if contentH < listH {
+		listH = contentH
+	}
+	if listH < 4 {
+		listH = 4
+	}
+	counter := fmt.Sprintf("%d/%d", max(0, m.app.KeystoreSelected+1), len(entries))
+
+	if len(entries) == 0 {
+		body := bodyText.Render("  No keystores created yet.") + "\n" +
+			dimText.Render("  Use Setup above to create one.")
+
+		if m.app.KeystoreStatusText != "" && time.Now().Before(m.app.KeystoreStatusUntil) {
+			st := bodyText
+			if m.app.KeystoreStatusError {
+				st = statusFail
+			}
+			body += "\n\n  " + st.Render(m.app.KeystoreStatusText)
+		}
+		return renderPanel(w, listH, "DISPLAY", counter, "", body)
+	}
+
+	if m.app.KeystoreSelected < 0 {
+		m.app.KeystoreSelected = 0
+	}
+	if m.app.KeystoreSelected >= len(entries) {
+		m.app.KeystoreSelected = len(entries) - 1
+	}
+
+	focused := m.app.KeystorePanel == 1
+
+	var lines []string
+	for i, entry := range entries {
+		sel := focused && i == m.app.KeystoreSelected
+		gap := applySelectBg(bg(), sel)
+
+		encLabel := "PLAIN"
+		switch entry.Method {
+		case "password":
+			encLabel = "PASSWORD"
+		case "yubikey":
+			encLabel = "ENCRYPTED"
+		default:
+			if entry.Secure {
+				encLabel = "ENCRYPTED"
+			}
+		}
+		if entry.Name == m.app.KeystoreActiveEntry {
+			encLabel += " (ACTIVE)"
+		}
+
+		prefix := bg().Render(" ")
+		if sel {
+			prefix = lgSelectCursor.Render(">")
+		}
+
+		encStyle := applySelectBg(dimText, sel)
+		if entry.Name == m.app.KeystoreActiveEntry {
+			encStyle = applySelectBg(statusPass, sel)
+		}
+
+		// Format timestamp as military: 03APR26 T11:18:19Z
+		createdAt := entry.CreatedAt
+		if t, err := time.Parse("2006-01-02T15:04:05Z", entry.CreatedAt); err == nil {
+			createdAt = strings.ToUpper(t.Format("02Jan06")) + " T" + t.Format("15:04:05") + "Z"
+		}
+
+		row := prefix + gap.Render(" ") +
+			applySelectBg(bodyText, sel).Render(strings.ToUpper(entry.Name)) +
+			gap.Render("  ") +
+			encStyle.Render(encLabel) +
+			gap.Render("  ") +
+			applySelectBg(dimText, sel).Render(createdAt)
+
+		if sel {
+			row = lgSelectBg.Width(w - 2).Render(row)
+		}
+		lines = append(lines, row)
+	}
+
+	body := strings.Join(lines, "\n")
+
+	if m.app.KeystoreStatusText != "" && time.Now().Before(m.app.KeystoreStatusUntil) {
+		st := bodyText
+		if m.app.KeystoreStatusError {
+			st = statusFail
+		}
+		body += "\n\n  " + st.Render(m.app.KeystoreStatusText)
+	}
+
+	titleLabel := "DISPLAY"
+	return renderPanel(w, listH, titleLabel, counter, "", body)
+}
+
+func (m KeystoreModel) setupHeight() int {
+	setupH := 3
+	if m.app.KeystoreUnlocked && m.app.KeystoreActiveEntry != "" {
+		count := 0
+		for f := keystoreFieldOpenAIKey; f <= keystoreFieldMax; f++ {
+			if keystoreFieldVisible(f) && f != keystoreFieldLoad {
+				count++
+			}
+		}
+		setupH += count + 2
+	}
+	return setupH
+}
+
+func (m KeystoreModel) renderWizard() string {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+
+	wizW := min(60, w-10)
+	if wizW < 30 {
+		wizW = 30
+	}
+
+	sel := m.app.KeystoreWizardField
+	editing := m.app.KeystoreWizardEditing
+
+	selBgStyle := lipgloss.NewStyle().Background(colorSelect)
+	// Cursor uses ColorAccent so the keystore wizard's selection
+	// bar matches the rest of the dashboards (process view, host
+	// view, pcap findings, every SETUP form, every menu overlay).
+	curStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Background(colorSelect)
+	selLbl := lipgloss.NewStyle().Foreground(colorText).Bold(true).Background(colorSelect)
+	selVal := lipgloss.NewStyle().Foreground(colorTextHi).Bold(true).Background(colorSelect)
+	normLbl := lipgloss.NewStyle().Foreground(colorMuted).Background(colorBg)
+	normVal := lipgloss.NewStyle().Foreground(colorText).Background(colorBg)
+
+	contentW := wizW - 2
+
+	renderRow := func(field int, label, value string) string {
+		isSel := field == sel
+		lbl := fmt.Sprintf("%-13s", label+":")
+		if isSel {
+			prefix := curStyle.Render("> ")
+			if editing && field == 0 {
+				cursor := lipgloss.NewStyle().Foreground(colorBg).Background(colorCyan).Render(" ")
+				return selBgStyle.Width(contentW).Render(prefix + selLbl.Render(lbl) + selBgStyle.Render(" ") + selVal.Render(value) + cursor)
+			}
+			return selBgStyle.Width(contentW).Render(prefix + selLbl.Render(lbl) + selBgStyle.Render(" ") + selVal.Render(value))
+		}
+		return bg().Render("  ") + normLbl.Render(lbl) + bg().Render(" ") + normVal.Render(value)
+	}
+
+	nameVal := m.app.KeystoreWizardName
+	if nameVal == "" {
+		nameVal = "(auto-generated)"
+	}
+
+	wizMethod := m.app.KeystoreWizardMethod
+	if wizMethod == "" {
+		wizMethod = "local"
+	}
+	encVal := "Standard (no encryption)"
+	switch wizMethod {
+	case "password":
+		encVal = "Password Protected"
+	case "yubikey":
+		encVal = "Hardware Key (YubiKey)"
+	}
+
+	slotVal := ""
+	if wizMethod == "yubikey" {
+		slots := keystore.DetectKeySlotsCached()
+		var active []keystore.KeySlot
+		for _, s := range slots {
+			if s.InUse {
+				active = append(active, s)
+			}
+		}
+		for _, s := range active {
+			if s.ID == m.app.KeystoreWizardSlot {
+				slotVal = fmt.Sprintf("Slot %s: Active / %s", s.ID, s.Type)
+				break
+			}
+		}
+		if slotVal == "" && len(active) > 0 {
+			s := active[0]
+			slotVal = fmt.Sprintf("Slot %s: Active / %s", s.ID, s.Type)
+		}
+		if slotVal == "" {
+			slotVal = "(no active slots found)"
+		}
+		if len(active) > 1 {
+			slotVal += " (ENTER to cycle)"
+		}
+	}
+
+	var lines []string
+	lines = append(lines, renderRow(0, "Name", nameVal))
+	lines = append(lines, renderRow(1, "Encryption", encVal))
+	switch wizMethod {
+	case "password":
+		pwVal := strings.Repeat("*", len(m.app.KeystoreWizardPassword))
+		if pwVal == "" {
+			pwVal = "(enter password)"
+		}
+		cfVal := strings.Repeat("*", len(m.app.KeystoreWizardConfirm))
+		if cfVal == "" {
+			cfVal = "(confirm password)"
+		}
+		lines = append(lines, renderRow(2, "Password", pwVal))
+		lines = append(lines, renderRow(3, "Confirm", cfVal))
+		lines = append(lines, renderRow(4, "Action", platform.IconPlay+" Create keystore"))
+	case "yubikey":
+		lines = append(lines, renderRow(2, "Slot", slotVal))
+		lines = append(lines, renderRow(3, "Action", platform.IconPlay+" Create keystore"))
+	default:
+		lines = append(lines, renderRow(2, "Action", platform.IconPlay+" Create keystore"))
+	}
+	lines = append(lines, "")
+	lines = append(lines, dimText.Render("  ENTER edit/toggle/cycle   Esc cancel"))
+
+	content := strings.Join(lines, "\n")
+	h := len(lines) + 2
+	return renderPanel(wizW, h, "NEW KEYSTORE", "", "", content)
+}
+
+// Ensure imports used.
+var _ = tcell.KeyUp

@@ -1,0 +1,173 @@
+syntax = "proto3";
+
+package proxywatch.agent.v1;
+
+option go_package = "proxywatch/internal/agent/pb";
+
+message ProcessInfo {
+  int32 pid = 1;
+  int32 parent_pid = 2;
+  string name = 3;
+  uint32 session_id = 4;
+  string session_name = 5;
+  uint64 mem_usage = 6;
+  string status = 7;
+  string user_name = 8;
+  string exe_path = 9;
+  string company = 10;
+  string integrity = 11;
+  uint64 io_read_bytes = 12;
+  uint64 io_write_bytes = 13;
+  uint64 io_other_bytes = 14;
+  uint64 io_read_bps = 15;
+  uint64 io_write_bps = 16;
+  uint64 io_other_bps = 17;
+  int64 cpu_time_nanos = 18;
+  string window_title = 19;
+  string cmd_line = 20;
+  repeated string loaded_libs = 21;
+  int64 start_time_unix = 22;
+}
+
+message ListenerInfo {
+  int32 pid = 1;
+  string local_address = 2;
+  int32 local_port = 3;
+  string state = 4;
+}
+
+message ConnectionInfo {
+  int32 pid = 1;
+  string local_address = 2;
+  int32 local_port = 3;
+  string remote_address = 4;
+  int32 remote_port = 5;
+  string state = 6;
+}
+
+message UDPListenerInfo {
+  int32 pid = 1;
+  string local_address = 2;
+  int32 local_port = 3;
+}
+
+message RawSocketConn {
+  int32 pid = 1;
+  string local = 2;
+  string remote = 3;
+  string state = 4;
+  string proto = 5;
+}
+
+message Candidate {
+  string host = 1;
+  ProcessInfo proc = 2;
+  repeated ListenerInfo listeners = 3;
+  repeated ConnectionInfo conns = 4;
+  repeated UDPListenerInfo udp_listeners = 5;
+  int32 score = 6;
+  int32 confidence = 7;
+  repeated string reasons = 8;
+  repeated string signals = 9;
+  string role = 10;
+  bool active_proxying = 11;
+  ConnectionInfo control_channel = 12;
+  int32 control_duration_seconds = 13;
+  int32 out_total = 14;
+  int32 out_external = 15;
+  int32 out_internal = 16;
+  int32 out_loopback = 17;
+  int32 out_long_lived = 18;
+  int32 out_short_lived = 19;
+  int32 inbound_total = 20;
+  bool traffic_verified = 21;
+  bool strong_evidence = 22;
+  string control_subtype = 23;
+  int32 seen_seconds = 24;
+  bool delegated_egress = 25;
+  bool delegated_strong = 26;
+  int32 delegated_owner_pid = 27;
+  string delegated_owner = 28;
+  bool raw_socket = 29;
+  repeated RawSocketConn raw_conns = 30;
+  repeated string named_pipes = 31;
+  bool exited = 32;
+  int32 beacon_interval_ms = 33;
+  double beacon_jitter = 34;
+}
+
+message CandidateEnvelope {
+  string host_id = 1;
+  int64 timestamp_unix = 2;
+  repeated Candidate candidates = 3;
+}
+
+message TrainingRecord {
+  int64 timestamp_unix = 1;
+  string process_key = 2;
+  string process_name = 3;
+  repeated double features = 4;
+  repeated string signals = 5;
+  string rule_role = 6;
+  int32 rule_score = 7;
+  string operator_label = 8;
+  string experience_role = 9;
+  int32 experience_observations = 10;
+  double experience_stability = 11;
+  bool strong_evidence = 12;
+  bool traffic_verified = 13;
+}
+
+message TrainingBatch {
+  string host_id = 1;
+  string schema_hash = 2;
+  int64 batch_sequence = 3;
+  repeated TrainingRecord records = 4;
+}
+
+message ModelArtifact {
+  string version = 1;
+  string schema_hash = 2;
+  bytes model_json = 3;
+  bytes manifest_json = 4;
+  string promotion_reason = 5;
+  int64 trained_at_unix = 6;
+  int64 dataset_size = 7;
+}
+
+message ClientMessage {
+  CandidateEnvelope envelope = 1;
+  CommandResponse command_response = 2;
+  TrainingBatch training_batch = 3;
+}
+
+message ServerCommand {
+  string request_id = 1;
+  string type = 2;
+  int32 pid = 3;
+  ModelArtifact model = 4;
+}
+
+message CommandResponse {
+  string request_id = 1;
+  bool success = 2;
+  string error = 3;
+}
+
+message EnrollRequest {
+  string client_nonce = 1;
+  int64 client_unix = 2;
+  string client_proof = 3;
+}
+
+message EnrollResponse {
+  string server_nonce = 1;
+  int64 server_unix = 2;
+  string server_fingerprint = 3;
+  string server_proof = 4;
+}
+
+service ProxyWatchAgent {
+  rpc StreamCandidates(stream ClientMessage) returns (stream ServerCommand);
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+}

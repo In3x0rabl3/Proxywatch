@@ -1,0 +1,1251 @@
+package proxyhound
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"proxywatch/internal/keystore"
+	"proxywatch/internal/safeio"
+	"proxywatch/internal/shared"
+)
+
+// Well-known ports for service detection
+var (
+	sshPorts   = map[int]bool{22: true}
+	rdpPorts   = map[int]bool{3389: true}
+	winrmPorts = map[int]bool{5985: true, 5986: true}
+	smbPorts   = map[int]bool{445: true, 139: true}
+	httpPorts  = map[int]bool{80: true, 443: true, 8080: true, 8443: true}
+	dbPorts    = map[int]bool{1433: true, 3306: true, 5432: true, 27017: true, 6379: true}
+	ldapPorts  = map[int]bool{389: true, 636: true, 3268: true, 3269: true}
+)
+
+// isServicePort checks if a port matches a known service
+func isServicePort(port int, servicePorts map[int]bool) bool {
+	return servicePorts[port]
+}
+
+// detectServiceFromPort returns the service name for a well-known port
+func detectServiceFromPort(port int) string {
+	switch {
+	case sshPorts[port]:
+		return "SSH"
+	case rdpPorts[port]:
+		return "RDP"
+	case winrmPorts[port]:
+		return "WinRM"
+	case smbPorts[port]:
+		return "SMB"
+	case ldapPorts[port]:
+		return "LDAP"
+	case httpPorts[port]:
+		return "HTTP"
+	case dbPorts[port]:
+		return "Database"
+	default:
+		return ""
+	}
+}
+
+type Payload struct {
+	Metadata map[string]any `json:"metadata,omitempty"`
+	Graph    Graph          `json:"graph"`
+}
+
+type Graph struct {
+	Nodes []Node `json:"nodes"`
+	Edges []Edge `json:"edges"`
+}
+
+type Node struct {
+	ID         string         `json:"id"`
+	Kinds      []string       `json:"kinds"`
+	Properties map[string]any `json:"properties,omitempty"`
+}
+
+type Edge struct {
+	Kind       string         `json:"kind"`
+	Start      Ref            `json:"start"`
+	End        Ref            `json:"end"`
+	Properties map[string]any `json:"properties,omitempty"`
+}
+
+type Ref struct {
+	Value   string `json:"value"`
+	MatchBy string `json:"match_by"`
+}
+
+func BuildGraph(cands []shared.Candidate) Payload {
+	collectionTime := time.Now().UTC()
+	collectionTS := collectionTime.Format(time.RFC3339)
+
+	hostIPs := make(map[string]map[string]struct{})
+	hostListeningPorts := make(map[string]map[int]string)   // host -> port -> service
+	hostExposedServices := make(map[string]map[string]bool) // host -> service -> true
+	userSessions := make(map[string]map[string]bool)        // user -> host -> true
+	hostCanReach := make(map[string]map[string]bool)        // srcHost -> dstHost -> true
+	elevatedProcesses := make(map[string]bool)              // procID -> true
+	pivotCapableProcs := make(map[string]bool)              // procID -> true
+
+	addHostIP := func(host, ip string) {
+		if ip == "" || shared.IsWildcardIP(ip) || shared.IsLoopbackIP(ip) {
+			return
+		}
+		host = shared.DisplayHost(host)
+		ips := hostIPs[host]
+		if ips == nil {
+			ips = make(map[string]struct{})
+			hostIPs[host] = ips
+		}
+		ips[ip] = struct{}{}
+	}
+
+	addListeningPort := func(host string, port int) {
+		if port <= 0 {
+			return
+		}
+		host = shared.DisplayHost(host)
+		ports := hostListeningPorts[host]
+		if ports == nil {
+			ports = make(map[int]string)
+			hostListeningPorts[host] = ports
+		}
+		svc := detectServiceFromPort(port)
+		ports[port] = svc
+		if svc != "" {
+			services := hostExposedServices[host]
+			if services == nil {
+				services = make(map[string]bool)
+				hostExposedServices[host] = services
+			}
+			services[svc] = true
+		}
+	}
+
+	addUserSession := func(user, host string) {
+		user = strings.TrimSpace(strings.ToLower(user))
+		if user == "" || user == "(unknown)" {
+			return
+		}
+		host = shared.DisplayHost(host)
+		sessions := userSessions[user]
+		if sessions == nil {
+			sessions = make(map[string]bool)
+			userSessions[user] = sessions
+		}
+		sessions[host] = true
+	}
+
+	addCanReach := func(srcHost, dstHost string) {
+		srcHost = shared.DisplayHost(srcHost)
+		dstHost = shared.DisplayHost(dstHost)
+		if srcHost == dstHost {
+			return
+		}
+		reach := hostCanReach[srcHost]
+		if reach == nil {
+			reach = make(map[string]bool)
+			hostCanReach[srcHost] = reach
+		}
+		reach[dstHost] = true
+	}
+
+	// First pass: collect metadata
+	for _, c := range cands {
+		if c.Proc == nil {
+			continue
+		}
+		host := shared.DisplayHost(c.Host)
+		procID := fmt.Sprintf("proc:%s:%d", host, c.Proc.Pid)
+
+		// Track user sessions
+		addUserSession(c.Proc.UserName, host)
+
+		// Track elevated/admin processes
+		integrity := strings.ToLower(c.Proc.Integrity)
+		if integrity == "high" || integrity == "system" || integrity == "elevated" {
+			elevatedProcesses[procID] = true
+		}
+
+		// Track pivot-capable processes
+		if c.Role == "pivot" || c.Role == "tunnel" || c.ActiveProxying {
+			pivotCapableProcs[procID] = true
+		}
+
+		// Track listening ports
+		for _, l := range c.Listeners {
+			addHostIP(host, l.LocalAddress)
+			addListeningPort(host, l.LocalPort)
+		}
+		for _, cn := range c.Conns {
+			addHostIP(host, cn.LocalAddress)
+		}
+		for _, ul := range c.UDPListeners {
+			addHostIP(host, ul.LocalAddress)
+			addListeningPort(host, ul.LocalPort)
+		}
+	}
+
+	nodes := make(map[string]Node)
+	edges := make(map[string]Edge)
+
+	addNode := func(n Node) {
+		if _, ok := nodes[n.ID]; ok {
+			return
+		}
+		nodes[n.ID] = n
+	}
+
+	ipToHost := make(map[string]string)
+	for host, ips := range hostIPs {
+		hostID := "host:" + host
+		for ip := range ips {
+			if cur, ok := ipToHost[ip]; ok && cur != hostID {
+				ipToHost[ip] = ""
+				continue
+			}
+			if _, ok := ipToHost[ip]; !ok {
+				ipToHost[ip] = hostID
+			}
+		}
+	}
+
+	addEdge := func(e Edge, key string) {
+		if _, ok := edges[key]; ok {
+			return
+		}
+		e = addEdgeDescription(e)
+		edges[key] = e
+	}
+
+	scopeForIP := func(ip string) string {
+		switch {
+		case shared.IsLoopbackIP(ip):
+			return "loopback"
+		case shared.IsInternalIP(ip):
+			return "internal"
+		default:
+			return "external"
+		}
+	}
+
+	hostProps := func(host string) map[string]any {
+		props := map[string]any{
+			"name":        host,
+			"collectedAt": collectionTS,
+		}
+		ips := hostIPs[host]
+		if len(ips) == 0 {
+			return props
+		}
+
+		// Add listening ports
+		if ports := hostListeningPorts[host]; len(ports) > 0 {
+			portList := make([]int, 0, len(ports))
+			for p := range ports {
+				portList = append(portList, p)
+			}
+			sort.Ints(portList)
+			props["listeningPorts"] = portList
+		}
+
+		// Add exposed services
+		if services := hostExposedServices[host]; len(services) > 0 {
+			svcList := make([]string, 0, len(services))
+			for svc := range services {
+				svcList = append(svcList, svc)
+			}
+			sort.Strings(svcList)
+			props["exposedServices"] = svcList
+
+			// BloodHound-relevant flags
+			props["hasRDP"] = services["RDP"]
+			props["hasWinRM"] = services["WinRM"]
+			props["hasSMB"] = services["SMB"]
+			props["hasSSH"] = services["SSH"]
+		}
+		list := make([]string, 0, len(ips))
+		for ip := range ips {
+			list = append(list, ip)
+		}
+		sort.Strings(list)
+		props["ip"] = list[0]
+		props["ips"] = list
+		return props
+	}
+
+	addHostIPNode := func(ip string) string {
+		hostIPID := "hostip:" + ip
+		addNode(Node{
+			ID:    hostIPID,
+			Kinds: []string{"Host"},
+			Properties: map[string]any{
+				"name":  ip,
+				"ip":    ip,
+				"scope": scopeForIP(ip),
+			},
+		})
+		return hostIPID
+	}
+
+	resolveKnownHostID := func(ip string) (string, bool) {
+		if hostID, ok := ipToHost[ip]; ok && hostID != "" {
+			return hostID, true
+		}
+		return "", false
+	}
+
+	for _, c := range cands {
+		if c.Proc == nil {
+			continue
+		}
+		host := shared.DisplayHost(c.Host)
+
+		hostID := "host:" + host
+		addNode(Node{
+			ID:         hostID,
+			Kinds:      []string{"Host"},
+			Properties: hostProps(host),
+		})
+
+		if ips := hostIPs[host]; len(ips) > 0 {
+			for ip := range ips {
+				hostIPID := addHostIPNode(ip)
+				addEdge(Edge{
+					Kind: "HostHasIP",
+					Start: Ref{
+						Value:   hostID,
+						MatchBy: "id",
+					},
+					End: Ref{
+						Value:   hostIPID,
+						MatchBy: "id",
+					},
+					Properties: map[string]any{
+						"host":  host,
+						"ip":    ip,
+						"scope": scopeForIP(ip),
+					},
+				}, "HostHasIP|"+hostID+"|"+hostIPID)
+			}
+		}
+
+		procID := fmt.Sprintf("proc:%s:%d", host, c.Proc.Pid)
+		rolePrefix := roleKindPrefix(c.Role)
+
+		// Determine elevated status
+		integrity := strings.ToLower(c.Proc.Integrity)
+		isElevated := integrity == "high" || integrity == "system" || integrity == "elevated"
+		isServiceAccount := isServiceAccountUser(c.Proc.UserName)
+
+		procProps := map[string]any{
+			"pid":              c.Proc.Pid,
+			"name":             c.Proc.Name,
+			"path":             c.Proc.ExePath,
+			"cmdline":          c.Proc.CmdLine,
+			"user":             c.Proc.UserName,
+			"host":             host,
+			"integrity":        c.Proc.Integrity,
+			"company":          c.Proc.Company,
+			"role":             c.Role,
+			"control_subtype":  c.ControlSubtype,
+			"score":            c.Score,
+			"confidence":       c.Confidence,
+			"active_proxying":  c.ActiveProxying,
+			"strong_evidence":  c.StrongEvidence,
+			"signals":          append([]string(nil), c.Signals...),
+			"reasons":          append([]string(nil), c.Reasons...),
+			"collectedAt":      collectionTS,
+			"isHighIntegrity":  isElevated,
+			"isServiceAccount": isServiceAccount,
+			"isPivotCapable":   pivotCapableProcs[procID],
+		}
+		if c.ControlChannel != nil {
+			procProps["control_target"] = fmt.Sprintf("%s:%d", c.ControlChannel.RemoteAddress, c.ControlChannel.RemotePort)
+			procProps["control_duration_seconds"] = c.ControlDurationSeconds
+		}
+		addNode(Node{
+			ID:         procID,
+			Kinds:      []string{"Process"},
+			Properties: procProps,
+		})
+
+		hostProcessKind := "Has" + rolePrefix
+		addEdge(Edge{
+			Kind: hostProcessKind,
+			Start: Ref{
+				Value:   hostID,
+				MatchBy: "id",
+			},
+			End: Ref{
+				Value:   procID,
+				MatchBy: "id",
+			},
+			Properties: map[string]any{
+				"host":       host,
+				"process":    c.Proc.Name,
+				"pid":        c.Proc.Pid,
+				"score":      c.Score,
+				"confidence": c.Confidence,
+			},
+		}, hostProcessKind+"|"+hostID+"|"+procID)
+
+		userName := strings.TrimSpace(c.Proc.UserName)
+		if userID, ok := userNodeID(userName); ok {
+			addNode(Node{
+				ID:    userID,
+				Kinds: []string{"User"},
+				Properties: map[string]any{
+					"name": userName,
+				},
+			})
+
+			userProcessKind := "Runs" + rolePrefix
+			addEdge(Edge{
+				Kind: userProcessKind,
+				Start: Ref{
+					Value:   userID,
+					MatchBy: "id",
+				},
+				End: Ref{
+					Value:   procID,
+					MatchBy: "id",
+				},
+				Properties: map[string]any{
+					"user":       userName,
+					"process":    c.Proc.Name,
+					"pid":        c.Proc.Pid,
+					"score":      c.Score,
+					"confidence": c.Confidence,
+				},
+			}, userProcessKind+"|"+userID+"|"+procID)
+		}
+
+		for _, cn := range c.Conns {
+			if cn.RemoteAddress == "" || shared.IsWildcardIP(cn.RemoteAddress) {
+				continue
+			}
+
+			localEndpointID := fmt.Sprintf("endpoint:%s:%s:%d", host, cn.LocalAddress, cn.LocalPort)
+			addNode(Node{
+				ID:    localEndpointID,
+				Kinds: []string{"Endpoint"},
+				Properties: map[string]any{
+					"ip":       cn.LocalAddress,
+					"port":     cn.LocalPort,
+					"protocol": "tcp",
+					"scope":    "local",
+					"host":     host,
+				},
+			})
+
+			addEdge(Edge{
+				Kind: "HasEndpoint",
+				Start: Ref{
+					Value:   hostID,
+					MatchBy: "id",
+				},
+				End: Ref{
+					Value:   localEndpointID,
+					MatchBy: "id",
+				},
+				Properties: map[string]any{
+					"host":     host,
+					"ip":       cn.LocalAddress,
+					"port":     cn.LocalPort,
+					"protocol": "tcp",
+				},
+			}, "HostHasLocalEndpoint|"+hostID+"|"+localEndpointID)
+
+			usesLocalKind := "BindsTo"
+			addEdge(Edge{
+				Kind: usesLocalKind,
+				Start: Ref{
+					Value:   procID,
+					MatchBy: "id",
+				},
+				End: Ref{
+					Value:   localEndpointID,
+					MatchBy: "id",
+				},
+				Properties: localEndpointProcessProps(c, cn),
+			}, usesLocalKind+"|"+procID+"|"+localEndpointID+"|"+cn.State)
+
+			localUsedByKind := "BoundBy"
+			addEdge(Edge{
+				Kind: localUsedByKind,
+				Start: Ref{
+					Value:   localEndpointID,
+					MatchBy: "id",
+				},
+				End: Ref{
+					Value:   procID,
+					MatchBy: "id",
+				},
+				Properties: localEndpointProcessProps(c, cn),
+			}, localUsedByKind+"|"+localEndpointID+"|"+procID+"|"+cn.State)
+
+			scope := "external"
+			switch {
+			case shared.IsLoopbackIP(cn.RemoteAddress):
+				scope = "loopback"
+			case shared.IsInternalIP(cn.RemoteAddress):
+				scope = "internal"
+			}
+
+			hostEdgeKind := kindForScope(
+				scope,
+				"ReachesHost",
+				"ReachesHostInternal",
+				"ReachesHostLoopback",
+			)
+			hostIPID, knownHost := resolveKnownHostID(cn.RemoteAddress)
+			remoteHostName := ""
+			if knownHost {
+				remoteHostName = strings.TrimPrefix(hostIPID, "host:")
+			}
+
+			endpointID := fmt.Sprintf("endpoint:%s:%d", cn.RemoteAddress, cn.RemotePort)
+			if remoteHostName != "" {
+				endpointID = fmt.Sprintf("endpoint:%s:%s:%d", remoteHostName, cn.RemoteAddress, cn.RemotePort)
+			}
+
+			endpointName := fmt.Sprintf("%s:%d", cn.RemoteAddress, cn.RemotePort)
+			if remoteHostName != "" {
+				endpointName = fmt.Sprintf("%s (%s)", remoteHostName, endpointName)
+			}
+			endpointProps := map[string]any{
+				"name":     endpointName,
+				"ip":       cn.RemoteAddress,
+				"port":     cn.RemotePort,
+				"protocol": "tcp",
+				"scope":    scope,
+			}
+			if remoteHostName != "" {
+				endpointProps["host"] = remoteHostName
+			}
+			addNode(Node{
+				ID:         endpointID,
+				Kinds:      []string{"Endpoint"},
+				Properties: endpointProps,
+			})
+
+			edgeKind := kindForScope(
+				scope,
+				"ConnectsTo",
+				"ConnectsToInternal",
+				"ConnectsToLoopback",
+			)
+			edgeKey := fmt.Sprintf("%s|%s|%s|%d|%d", edgeKind, procID, endpointID, cn.LocalPort, cn.RemotePort)
+			edgeProps := processConnProps(c, cn, scope)
+			if remoteHostName != "" {
+				edgeProps["remote_host"] = remoteHostName
+			}
+			addEdge(Edge{
+				Kind: edgeKind,
+				Start: Ref{
+					Value:   procID,
+					MatchBy: "id",
+				},
+				End: Ref{
+					Value:   endpointID,
+					MatchBy: "id",
+				},
+				Properties: edgeProps,
+			}, edgeKey)
+
+			linkKind := kindForScope(
+				scope,
+				"RoutesTo",
+				"RoutesToInternal",
+				"RoutesToLoopback",
+			)
+			linkKey := fmt.Sprintf("%s|%s|%s|%d|%d", linkKind, localEndpointID, endpointID, cn.LocalPort, cn.RemotePort)
+			linkProps := endpointLinkProps(c, cn, scope)
+			if remoteHostName != "" {
+				linkProps["remote_host"] = remoteHostName
+			}
+			addEdge(Edge{
+				Kind: linkKind,
+				Start: Ref{
+					Value:   localEndpointID,
+					MatchBy: "id",
+				},
+				End: Ref{
+					Value:   endpointID,
+					MatchBy: "id",
+				},
+				Properties: linkProps,
+			}, linkKey)
+
+			if userID, ok := userNodeID(userName); ok {
+				userEdgeKind := kindForScope(
+					scope,
+					"User"+rolePrefix+"TrafficExternal",
+					"User"+rolePrefix+"TrafficInternal",
+					"User"+rolePrefix+"TrafficLoopback",
+				)
+				userKey := fmt.Sprintf("%s|%s|%s|%d|%d", userEdgeKind, userID, endpointID, cn.LocalPort, cn.RemotePort)
+				userProps := userConnProps(userName, c, cn, scope)
+				if remoteHostName != "" {
+					userProps["remote_host"] = remoteHostName
+				}
+				addEdge(Edge{
+					Kind: userEdgeKind,
+					Start: Ref{
+						Value:   userID,
+						MatchBy: "id",
+					},
+					End: Ref{
+						Value:   endpointID,
+						MatchBy: "id",
+					},
+					Properties: userProps,
+				}, userKey)
+			}
+
+			if knownHost {
+				hostKey := fmt.Sprintf("%s|%s|%s|%d|%d", hostEdgeKind, procID, hostIPID, cn.LocalPort, cn.RemotePort)
+				addEdge(Edge{
+					Kind: hostEdgeKind,
+					Start: Ref{
+						Value:   procID,
+						MatchBy: "id",
+					},
+					End: Ref{
+						Value:   hostIPID,
+						MatchBy: "id",
+					},
+					Properties: map[string]any{
+						"process":        c.Proc.Name,
+						"pid":            c.Proc.Pid,
+						"state":          cn.State,
+						"local_address":  cn.LocalAddress,
+						"local_port":     cn.LocalPort,
+						"remote_address": cn.RemoteAddress,
+						"remote_port":    cn.RemotePort,
+						"active_proxy":   c.ActiveProxying,
+						"scope":          scope,
+					},
+				}, hostKey)
+
+				localHostKind := kindForScope(
+					scope,
+					"LocalEndpointConnectsToHostExternal",
+					"LocalEndpointConnectsToHostInternal",
+					"LocalEndpointConnectsToHostLoopback",
+				)
+				localHostKey := fmt.Sprintf("%s|%s|%s|%d|%d", localHostKind, localEndpointID, hostIPID, cn.LocalPort, cn.RemotePort)
+				addEdge(Edge{
+					Kind: localHostKind,
+					Start: Ref{
+						Value:   localEndpointID,
+						MatchBy: "id",
+					},
+					End: Ref{
+						Value:   hostIPID,
+						MatchBy: "id",
+					},
+					Properties: map[string]any{
+						"local_address":  cn.LocalAddress,
+						"local_port":     cn.LocalPort,
+						"remote_address": cn.RemoteAddress,
+						"remote_port":    cn.RemotePort,
+						"process":        c.Proc.Name,
+						"pid":            c.Proc.Pid,
+						"scope":          scope,
+					},
+				}, localHostKey)
+
+				if userID, ok := userNodeID(userName); ok {
+					userHostKind := kindForScope(
+						scope,
+						"User"+rolePrefix+"TrafficHostExternal",
+						"User"+rolePrefix+"TrafficHostInternal",
+						"User"+rolePrefix+"TrafficHostLoopback",
+					)
+					userHostKey := fmt.Sprintf("%s|%s|%s|%d|%d", userHostKind, userID, hostIPID, cn.LocalPort, cn.RemotePort)
+					addEdge(Edge{
+						Kind: userHostKind,
+						Start: Ref{
+							Value:   userID,
+							MatchBy: "id",
+						},
+						End: Ref{
+							Value:   hostIPID,
+							MatchBy: "id",
+						},
+						Properties: userConnProps(userName, c, cn, scope),
+					}, userHostKey)
+				}
+			}
+		}
+
+		// Track CanReach relationships for lateral movement analysis
+		for _, cn := range c.Conns {
+			if cn.RemoteAddress == "" || shared.IsWildcardIP(cn.RemoteAddress) || shared.IsLoopbackIP(cn.RemoteAddress) {
+				continue
+			}
+			if dstHostID, ok := resolveKnownHostID(cn.RemoteAddress); ok {
+				dstHost := strings.TrimPrefix(dstHostID, "host:")
+				addCanReach(host, dstHost)
+			}
+		}
+	}
+
+	// Add HasSession edges (User -> Host)
+	for user, hosts := range userSessions {
+		userID, ok := userNodeID(user)
+		if !ok {
+			continue
+		}
+		for hostName := range hosts {
+			hostID := "host:" + hostName
+			sessionKey := "HasSession|" + userID + "|" + hostID
+			addEdge(Edge{
+				Kind: "HasSession",
+				Start: Ref{
+					Value:   userID,
+					MatchBy: "id",
+				},
+				End: Ref{
+					Value:   hostID,
+					MatchBy: "id",
+				},
+				Properties: map[string]any{
+					"user":        user,
+					"host":        hostName,
+					"collectedAt": collectionTS,
+					"description": fmt.Sprintf("User %s has active session on %s.", user, hostName),
+				},
+			}, sessionKey)
+		}
+	}
+
+	// Add CanReach edges (Host -> Host) for lateral movement paths
+	for srcHost, dstHosts := range hostCanReach {
+		srcHostID := "host:" + srcHost
+		for dstHost := range dstHosts {
+			dstHostID := "host:" + dstHost
+			reachKey := "CanReach|" + srcHostID + "|" + dstHostID
+			addEdge(Edge{
+				Kind: "CanReach",
+				Start: Ref{
+					Value:   srcHostID,
+					MatchBy: "id",
+				},
+				End: Ref{
+					Value:   dstHostID,
+					MatchBy: "id",
+				},
+				Properties: map[string]any{
+					"source":      srcHost,
+					"target":      dstHost,
+					"collectedAt": collectionTS,
+					"description": fmt.Sprintf("Host %s can reach host %s.", srcHost, dstHost),
+				},
+			}, reachKey)
+		}
+	}
+
+	// Add AdminTo edges for elevated processes
+	for procID := range elevatedProcesses {
+		// Parse host from procID (format: "proc:hostname:pid")
+		parts := strings.SplitN(strings.TrimPrefix(procID, "proc:"), ":", 2)
+		if len(parts) < 1 {
+			continue
+		}
+		hostName := parts[0]
+		hostID := "host:" + hostName
+
+		// Find the user for this process
+		for _, c := range cands {
+			if c.Proc == nil {
+				continue
+			}
+			checkProcID := fmt.Sprintf("proc:%s:%d", shared.DisplayHost(c.Host), c.Proc.Pid)
+			if checkProcID != procID {
+				continue
+			}
+			userID, ok := userNodeID(c.Proc.UserName)
+			if !ok {
+				continue
+			}
+			adminKey := "AdminTo|" + userID + "|" + hostID
+			addEdge(Edge{
+				Kind: "AdminTo",
+				Start: Ref{
+					Value:   userID,
+					MatchBy: "id",
+				},
+				End: Ref{
+					Value:   hostID,
+					MatchBy: "id",
+				},
+				Properties: map[string]any{
+					"user":        c.Proc.UserName,
+					"host":        hostName,
+					"process":     c.Proc.Name,
+					"integrity":   c.Proc.Integrity,
+					"collectedAt": collectionTS,
+					"description": fmt.Sprintf("User %s has elevated process %s on %s.", c.Proc.UserName, c.Proc.Name, hostName),
+				},
+			}, adminKey)
+			break
+		}
+	}
+
+	// Detect domain from hostname (used in per-node properties)
+	_ = extractDomain(cands)
+
+	payload := Payload{
+		// BloodHound CE's file-upload API expects AD-specific metadata schema.
+		// For custom ProxyWatch graph data, omit metadata and import via Cypher
+		// mutations (requires bhe_enable_cypher_mutations=true in docker-compose).
+		Metadata: nil,
+		Graph: Graph{
+			Nodes: mapToSlice(nodes),
+			Edges: edgeMapToSlice(edges),
+		},
+	}
+	return payload
+}
+
+func addEdgeDescription(e Edge) Edge {
+	if e.Properties == nil {
+		e.Properties = make(map[string]any)
+	}
+	if _, ok := e.Properties["description"]; !ok {
+		e.Properties["description"] = edgeDescription(e.Kind, e.Properties)
+	}
+	return e
+}
+
+func edgeDescription(kind string, props map[string]any) string {
+	process := propString(props, "process")
+	pid := propString(props, "pid")
+	user := propString(props, "user")
+	host := propString(props, "host")
+	ip := propString(props, "ip")
+	localAddr := propString(props, "local_address")
+	localPort := propString(props, "local_port")
+	remoteAddr := propString(props, "remote_address")
+	remotePort := propString(props, "remote_port")
+	state := propString(props, "state")
+	scope := propString(props, "scope")
+
+	local := joinHostPort(localAddr, localPort)
+	remote := joinHostPort(remoteAddr, remotePort)
+
+	if role, ok := roleFromKindSuffix(kind, "ProcessOnHost"); ok {
+		return fmt.Sprintf("Host %s owns %s process %s (pid %s).", hostOr(process, host), role, process, pid)
+	}
+	if role, ok := roleFromUserKindSuffix(kind, "Process"); ok {
+		return fmt.Sprintf("User %s owns %s process %s (pid %s).", user, role, process, pid)
+	}
+	if role, ok := roleFromKindSuffix(kind, "UsesLocalEndpoint"); ok {
+		return fmt.Sprintf("%s process %s (pid %s) uses local endpoint %s (%s).", role, process, pid, local, state)
+	}
+	if role, ok := roleFromKindPrefix(kind, "LocalEndpointUsedBy"); ok {
+		return fmt.Sprintf("Local endpoint %s is used by %s process %s (pid %s).", local, role, process, pid)
+	}
+	if role, ok := roleFromKindAnySuffix(kind, "ConnectsToExternal", "ConnectsToInternal", "ConnectsToLoopback"); ok {
+		return fmt.Sprintf("%s process %s (pid %s) connects to %s endpoint %s from %s (%s).", role, process, pid, scope, remote, local, state)
+	}
+	if role, ok := roleFromKindAnySuffix(kind, "ConnectsToHostExternal", "ConnectsToHostInternal", "ConnectsToHostLoopback"); ok {
+		return fmt.Sprintf("%s process %s (pid %s) connects to %s host %s from %s (%s).", role, process, pid, scope, remoteAddr, local, state)
+	}
+	if role, ok := roleFromUserKindAnySuffix(kind, "TrafficHostExternal", "TrafficHostInternal", "TrafficHostLoopback"); ok {
+		return fmt.Sprintf("User %s has %s %s traffic to host %s via %s (pid %s).", user, role, scope, remoteAddr, process, pid)
+	}
+	if role, ok := roleFromUserKindAnySuffix(kind, "TrafficExternal", "TrafficInternal", "TrafficLoopback"); ok {
+		return fmt.Sprintf("User %s has %s %s traffic to %s via %s (pid %s).", user, role, scope, remote, process, pid)
+	}
+
+	switch kind {
+	case "HostHasIP":
+		return fmt.Sprintf("Host %s has IP %s.", host, ip)
+	case "HasEndpoint":
+		return fmt.Sprintf("Host %s exposes local endpoint %s.", host, local)
+	case "LocalEndpointConnectsToHostExternal", "LocalEndpointConnectsToHostInternal", "LocalEndpointConnectsToHostLoopback":
+		return fmt.Sprintf("Local endpoint %s connects to %s host %s.", local, scope, remoteAddr)
+	case "LocalEndpointConnectsToExternal", "LocalEndpointConnectsToInternal", "LocalEndpointConnectsToLoopback":
+		return fmt.Sprintf("Local endpoint %s connects to %s endpoint %s.", local, scope, remote)
+	default:
+		return fmt.Sprintf("Relationship %s recorded by ProxyWatch.", kind)
+	}
+}
+
+func propString(props map[string]any, key string) string {
+	if props == nil {
+		return ""
+	}
+	if v, ok := props[key]; ok {
+		switch t := v.(type) {
+		case string:
+			return t
+		default:
+			return fmt.Sprint(t)
+		}
+	}
+	return ""
+}
+
+func joinHostPort(host, port string) string {
+	if host == "" && port == "" {
+		return ""
+	}
+	if host == "" {
+		return port
+	}
+	if port == "" {
+		return host
+	}
+	return host + ":" + port
+}
+
+func hostOr(process, host string) string {
+	if host != "" {
+		return host
+	}
+	return process
+}
+
+func roleKindPrefix(role string) string {
+	switch role {
+	case "tunnel":
+		return "Tunnel"
+	case "pivot":
+		return "Pivot"
+	case "beacon":
+		return "Channel"
+	case "listen":
+		return "Listener"
+	case "outbound":
+		return "Outbound"
+	default:
+		return "Process"
+	}
+}
+
+func roleLabelFromPrefix(prefix string) string {
+	switch strings.TrimSpace(prefix) {
+	case "Tunnel":
+		return "tunnel"
+	case "Pivot":
+		return "pivot"
+	case "Channel":
+		return "beacon"
+	case "Listener":
+		return "listener"
+	case "Outbound":
+		return "outbound"
+	case "Process":
+		return "process"
+	default:
+		if prefix == "" {
+			return "process"
+		}
+		return strings.ToLower(prefix)
+	}
+}
+
+func roleFromKindSuffix(kind, suffix string) (string, bool) {
+	if !strings.HasSuffix(kind, suffix) {
+		return "", false
+	}
+	prefix := strings.TrimSuffix(kind, suffix)
+	if prefix == "" {
+		return "", false
+	}
+	return roleLabelFromPrefix(prefix), true
+}
+
+func roleFromKindPrefix(kind, prefix string) (string, bool) {
+	if !strings.HasPrefix(kind, prefix) {
+		return "", false
+	}
+	rolePrefix := strings.TrimPrefix(kind, prefix)
+	if rolePrefix == "" {
+		return "", false
+	}
+	return roleLabelFromPrefix(rolePrefix), true
+}
+
+func roleFromUserKindSuffix(kind, suffix string) (string, bool) {
+	if !strings.HasPrefix(kind, "User") || !strings.HasSuffix(kind, suffix) {
+		return "", false
+	}
+	rolePrefix := strings.TrimPrefix(kind, "User")
+	rolePrefix = strings.TrimSuffix(rolePrefix, suffix)
+	if rolePrefix == "" {
+		return "", false
+	}
+	return roleLabelFromPrefix(rolePrefix), true
+}
+
+func roleFromKindAnySuffix(kind string, suffixes ...string) (string, bool) {
+	for _, suffix := range suffixes {
+		if role, ok := roleFromKindSuffix(kind, suffix); ok {
+			return role, true
+		}
+	}
+	return "", false
+}
+
+func roleFromUserKindAnySuffix(kind string, suffixes ...string) (string, bool) {
+	for _, suffix := range suffixes {
+		if role, ok := roleFromUserKindSuffix(kind, suffix); ok {
+			return role, true
+		}
+	}
+	return "", false
+}
+
+func kindForScope(scope, externalKind, internalKind, loopbackKind string) string {
+	switch scope {
+	case "internal":
+		return internalKind
+	case "loopback":
+		return loopbackKind
+	default:
+		return externalKind
+	}
+}
+
+func userNodeID(userName string) (string, bool) {
+	userName = strings.TrimSpace(userName)
+	if userName == "" || userName == "(unknown)" {
+		return "", false
+	}
+	return "user:" + strings.ToLower(userName), true
+}
+
+func localEndpointProcessProps(c shared.Candidate, cn shared.ConnectionInfo) map[string]any {
+	return map[string]any{
+		"process":       c.Proc.Name,
+		"pid":           c.Proc.Pid,
+		"local_address": cn.LocalAddress,
+		"local_port":    cn.LocalPort,
+		"state":         cn.State,
+	}
+}
+
+func processConnProps(c shared.Candidate, cn shared.ConnectionInfo, scope string) map[string]any {
+	return map[string]any{
+		"process":        c.Proc.Name,
+		"pid":            c.Proc.Pid,
+		"state":          cn.State,
+		"local_address":  cn.LocalAddress,
+		"local_port":     cn.LocalPort,
+		"remote_address": cn.RemoteAddress,
+		"remote_port":    cn.RemotePort,
+		"active_proxy":   c.ActiveProxying,
+		"scope":          scope,
+	}
+}
+
+func endpointLinkProps(c shared.Candidate, cn shared.ConnectionInfo, scope string) map[string]any {
+	return map[string]any{
+		"local_address":  cn.LocalAddress,
+		"local_port":     cn.LocalPort,
+		"remote_address": cn.RemoteAddress,
+		"remote_port":    cn.RemotePort,
+		"process":        c.Proc.Name,
+		"pid":            c.Proc.Pid,
+		"scope":          scope,
+	}
+}
+
+func userConnProps(userName string, c shared.Candidate, cn shared.ConnectionInfo, scope string) map[string]any {
+	return map[string]any{
+		"user":           userName,
+		"local_address":  cn.LocalAddress,
+		"local_port":     cn.LocalPort,
+		"remote_address": cn.RemoteAddress,
+		"remote_port":    cn.RemotePort,
+		"process":        c.Proc.Name,
+		"pid":            c.Proc.Pid,
+		"scope":          scope,
+	}
+}
+
+func WriteJSON(path string, payload Payload) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("output path is required")
+	}
+	path = normalizeCollectionOutputPath(path)
+	if !strings.HasSuffix(strings.ToLower(path), ".json") {
+		path += ".json"
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	// Always write collection output to disk (user expects a file).
+	// Also store in vault for consistency.
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		_ = os.MkdirAll(dir, 0o700)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	vaultKey := vaultKeyFromPath(path)
+	keystore.VaultWrite(vaultKey, data, path)
+	return nil
+}
+
+func vaultKeyFromPath(path string) string {
+	if idx := strings.Index(path, ".proxywatch/"); idx >= 0 {
+		return path[idx+len(".proxywatch/"):]
+	}
+	return filepath.Base(path)
+}
+
+func normalizeCollectionOutputPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return path
+	}
+	path = safeio.ExpandHomePath(path)
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	// Strip collections/ prefix before common sanitization.
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if strings.HasPrefix(cleaned, "collections"+string(filepath.Separator)) {
+		cleaned = strings.TrimPrefix(cleaned, "collections"+string(filepath.Separator))
+	}
+	rel := safeio.SanitizeRelativePath(cleaned, "proxywatch-collection.json")
+	return filepath.Join(collectionsRootDir(), rel)
+}
+
+func collectionsRootDir() string {
+	return filepath.Join(safeio.ProxywatchDataRoot(), "collections")
+}
+
+func proxywatchTempDir() string {
+	return filepath.Join(safeio.ProxywatchDataRoot(), "tmp")
+}
+
+func mapToSlice(m map[string]Node) []Node {
+	ids := make([]string, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	out := make([]Node, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, m[id])
+	}
+	return out
+}
+
+func edgeMapToSlice(m map[string]Edge) []Edge {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	out := make([]Edge, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, m[key])
+	}
+	return out
+}
+
+// isServiceAccountUser detects common service account naming patterns
+func isServiceAccountUser(userName string) bool {
+	userName = strings.ToLower(strings.TrimSpace(userName))
+	if userName == "" {
+		return false
+	}
+
+	// Windows built-in service accounts
+	serviceAccounts := []string{
+		"local service",
+		"network service",
+		"system",
+		"nt authority\\system",
+		"nt authority\\local service",
+		"nt authority\\network service",
+		"localsystem",
+		"networkservice",
+		"localservice",
+	}
+	for _, svc := range serviceAccounts {
+		if userName == svc || strings.HasSuffix(userName, "\\"+svc) {
+			return true
+		}
+	}
+
+	// Common service account prefixes
+	prefixes := []string{"svc_", "svc-", "service_", "service-", "sa_", "sa-", "app_", "app-"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(userName, prefix) {
+			return true
+		}
+	}
+
+	// Common service account suffixes
+	suffixes := []string{"_svc", "-svc", "_service", "-service", "_sa", "-sa"}
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(userName, suffix) {
+			return true
+		}
+	}
+
+	// Managed service accounts (gMSA)
+	if strings.HasSuffix(userName, "$") {
+		return true
+	}
+
+	return false
+}
+
+// extractDomain attempts to extract the domain from collected candidates
+func extractDomain(cands []shared.Candidate) string {
+	domains := make(map[string]int)
+
+	for _, c := range cands {
+		if c.Proc == nil {
+			continue
+		}
+
+		// Try to extract domain from username (DOMAIN\user format)
+		userName := c.Proc.UserName
+		if idx := strings.Index(userName, "\\"); idx > 0 {
+			domain := strings.ToUpper(userName[:idx])
+			// Skip local accounts
+			if domain != "." && domain != "NT AUTHORITY" && domain != "BUILTIN" {
+				domains[domain]++
+			}
+		}
+
+		// Try to extract from hostname (host.domain.local format)
+		host := shared.DisplayHost(c.Host)
+		if parts := strings.SplitN(host, ".", 2); len(parts) > 1 {
+			domain := strings.ToUpper(parts[1])
+			domains[domain]++
+		}
+	}
+
+	// Return the most common domain
+	var bestDomain string
+	var bestCount int
+	for domain, count := range domains {
+		if count > bestCount {
+			bestDomain = domain
+			bestCount = count
+		}
+	}
+	return bestDomain
+}

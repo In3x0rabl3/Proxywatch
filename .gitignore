@@ -1,0 +1,10 @@
+proxywatch/internal/agent/generated_tls.go
+proxywatch/build/
+
+# Tests are kept locally only (per maintainer preference).
+*_test.go
+
+# Lab environment - local testing infrastructure only
+lab-environment/
+proxywatch/ligolo-*
+proxywatch/*.exe

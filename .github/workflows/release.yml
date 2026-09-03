@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write  # keyless cosign OIDC signing
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ''
+          - goos: linux
+            goarch: arm64
+            ext: ''
+          - goos: windows
+            goarch: amd64
+            ext: '.exe'
+          - goos: darwin
+            goarch: amd64
+            ext: ''
+          - goos: darwin
+            goarch: arm64
+            ext: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: proxywatch/go.sum
+      - name: Build
+        working-directory: proxywatch
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          go build -o ../dist/proxywatch-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }} ./cmd/proxywatch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proxywatch-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+
+  release:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum proxywatch-* > SHA256SUMS
+
+      - name: Sign checksums (keyless cosign via Sigstore OIDC)
+        uses: sigstore/cosign-installer@v3
+      - run: cosign sign-blob --yes dist/SHA256SUMS --bundle dist/SHA256SUMS.cosign-bundle
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            dist/proxywatch-linux-amd64 \
+            dist/proxywatch-linux-arm64 \
+            dist/proxywatch-windows-amd64.exe \
+            dist/proxywatch-darwin-amd64 \
+            dist/proxywatch-darwin-arm64 \
+            dist/SHA256SUMS \
+            dist/SHA256SUMS.cosign-bundle \
+            --clobber \
+            --repo "${{ github.repository }}"
