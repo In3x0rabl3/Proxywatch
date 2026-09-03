@@ -81,6 +81,7 @@ Main application entry point with multiple operation modes:
 | pivot.go | Lateral movement detection |
 | saas.go | SaaS traffic identification |
 | session.go | Session tracking |
+| ssh_baseline.go | SSH baseline behavior |
 
 #### features/ (ML Feature Extraction)
 | File | Purpose |
@@ -133,10 +134,41 @@ Main application entry point with multiple operation modes:
 |------|---------|
 | output.go | Output coordination |
 | debug_api.go | Debug HTTP API |
-| siem_api.go | SIEM integration |
+| siem_api.go | SIEM export and rule generation |
 | suricata.go | Suricata rule generation |
-| timeline.go | Timeline output |
+| timeline.go | Candidate state timeline |
 | yara.go | YARA rule generation |
+
+---
+
+### internal/alerts (Webhook Alerting)
+| File | Purpose |
+|------|---------|
+| webhook.go | Outbound webhook alerts for malicious candidates |
+
+---
+
+### internal/pcap (PCAP Analysis)
+| File | Purpose |
+|------|---------|
+| ingest.go | PCAP file ingestion |
+| tail.go | Live PCAP tailing |
+| beacon_analysis.go | Beacon pattern detection from traffic |
+| beacon_signals.go | Beacon signal extraction |
+| cross_candidate.go | Cross-candidate correlation |
+| dns_enrich.go | DNS enrichment |
+| dns_parse.go | DNS packet parsing |
+| http_enrich.go | HTTP enrichment |
+| http_parse.go | HTTP packet parsing |
+| http_signatures.go | HTTP-based signatures |
+| ssh_banner.go | SSH banner analysis |
+| ssh_enrich.go | SSH enrichment |
+| tls_enrich.go | TLS enrichment |
+| tls_parse.go | TLS packet parsing |
+| tls_database.go | Known TLS fingerprints |
+| zeek.go | Zeek log integration |
+| apply_labels.go | Label application |
+| rare_signatures.go | Rare signature detection |
 
 #### scoring/ (Scoring Engine)
 | File | Purpose |
@@ -241,19 +273,30 @@ Main application entry point with multiple operation modes:
 | dns_cache.go | DNS caching |
 | eventlog.go | Event logging |
 | exe_hash.go | Executable hashing |
+| fp_post_classify.go | Post-classification FP filtering |
 | heuristics.go | Detection heuristics |
+| inspector_conn_history.go | Connection history for inspector |
 | linger.go | Candidate lingering |
 | online_evidence.go | Online evidence collection |
 | operator_labels.go | Operator-defined labels |
+| pcap_mode.go | PCAP mode state |
+| pcap_operator_labels.go | PCAP operator labels |
+| pcap_tls_labels.go | PCAP TLS labels |
+| proto_probe.go | Protocol probing |
+| proto_services.go | Protocol service definitions |
 | publisher_domains.go | Publisher domain lists |
 | roles.go | Role definitions |
 | session_log.go | Session logging |
 | signature.go | Code signing |
-| signature_*.go | Platform-specific signing |
+| signature_darwin.go | macOS signing |
+| signature_unix.go | Unix signing |
+| signature_windows.go | Windows signing |
 | signature_worker.go | Background verification |
 | state.go | Global state |
-| vendor_fp_shape.go | Vendor fingerprinting |
-| verifier_*.go | Signature verification |
+| stats.go | Statistics tracking |
+| vendor_fp_shape.go | Vendor FP shape evaluation |
+| verifier_pkg_*.go | Package verification |
+| verifier_publisher_dns.go | Publisher DNS verification |
 | whitelist.go | Whitelist management |
 
 ---
@@ -334,27 +377,35 @@ The core detection unit representing a process with network activity.
 |-------|------|---------|
 | Host | string | Host identifier |
 | Proc | *ProcessInfo | Process information |
-| Conns | []ConnInfo | Network connections |
+| Conns | []ConnectionInfo | Network connections |
 | Listeners | []ListenerInfo | TCP listeners |
+| UDPListeners | []UDPListenerInfo | UDP listeners |
 | Role | string | Assigned role |
+| ControlSubtype | string | Subtype qualifier |
 | SuggestedRole | string | Topology suggested role |
 | Score | int | Confidence score |
+| Confidence | int | Confidence level |
 | Signals | []string | Detection signals |
 | Reasons | []string | Score reasons |
 | MLRole | string | ML-predicted role |
 | MLConfidence | float64 | ML confidence |
 | MLActive | bool | ML is active |
+| BeaconIntervalMs | int | Beacon interval |
+| BeaconJitter | float64 | Beacon jitter |
 | StrongEvidence | bool | Has strong evidence |
 | TrafficVerified | bool | Traffic verified |
+| ActiveProxying | bool | Active relay detected |
+| DelegatedEgress | bool | Traffic via another process |
+| RawSocket | bool | Has raw sockets |
 
 ### AppState (internal/shared/app.go)
 Global application state passed through the UI.
 
-### ProcessInfo
-Process metadata including PID, name, path, user, etc.
+### ProcessInfo (internal/shared/candidate.go)
+Process metadata including PID, name, path, user, SHA256, signature trust.
 
-### ConnInfo  
-Network connection details including local/remote addresses, state, protocol.
+### ConnectionInfo (internal/shared/candidate.go)
+Network connection details including local/remote addresses, ports, state, protocol.
 
 ---
 
@@ -370,7 +421,7 @@ Network connection details including local/remote addresses, state, protocol.
 | pivot | Lateral movement |
 | listener | Network listener |
 | exfil | Data exfiltration |
-| implant | Persistent implant |
+| outbound | Standard outbound connection |
 
 ---
 

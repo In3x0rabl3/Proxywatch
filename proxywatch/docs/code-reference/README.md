@@ -37,10 +37,14 @@ This documentation provides a complete reference for understanding the codebase 
 | internal/detection/behavior | Behavior analysis |
 | internal/detection/ml | Machine learning |
 | internal/agent | Remote agent/server |
+| internal/alerts | Webhook alerting |
 | internal/contour | Tunnel system |
+| internal/pcap | PCAP analysis |
 | internal/ui | Terminal interface |
 | internal/shared | Shared types/utilities |
 | internal/keystore | Secure storage |
+| internal/proxyhound | Data collection |
+| internal/safeio | Safe file I/O |
 
 ### Detection Roles
 

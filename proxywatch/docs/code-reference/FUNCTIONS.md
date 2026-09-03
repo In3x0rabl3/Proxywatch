@@ -153,9 +153,70 @@ This document provides detailed documentation for all exported functions and typ
 ### Output (output/*.go)
 | Function | Purpose |
 |----------|---------|
-| StartDebugAPIServer(addr) (*Server, error) | Start debug API |
-| RegisterAgentStore(store) | Register agent store for API |
-| ConfigureDetectionOutputs(debug, defender) error | Configure outputs |
+| StartDebugAPIServer(addr) (*Server, error) | Start debug API server |
+| RegisterAgentStore(store) | Register agent store for server-mode endpoints |
+| UpdateDebugAPISnapshot(cycle, host, scored) | Update in-memory snapshot each cycle |
+| CandidatesToSnapshots(scored) []CandidateSnapshot | Project candidates to JSON shape |
+| BuildFPReport(cands) []FPReportEntry | Build FP verdict trace |
+| BuildDiffMap(snap) map[string]DiffEntry | Build compact diff map for parity |
+| BuildSIEMExport(cands, mask, host, now) SIEMExport | Build SIEM export document |
+
+#### Debug API Endpoints
+
+**Core Endpoints (always available):**
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/` | GET | Health check: `{ok, cycle, host, updated, candidates, server}` |
+| `/candidates` | GET | Local candidates. Query: `?name=`, `?role=`, `?state=`, `?pid=` |
+| `/candidate/<pid>` | GET | Single candidate by PID |
+| `/self` | GET | Same as `/candidates` with stable path for monitoring |
+| `/metrics` | GET | JSON counts by role/state |
+| `/metrics/prom` | GET | Prometheus text-format metrics |
+
+**Server Mode Endpoints (when AgentStore registered):**
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/agents` | GET | Connected agents + per-host summary |
+| `/agent/<host>/candidates` | GET | Candidates from remote agent |
+| `/agent/<host>/candidate/<pid>` | GET | Single candidate from agent |
+
+**Diff Endpoints (parity testing):**
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/diff/local` | GET | Compact `{pid: {name, role, signals}}` map |
+| `/diff/<host>` | GET | Same shape for remote agent |
+
+**FP Report Endpoints:**
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/fp-report` | GET | FP verdict trace for local candidates |
+| `/fp-report/<host>` | GET | FP verdict trace for agent host |
+| `/fp-report/summary` | GET | Aggregate FP counts: roles, signals, blockers |
+
+**Online Verification Endpoints:**
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/online/status` | GET | Signature worker + DNS cache stats |
+| `/online/verdict/<pid>` | GET | Cached Authenticode verdict for PID |
+
+**Operator Label Endpoints:**
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/operator/labels` | GET | List all operator labels |
+| `/operator/label` | POST | Set label: `{sha256, verdict, reason}` |
+| `/operator/label/<sha256>` | GET | Get label by hash |
+| `/operator/label/<sha256>` | DELETE | Clear label |
+
+**ML Health Endpoints:**
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/ml/shadow` | GET | Shadow comparison: agreement rate, thresholds, qualified/demoted |
+| `/ml/disagreements` | GET | Last N ML-vs-rule disagreements |
+
+**Timeline Endpoints:**
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/timeline/<pid>` | GET | Role/signal evolution history for PID |
 
 ---
 
@@ -164,15 +225,27 @@ This document provides detailed documentation for all exported functions and typ
 ### Client (client.go)
 | Function | Purpose |
 |----------|---------|
-| RunClientLoop(ctx, opts) error | Run agent client loop |
+| RunClientLoop(ctx, opts) error | Run agent client loop with reconnect |
 
 ### Server (server.go)
 | Function | Purpose |
 |----------|---------|
-| ListenAndServe(addr, store) (*Server, *grpc.Server, net.Listener, error) | Start server |
-| Kill(host, pid) error | Kill process on remote host |
-| HostConnected(host) bool | Check if host is connected |
-| ConnectedHosts() []string | Get list of connected hosts |
+| ListenAndServe(addr, store) (*Server, *grpc.Server, net.Listener, error) | Start gRPC server |
+| (*Server) Kill(host, pid) error | Kill process on remote host |
+| (*Server) HostConnected(host) bool | Check if host is connected |
+| (*Server) ConnectedHosts() map[string]bool | Get map of connected hosts |
+
+### Store (server.go)
+| Function | Purpose |
+|----------|---------|
+| NewStore() *Store | Create new candidate store |
+| (*Store) Update(host, ts, cands) | Update candidates for host |
+| (*Store) Snapshot(staleAfter) []Candidate | Get all non-stale candidates |
+| (*Store) SnapshotHost(host) ([]Candidate, time.Time, bool) | Get candidates for host |
+| (*Store) HostKeys() []HostStat | Get all known hosts with stats |
+| (*Store) RemoveHost(host) bool | Remove host from store |
+| (*Store) HostSummaries(...) []HostSummary | Get filtered host summaries |
+| (*Store) LastUpdate(host) (time.Time, bool) | Get last update time for host |
 
 ### Auth (auth/*.go)
 | Function | Purpose |
@@ -197,7 +270,27 @@ This document provides detailed documentation for all exported functions and typ
 ### API (api/*.go)
 | Function | Purpose |
 |----------|---------|
-| Start(addr) (*Server, error) | Start API server |
+| Start(addr) (*Server, error) | Start Contour API server |
+| (*Server) Close() error | Stop API server |
+| (*Server) SetActiveTunnel(...) | Register external tunnel with API |
+| (*Server) MarkStopped() | Clear running flag when tunnel exits |
+| (*Server) AppendLog(line) | Add log line to ring buffer |
+
+#### Contour API Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/` | GET | Health: `{ok, service, running, proto, updated}` |
+| `/protocols` | GET | List carrier, dead-drop, and verifiable protocols |
+| `/status` | GET | Active tunnel config, elapsed time, log buffer |
+| `/tunnel/start` | POST | Start tunnel: `{role, proto, direction, ports, target}` |
+| `/tunnel/stop` | POST | Cancel active tunnel |
+| `/verify/<proto>` | GET | In-process round-trip test for one protocol |
+| `/verify/all` | GET | Run all verifiable protocols sequentially |
+
+**Supported Protocols:**
+- Carrier: socks5, socks4, http, https, ws, wss, ssh, dns, ntp, smtp, ftp, imap, pop3, redis, postgres, ldap, smb, mqtt, amqp, rdp, quic, webrtc, openai-api, domainfront
+- Dead-drop: openai-deaddrop, github-deaddrop
 
 ---
 
@@ -228,26 +321,51 @@ This document provides detailed documentation for all exported functions and typ
 ### Candidate (shared/candidate.go)
 ```go
 type Candidate struct {
-    Host            string       // Host identifier
-    Proc            *ProcessInfo // Process info
-    Conns           []ConnInfo   // Connections
+    Host            string
+    Proc            *ProcessInfo
     Listeners       []ListenerInfo
+    Conns           []ConnectionInfo
     UDPListeners    []UDPListenerInfo
-    Role            string       // Assigned role
-    SuggestedRole   string       // Topology suggested role
-    Score           int          // Confidence score
-    Signals         []string     // Detection signals
-    Reasons         []string     // Score reasons
-    MLRole          string       // ML predicted role
-    MLConfidence    float64      // ML confidence
-    MLActive        bool         // ML is active
-    MLTopN          []MLRolePrediction
-    StrongEvidence  bool         // Has strong evidence
-    TrafficVerified bool         // Traffic verified
-    ControlSubtype  string       // Control subtype
-    OutExternal     int          // External connections
-    OutInternal     int          // Internal connections
-    ActiveProxying  bool         // Active proxying detected
+
+    DelegatedEgress   bool
+    DelegatedStrong   bool
+    DelegatedOwnerPID int
+    DelegatedOwner    string
+    RawSocket         bool
+    RawConns          []RawSocketConn
+    NamedPipes        []string
+
+    Score             int
+    Confidence        int
+    Reasons           []string
+    Signals           []string
+    Role              string
+    ControlSubtype    string
+    ActiveProxying    bool
+
+    ControlChannel         *ConnectionInfo
+    ControlDurationSeconds int
+    SuggestedRole          string
+    BeaconIntervalMs       int
+    BeaconJitter           float64
+
+    MLRole       string
+    MLConfidence float64
+    MLTopN       []MLRolePrediction
+    MLActive     bool
+    SeenSeconds  int
+    Exited       bool
+
+    OutTotal      int
+    OutExternal   int
+    OutInternal   int
+    OutLoopback   int
+    OutLongLived  int
+    OutShortLived int
+    InboundTotal  int
+
+    TrafficVerified bool
+    StrongEvidence  bool
 }
 ```
 
@@ -293,7 +411,6 @@ type AppState struct {
     KeystoreValues     *keystore.Values
     KeystoreUnlocked   bool
     LastError          string
-    // ... many more fields for UI state
 }
 ```
 
