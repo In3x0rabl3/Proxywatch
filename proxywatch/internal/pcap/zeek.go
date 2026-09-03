@@ -855,13 +855,6 @@ func (z *ZeekLogs) ConvertToFlows() (map[flowKey]*flowState, map[string][]string
 	return flows, dnsByHost
 }
 
-// IngestZeek processes Zeek logs and returns results compatible with PCAP analysis.
-// Accepts a directory containing conn.log, a conn.log file, or any .log file
-// (uses the parent directory to find conn.log).
-func IngestZeek(ctx context.Context, path string) IngestResult {
-	return IngestZeekWithProgress(ctx, path, nil)
-}
-
 // IngestZeekWithProgress is the channel-aware variant for UI progress updates.
 // Accepts a directory containing conn.log, a conn.log file, or any .log file
 // (uses the parent directory to find conn.log).
