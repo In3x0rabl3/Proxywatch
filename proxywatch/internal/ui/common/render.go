@@ -449,41 +449,6 @@ func FormatBytesPerSec(n uint64) string {
 	return FormatBytes(n) + "/s"
 }
 
-func FormatIOBytes(read, write, other uint64) string {
-	return formatIOMetric(read, write, other, FormatBytes)
-}
-
-func FormatIORate(read, write, other uint64) string {
-	return formatIOMetric(read, write, other, FormatBytesPerSec)
-}
-
-func formatIOMetric(read, write, other uint64, format func(uint64) string) string {
-	total := read + write + other
-	if total == 0 {
-		return format(0)
-	}
-
-	parts := make([]string, 0, 3)
-	if read > 0 {
-		parts = append(parts, "R "+format(read))
-	}
-	if write > 0 {
-		parts = append(parts, "W "+format(write))
-	}
-	if other > 0 {
-		parts = append(parts, "O "+format(other))
-	}
-
-	totalStr := format(total)
-	if len(parts) == 0 {
-		return totalStr
-	}
-	if len(parts) == 1 {
-		return fmt.Sprintf("%s (%s)", totalStr, parts[0])
-	}
-	return fmt.Sprintf("%s (%s)", totalStr, strings.Join(parts, " "))
-}
-
 var CollectDurations = []string{"30s", "1m", "5m"}
 
 func SafeRolePreset(app *shared.AppState) string {

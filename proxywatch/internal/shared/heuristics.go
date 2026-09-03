@@ -2,27 +2,6 @@ package shared
 
 import "strings"
 
-// IsLikelyBenignBeacon heuristically skips known-legit updater/AV beacons.
-func IsLikelyBenignBeacon(p *ProcessInfo) bool {
-	if p == nil {
-		return false
-	}
-	if !IsLikelyBenignControlClient(p) {
-		return false
-	}
-	path := NormalizeExePath(p.ExePath)
-	if path == "" {
-		return false
-	}
-	if strings.Contains(path, "/tmp/") ||
-		strings.Contains(path, "/var/tmp/") ||
-		strings.Contains(path, "/downloads/") ||
-		strings.Contains(path, "/appdata/local/temp/") {
-		return false
-	}
-	return true
-}
-
 func IsLikelyBenignControlClient(p *ProcessInfo) bool {
 	if p == nil {
 		return false
@@ -587,20 +566,6 @@ func IsSSHClientToInternal(c *Candidate) bool {
 	}
 
 	return isInternalSSH
-}
-
-// HasSSHFirstTimeDestination checks if the candidate has the ssh-first-time-destination signal.
-// This indicates the user is SSHing to a destination they haven't connected to before.
-func HasSSHFirstTimeDestination(c *Candidate) bool {
-	if c == nil {
-		return false
-	}
-	for _, sig := range c.Signals {
-		if sig == "ssh-first-time-destination" {
-			return true
-		}
-	}
-	return false
 }
 
 // IsKnownUpdaterProcess returns true for processes that are auto-updaters or

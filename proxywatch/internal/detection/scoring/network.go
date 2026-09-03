@@ -335,38 +335,6 @@ func SmbPipeActivity(
 	return
 }
 
-func OutboundTargetsExcluding(
-	conns []shared.ConnectionInfo,
-	ports map[int]struct{},
-	exclude *shared.ConnKey,
-) (total, external, internal int) {
-
-	for _, c := range conns {
-		if !IsActiveConnState(c.State) {
-			continue
-		}
-		if exclude != nil && *exclude == ConnKeyFromConn(c.Pid, c) {
-			continue
-		}
-		if c.RemoteAddress == "" ||
-			shared.IsWildcardIP(c.RemoteAddress) ||
-			shared.IsLoopbackIP(c.RemoteAddress) {
-			continue
-		}
-		if _, ok := ports[c.LocalPort]; ok {
-			continue
-		}
-
-		total++
-		if shared.IsInternalIP(c.RemoteAddress) {
-			internal++
-		} else {
-			external++
-		}
-	}
-	return
-}
-
 func LocalTransportActivity(conns []shared.ConnectionInfo) (bool, int, int) {
 	count := 0
 	remotePorts := make(map[int]struct{})

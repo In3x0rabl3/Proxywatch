@@ -159,16 +159,6 @@ func RecordObservationForMaturity() {
 	maturityLifetimeObs.Add(1)
 }
 
-// LiveObservationCount returns the lifetime observation count. Never resets.
-func LiveObservationCount() int64 {
-	return maturityLifetimeObs.Load()
-}
-
-// CycleObservationCount returns observations since last training attempt.
-func CycleObservationCount() int64 {
-	return maturityLocalObs.Load()
-}
-
 // RecordRoleAssignment tracks a role assignment for maturity stability/confidence
 // computation. Called only for processes with a prior committed role (not first-
 // observation). matchesCommitted indicates whether the current role matches
@@ -304,15 +294,6 @@ func ShadowCounts() (agree, disagree int64) {
 // RecordNewLabel increments the operator label counter (for retrain triggers).
 func RecordNewLabel() {
 	maturityNewLabels.Add(1)
-}
-
-// GetOperatorLabelCount returns the total number of operator training labels
-// persisted in the detection model. Counts from model profiles rather than
-// the in-memory atomic so the value survives restarts.
-func GetOperatorLabelCount() int64 {
-	// Use the in-memory counter (fast).
-	// Avoid iterating all profiles on every UI render — that causes freezes.
-	return maturityNewLabels.Load()
 }
 
 // ResetRetrainTriggers resets only the counters that gate retrain triggers

@@ -60,7 +60,6 @@ func NormalizeProbeRole(v string) string       { return probe.NormalizeProbeRole
 func DefaultProbePorts() []int                 { return probe.DefaultProbePorts() }
 func DefaultProtocolNames() []string           { return probe.DefaultProtocolNames() }
 func ClassifyProtoKind(proto string) string    { return probe.ClassifyProtoKind(proto) }
-func ServiceTargetNames() []string             { return probe.ServiceTargetNames() }
 func IsCarrierTunnelMethod(method string) bool { return probe.IsCarrierTunnelMethod(method) }
 
 func RunListenerProbe(ctx context.Context, ports []int, onUpdate func(ListenerProbeResult)) ListenerProbeResult {

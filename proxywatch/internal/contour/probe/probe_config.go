@@ -45,13 +45,6 @@ var (
 	windowsEnvVarRE      = regexp.MustCompile(`%([^%]+)%`)
 )
 
-// ServiceTargetNames returns the ordered list of service names that the
-// probe suite tests for reachability. Used by the UI to render an empty
-// grid before results arrive.
-func ServiceTargetNames() []string {
-	return append([]string(nil), serviceTargetNames...)
-}
-
 var serviceTargetNames = []string{
 	"Dropbox", "GDrive", "OneDrive", "S3", "AzBlob", "GCS", "Box", "Mega",
 	"WeTrans", "iCloud", "pCloud", "Backblz", "Slack", "Discord", "Telegra",

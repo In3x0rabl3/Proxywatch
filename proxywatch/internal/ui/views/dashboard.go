@@ -718,22 +718,7 @@ func protoMixLabel(c shared.Candidate) string {
 		if port <= 0 {
 			continue
 		}
-		ip := strings.TrimSpace(conn.RemoteAddress)
 		label := ""
-		if ip != "" && !shared.IsLoopbackIP(ip) && !shared.IsInternalIP(ip) {
-			if v, ok := shared.LookupProbeVerdict(ip, port); ok {
-				switch v.ALPN {
-				case "h2":
-					label = "HTTP/2"
-				case "http/1.1":
-					label = "HTTPS"
-				default:
-					if v.TLSConfirmed && v.JA3S != "" && len(v.JA3S) >= 6 {
-						label = "TLS [" + v.JA3S[:6] + "]"
-					}
-				}
-			}
-		}
 		// Curated well-known port table (includes 22=SSH, 443=HTTPS,
 		// etc.) wins over /etc/services. wellKnownProtoName returns
 		// "" when port isn't on the curated list, leaving ambiguous

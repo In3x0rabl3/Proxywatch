@@ -254,8 +254,6 @@ func renderPanel(w, h int, title, rightTitle, bottomRight, content string) strin
 func overlayCenter(base, overlay string, screenW, screenH int) string {
 	return common.OverlayCenter(base, overlay, screenW, screenH)
 }
-func renderTopBar(left, right string, w int) string { return common.RenderTopBar(left, right, w) }
-func renderKeyBar(left, right string, w int) string { return common.RenderKeyBar(left, right, w) }
 func renderAccentPanel(w, h int, title, content string) string {
 	return common.RenderAccentPanel(w, h, title, content)
 }
@@ -282,11 +280,6 @@ func TruncateToWidth(s string, w int) string { return common.TruncateToWidth(s, 
 func ClipToWidth(s string, w int) string     { return common.ClipToWidth(s, w) }
 func FormatBytes(n uint64) string            { return common.FormatBytes(n) }
 func FormatBytesPerSec(n uint64) string      { return common.FormatBytesPerSec(n) }
-func FormatIOBytes(r, w, o uint64) string    { return common.FormatIOBytes(r, w, o) }
-func FormatIORate(r, w, o uint64) string     { return common.FormatIORate(r, w, o) }
-func spinnerElapsed(start time.Time) string {
-	return common.SpinnerElapsed(start).String()
-}
 
 // Help option functions from common.
 func contourMenuHelpOptions() []string      { return common.ContourMenuHelpOptions() }

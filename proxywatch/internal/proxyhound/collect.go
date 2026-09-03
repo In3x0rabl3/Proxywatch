@@ -25,11 +25,6 @@ var (
 	ldapPorts  = map[int]bool{389: true, 636: true, 3268: true, 3269: true}
 )
 
-// isServicePort checks if a port matches a known service
-func isServicePort(port int, servicePorts map[int]bool) bool {
-	return servicePorts[port]
-}
-
 // detectServiceFromPort returns the service name for a well-known port
 func detectServiceFromPort(port int) string {
 	switch {
