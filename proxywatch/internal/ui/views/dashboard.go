@@ -609,10 +609,6 @@ func dashboardDest(c shared.Candidate) string {
 // destinations show their port directly. Nothing connected returns
 // "—".
 func protoMixLabel(c shared.Candidate) string {
-	type kv struct {
-		label string
-		count int
-	}
 	// PCAP-mode override: ssh-banner-* signals are stamped by the SSH
 	// banner enricher when the actual SSH protocol bytes are observed
 	// on a flow. They prove the protocol regardless of port. Operator-

@@ -202,24 +202,22 @@ var (
 	colorTextHi  = common.ColorTextHi
 	colorFrame   = common.ColorFrame
 	colorAccent  = common.ColorAccent
-	colorCyan    = common.ColorCyan
-	colorDim     = common.ColorDim
-	colorMuted   = common.ColorMuted
-	colorAlert   = common.ColorAlert
-	colorSession = common.ColorSession
-	colorWarn    = common.ColorWarn
-	colorSelect  = common.ColorSelect
+	colorCyan   = common.ColorCyan
+	colorDim    = common.ColorDim
+	colorMuted  = common.ColorMuted
+	colorAlert  = common.ColorAlert
+	colorWarn   = common.ColorWarn
+	colorSelect = common.ColorSelect
 )
 
 func bg() lipgloss.Style { return common.Bg() }
 func bgSp(n int) string  { return common.BgSp(n) }
 
 var (
-	rightLabelStyle = common.RightLabelStyle
-	sectionLabel    = common.SectionLabel
-	bodyText        = common.BodyText
-	mutedText       = common.MutedText
-	dimText         = common.DimText
+	sectionLabel = common.SectionLabel
+	bodyText     = common.BodyText
+	mutedText    = common.MutedText
+	dimText      = common.DimText
 )
 
 var (
@@ -230,8 +228,6 @@ var (
 	statusPass = common.StatusPass
 	statusFail = common.StatusFail
 )
-
-var matrixFailStyle = common.MatrixFailStyle
 
 var dotSpinFrames = common.DotSpinFrames
 
@@ -595,7 +591,6 @@ var (
 	inspAlert   = lipgloss.NewStyle().Foreground(common.ColorAlert).Bold(true).Background(common.ColorBg)
 	inspCyan    = lipgloss.NewStyle().Foreground(common.ColorCyan).Background(common.ColorBg)
 	inspSession = lipgloss.NewStyle().Foreground(common.ColorSession).Bold(true).Background(common.ColorBg)
-	inspPivot   = lipgloss.NewStyle().Foreground(common.ColorWarn).Bold(true).Background(common.ColorBg)
 )
 
 // ── quickHash is a simple string hash for content dedup ─────────────────────
@@ -611,17 +606,12 @@ func quickHash(s string) uint64 {
 // ── Dashboard lipgloss styles ───────────────────────────────────────────────
 
 var (
-	lgText    = lipgloss.NewStyle().Foreground(common.ColorText).Background(common.ColorBg)
-	lgTextB   = lipgloss.NewStyle().Foreground(common.ColorText).Bold(true).Background(common.ColorBg)
-	lgCyanB   = lipgloss.NewStyle().Foreground(common.ColorCyan).Bold(true).Background(common.ColorBg)
-	lgDim     = lipgloss.NewStyle().Foreground(common.ColorDim).Background(common.ColorBg)
-	lgDimB    = lipgloss.NewStyle().Foreground(common.ColorDim).Bold(true).Background(common.ColorBg)
-	lgWatch   = lipgloss.NewStyle().Foreground(common.ColorCyan).Bold(true).Background(common.ColorBg)
-	lgWarn    = lipgloss.NewStyle().Foreground(common.ColorWarn).Bold(true).Background(common.ColorBg)
-	lgAlert   = lipgloss.NewStyle().Foreground(common.ColorAlert).Bold(true).Background(common.ColorBg)
-	lgMuted   = lipgloss.NewStyle().Foreground(common.ColorMuted).Background(common.ColorBg)
-	lgSession = lipgloss.NewStyle().Foreground(common.ColorSession).Bold(true).Background(common.ColorBg)
-	lgPivot   = lipgloss.NewStyle().Foreground(common.ColorWarn).Bold(true).Background(common.ColorBg)
+	lgText   = lipgloss.NewStyle().Foreground(common.ColorText).Background(common.ColorBg)
+	lgTextB  = lipgloss.NewStyle().Foreground(common.ColorText).Bold(true).Background(common.ColorBg)
+	lgDim    = lipgloss.NewStyle().Foreground(common.ColorDim).Background(common.ColorBg)
+	lgWatch  = lipgloss.NewStyle().Foreground(common.ColorCyan).Bold(true).Background(common.ColorBg)
+	lgAlert  = lipgloss.NewStyle().Foreground(common.ColorAlert).Bold(true).Background(common.ColorBg)
+	lgMuted  = lipgloss.NewStyle().Foreground(common.ColorMuted).Background(common.ColorBg)
 
 	lgSelectBg = lipgloss.NewStyle().Background(common.ColorSelect)
 

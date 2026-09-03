@@ -897,7 +897,7 @@ func IngestZeekWithProgress(ctx context.Context, path string, progressCh chan<- 
 	_ = dnsByHost // DNS enrichment available for later use
 
 	// Apply the same time shift as PCAP ingestion
-	shift := time.Now().Sub(logs.StartTime)
+	shift := time.Since(logs.StartTime)
 	for _, st := range flows {
 		st.firstPacket = st.firstPacket.Add(shift)
 		st.lastPacket = st.lastPacket.Add(shift)
@@ -911,9 +911,7 @@ func IngestZeekWithProgress(ctx context.Context, path string, progressCh chan<- 
 	// Assign synthetic PIDs
 	pidByIP := assignSyntheticPIDs(logs.LocalIPs)
 	attr := buildPcapAttribution(sortFlowsForReplay(flows), logs.LocalIPs)
-	for _, pid := range attr.allPIDs {
-		result.SyntheticPIDs = append(result.SyntheticPIDs, pid)
-	}
+	result.SyntheticPIDs = append(result.SyntheticPIDs, attr.allPIDs...)
 	sort.Ints(result.SyntheticPIDs)
 
 	// Reset and cleanup synthetic PID state

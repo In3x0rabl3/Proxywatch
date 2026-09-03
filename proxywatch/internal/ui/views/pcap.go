@@ -93,10 +93,8 @@ type PcapAnalyzerModel struct {
 	viewportFindings viewport.Model
 	viewportDetail   viewport.Model
 	ready            bool
-	contentKey       uint64
 	findingsKey      uint64
 	detailKey        uint64
-	dynamicReportH   int
 
 	progress   pcap.IngestProgress
 	result     *pcap.IngestResult

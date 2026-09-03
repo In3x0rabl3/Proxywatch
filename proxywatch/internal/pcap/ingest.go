@@ -476,7 +476,7 @@ func IngestWithStreaming(ctx context.Context, path string, progressCh chan<- Ing
 
 	reorientSynlessFlows(flows)
 
-	shift := time.Now().Sub(pcapStart)
+	shift := time.Since(pcapStart)
 	for _, st := range flows {
 		st.firstPacket = st.firstPacket.Add(shift)
 		st.lastPacket = st.lastPacket.Add(shift)
@@ -501,9 +501,7 @@ func IngestWithStreaming(ctx context.Context, path string, progressCh chan<- Ing
 	result.LocalIPs = localIPs
 	pidByIP := assignSyntheticPIDs(localIPs)
 	attr := buildPcapAttribution(sortFlowsForReplay(flows), localIPs)
-	for _, pid := range attr.allPIDs {
-		result.SyntheticPIDs = append(result.SyntheticPIDs, pid)
-	}
+	result.SyntheticPIDs = append(result.SyntheticPIDs, attr.allPIDs...)
 	sort.Ints(result.SyntheticPIDs)
 
 	resetSyntheticPIDState(result.SyntheticPIDs)

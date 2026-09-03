@@ -73,14 +73,12 @@ func projectByMeta(res *pcap.IngestResult, keyfn metaKeyFunc) []shared.Candidate
 		return nil
 	}
 	type bucket struct {
-		display    string
-		role       string
-		signals    map[string]struct{}
-		reasons    map[string]struct{}
-		conns      []shared.ConnectionInfo
-		bytes      uint64
-		firstSeen  string
-		exitedRole bool
+		display string
+		role    string
+		signals map[string]struct{}
+		reasons map[string]struct{}
+		conns   []shared.ConnectionInfo
+		bytes   uint64
 	}
 	buckets := make(map[string]*bucket)
 	// Seed projected rows from cluster candidates' connection lists.
