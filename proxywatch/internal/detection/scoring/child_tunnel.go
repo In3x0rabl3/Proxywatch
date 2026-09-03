@@ -185,7 +185,8 @@ func AggregateChildTunnelEvidence(candidates []shared.Candidate, processes map[i
 		parent.ActiveProxying = true
 		// Promote listener → pivot when actively relaying.
 		// A listener with child-forwarded internal connections is a relay,
-		// not a pure service.
+		// not a pure service. This includes SSH servers when they're being
+		// used to tunnel traffic — that's exactly the pivot scenario we detect.
 		if parent.Role == "listen" || parent.Role == "listener" {
 			parent.Role = "pivot"
 		}
@@ -342,6 +343,10 @@ func ApplyPivotLinger(candidates []shared.Candidate, processes map[int]*shared.P
 
 		if expiry, ok := shared.PivotUntil[c.Proc.Pid]; ok {
 			if now.Before(expiry) {
+				// Promote to pivot if evidence exists in linger window.
+				// NOTE: SSH servers CAN be promoted here — an sshd child session
+				// that is actively tunneling traffic SHOULD be flagged as pivot.
+				// The parent listener protection is in the aggregation loop above.
 				if c.Role != "pivot" {
 					c.Role = "pivot"
 					c.Reasons = append(c.Reasons, describePivotEvidence(c, expiry.Sub(now)))

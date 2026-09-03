@@ -308,6 +308,18 @@ func Classify(
 							c.Role = scoreRole
 						}
 
+						// SSH server (sshd) override: SSHD accepting inbound connections is
+						// infrastructure, not a beacon — regardless of ML prediction.
+						// This handles the case where sshd has established connections but
+						// no open listening socket in the current snapshot.
+						if shared.IsSSHServerProcess(c.Proc) && scoring.IsMaliciousRole(c.Role) {
+							c.Role = "listener"
+							c.Score = 20
+							if !hasReason(c.Reasons, "SSH server (sshd) accepting inbound connections — infrastructure, not C2") {
+								c.Reasons = append(c.Reasons, "SSH server (sshd) accepting inbound connections — infrastructure, not C2")
+							}
+						}
+
 						// ML-cannot-relax-suspicious gate. When rank.go's
 						// topology analysis classified this candidate as a
 						// suspicious beacon-* role and ML wants to demote
@@ -583,6 +595,17 @@ func Classify(
 				// of Classify (post-pass demotions may still mutate c.Role).
 				// See finalizeRoleStreaks() below.
 				_ = hist
+
+				// SSH server (sshd) final override: ensure sshd is never flagged
+				// as beacon regardless of which classification path ran above.
+				// This runs AFTER all classification logic as a safety net.
+				if shared.IsSSHServerProcess(c.Proc) && scoring.IsMaliciousRole(c.Role) {
+					c.Role = "listener"
+					c.Score = 20
+					if !hasReason(c.Reasons, "SSH server (sshd) — infrastructure, not C2") {
+						c.Reasons = append(c.Reasons, "SSH server (sshd) — infrastructure, not C2")
+					}
+				}
 			}
 		}
 
@@ -725,6 +748,22 @@ func Classify(
 	// external-talking pcap candidate would otherwise end up
 	// beacon.
 	shared.ApplyPcapModeRoleGuard(candidates)
+
+	// SSH server (sshd) final demote — runs LAST after all classification,
+	// promotion, and aggregation passes. SSHD accepting inbound connections
+	// is legitimate infrastructure, not a C2 beacon or pivot, even when
+	// child-tunnel aggregation or pivot-linger would otherwise promote it.
+	for i := range candidates {
+		c := &candidates[i]
+		if c.Proc != nil && shared.IsSSHServerProcess(c.Proc) && scoring.IsMaliciousRole(c.Role) {
+			c.Role = "listener"
+			c.Score = 20
+			c.ActiveProxying = false
+			if !hasReason(c.Reasons, "SSH server (sshd) — infrastructure, not C2") {
+				c.Reasons = append(c.Reasons, "SSH server (sshd) — infrastructure, not C2")
+			}
+		}
+	}
 
 	// Final role-streak commit. Captures the TRULY-final role for the
 	// cycle (post DemoteShapeOnlyControlRole / vendor FP gates / capture-

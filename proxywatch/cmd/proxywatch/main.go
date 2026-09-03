@@ -397,8 +397,14 @@ func main() {
 				}
 
 				ruleRole := shared.InferRoleFromSignals(c.Signals, c.ControlSubtype, c.Role)
-				c.Role = result.TopRole
-				c.Score = int(result.TopProb * 100)
+				// SSH servers should not be classified as beacons regardless of ML prediction
+				if shared.IsSSHServerProcess(c.Proc) {
+					c.Role = "listener"
+					c.Score = 20
+				} else {
+					c.Role = result.TopRole
+					c.Score = int(result.TopProb * 100)
+				}
 
 				model.RecordShadowComparison(result.TopRole == ruleRole)
 				committed := ""

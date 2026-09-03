@@ -511,6 +511,36 @@ func IsSSHClientProcess(p *ProcessInfo) bool {
 	return false
 }
 
+// IsSSHServerProcess returns true for SSH server/daemon processes (sshd).
+// SSH servers accepting inbound connections are legitimate admin infrastructure,
+// not C2 beacons — even when they have persistent inbound connections.
+func IsSSHServerProcess(p *ProcessInfo) bool {
+	if p == nil {
+		return false
+	}
+	name := strings.ToLower(p.Name)
+	path := strings.ToLower(NormalizeExePath(p.ExePath))
+
+	// SSH server binary names
+	sshdNames := []string{"sshd", "sshd.exe", "dropbear", "dropbear.exe"}
+	for _, n := range sshdNames {
+		if name == n {
+			return true
+		}
+	}
+
+	// SSH server paths - OpenSSH sshd locations
+	if strings.HasSuffix(path, "/sshd") ||
+		strings.HasSuffix(path, "\\sshd.exe") ||
+		strings.Contains(path, "openssh-server") ||
+		strings.Contains(path, "openssh\\sshd") ||
+		strings.Contains(path, "system32\\openssh\\sshd") {
+		return true
+	}
+
+	return false
+}
+
 // IsSSHClientToInternal returns true if the candidate is a plain SSH client
 // (no tunnel flags) connecting to internal infrastructure on standard SSH port (22).
 // These connections should NOT be promoted to beacon/session roles.

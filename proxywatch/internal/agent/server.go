@@ -306,6 +306,7 @@ type RemoteScanner struct {
 	LingerFor   time.Duration
 	LingerCache map[string]shared.LingerEntry
 	LastIO      map[int]shared.IOSample
+	LastConns   map[shared.ConnKey]struct{} // Track connections for first-seen timing
 
 	// PredictCandidate runs the ML predictor on a candidate and records
 	// shadow comparison metrics. Parity with standalone Classify().
@@ -334,6 +335,47 @@ func (r *RemoteScanner) Refresh(app *shared.AppState) {
 	hostSummaries := r.Store.HostSummaries(r.StaleAfter, r.MinScore, roleFilter, connected)
 	cands := r.Store.Snapshot(r.StaleAfter)
 	cands = shared.FilterProxywatchCandidates(cands)
+
+	// Track connection first-seen times for server mode (parity with standalone).
+	// Compare current connections against previous snapshot; new connections get
+	// registered in the global ConnFirstSeen map for tunneling state detection.
+	currentConns := make(map[shared.ConnKey]struct{})
+	for _, c := range cands {
+		for _, cn := range c.Conns {
+			key := shared.ConnKey{
+				Pid:        cn.Pid,
+				LocalAddr:  cn.LocalAddress,
+				LocalPort:  cn.LocalPort,
+				RemoteAddr: cn.RemoteAddress,
+				RemotePort: cn.RemotePort,
+			}
+			currentConns[key] = struct{}{}
+		}
+	}
+	// Update ConnFirstSeen under ClassifyMu to avoid concurrent map access
+	shared.ClassifyMu.Lock()
+	if r.LastConns != nil {
+		for key := range currentConns {
+			if _, existed := r.LastConns[key]; !existed {
+				// New connection - register first-seen time
+				shared.ConnFirstSeen[key] = now
+			}
+		}
+	} else {
+		// Seed first-seen on first refresh (no previous snapshot)
+		for key := range currentConns {
+			shared.ConnFirstSeen[key] = now
+		}
+	}
+	// Cleanup stale entries - remove connections that no longer exist
+	for key := range r.LastConns {
+		if _, exists := currentConns[key]; !exists {
+			delete(shared.ConnFirstSeen, key)
+		}
+	}
+	shared.ClassifyMu.Unlock()
+	r.LastConns = currentConns
+
 	shared.ApplyIORates(cands, now, &r.LastIO)
 	cands = shared.ApplyScoreAndRoleFilters(cands, r.MinScore, roleFilter)
 	cands = shared.ApplyCandidateLinger(cands, now, r.LingerFor, &r.LingerCache)
@@ -420,8 +462,17 @@ func (r *RemoteScanner) Refresh(app *shared.AppState) {
 			// this, server mode lets a high-confidence ML "outbound"
 			// override a rank.go "beacon" — the same path that
 			// hid pz04/pz05 staged payloads as outbound on 2026-04-28.
-			if shared.IsControlRole(c.SuggestedRole) && !shared.IsControlRole(c.Role) {
+			// Exception: SSH servers must never be classified as beacons.
+			isSSHServer := c.Proc != nil && shared.IsSSHServerProcess(c.Proc)
+			if shared.IsControlRole(c.SuggestedRole) && !shared.IsControlRole(c.Role) && !isSSHServer {
 				c.Role = c.SuggestedRole
+			}
+
+			// SSH server override: SSHD accepting inbound connections is
+			// infrastructure, not C2. Force to listener regardless of other signals.
+			if isSSHServer && shared.IsControlRole(c.Role) {
+				c.Role = "listener"
+				c.Score = 20
 			}
 
 			// Listener-state OS-truth override (parity with standalone).
@@ -446,7 +497,7 @@ func (r *RemoteScanner) Refresh(app *shared.AppState) {
 			// trapped them in `analyzing` forever (parity bug with the
 			// standalone classifier path that finalizeRoleStreaks
 			// already addresses).
-			if c.Proc != nil {
+			if c.Proc != nil && !isSSHServer {
 				hist := shared.ProcHistoryByPID[c.Proc.Pid]
 				if hist != nil && hist.LastRole != "" && c.Role != hist.LastRole {
 					prevMal := shared.IsControlRole(hist.LastRole)
@@ -455,6 +506,19 @@ func (r *RemoteScanner) Refresh(app *shared.AppState) {
 						if now.Sub(hist.LastRoleChange) < shared.MaliciousRoleDemoteCooldown {
 							c.Role = hist.LastRole
 						}
+					}
+				}
+			}
+
+			// Final SSH server override - ensure SSHD never ends up as beacon
+			// regardless of history, ML, or other processing.
+			if isSSHServer {
+				c.Role = "listener"
+				c.Score = 20
+				// Clear process history so old beacon classification doesn't persist
+				if c.Proc != nil {
+					if hist := shared.ProcHistoryByPID[c.Proc.Pid]; hist != nil {
+						hist.LastRole = "listener"
 					}
 				}
 			}
@@ -586,6 +650,17 @@ func (r *RemoteScanner) Refresh(app *shared.AppState) {
 			hist.LastRoleChange = now
 		}
 		hist.LastRole = c.Role
+	}
+
+	// FINAL SSH server override - run after ALL processing to ensure
+	// SSHD never appears as beacon in the UI regardless of ML, history,
+	// pivot promotion, or any other processing.
+	for i := range cands {
+		c := &cands[i]
+		if c.Proc != nil && shared.IsSSHServerProcess(c.Proc) && shared.IsControlRole(c.Role) {
+			c.Role = "listener"
+			c.Score = 20
+		}
 	}
 
 	filtered := shared.ApplyWhitelist(cands, r.Whitelist)

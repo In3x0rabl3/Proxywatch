@@ -97,6 +97,11 @@ func ScoreCandidate(c *shared.Candidate, now time.Time) {
 		addSignal(sig)
 	}
 
+	// SSH server (sshd) detection: SSH daemons accepting inbound connections are
+	// legitimate infrastructure, not beacons — even with persistent connections.
+	// Track this early so beacon eligibility checks can exclude them.
+	isSSHServer := shared.IsSSHServerProcess(p)
+
 	// Detection treats ALL processes equally — no benign suppression.
 	wasBenignClient := shared.IsLikelyBenignControlClient(p)
 	benignClient := false
@@ -704,9 +709,12 @@ func ScoreCandidate(c *shared.Candidate, now time.Time) {
 	}
 	beaconCadenceEvidence := burstRecent || beaconRecent || beaconConfirmed
 	beaconLongLivedOK := outLongLived == 0 || beaconConfirmed || beaconRecent
+	// SSH servers (sshd) accepting inbound connections are infrastructure, not beacons.
+	// Even persistent inbound SSH sessions should not trigger beacon detection.
 	beaconEligible := !reverseProxyNow &&
 		!localTransportRecent &&
 		!internalScanRecent &&
+		!isSSHServer &&
 		beaconLongLivedOK &&
 		beaconCadenceEvidence
 	if beaconEligible {
@@ -739,6 +747,10 @@ func ScoreCandidate(c *shared.Candidate, now time.Time) {
 	reverseControlShape := IsReverseControlShape(controlConn, hasListener, outTotal, len(distinctTargets), controlSecs)
 	if reverseControlShape {
 		reverseControlSuppressed = SuppressReverseControlForBenignChannel(controlConn, p, internalLateral, outInternal, benignControlPattern)
+		// SSH servers (sshd) with inbound connections are not reverse control channels.
+		if isSSHServer {
+			reverseControlSuppressed = true
+		}
 		if reverseControlSuppressed {
 			reverseControl = false
 		} else {
@@ -1893,6 +1905,19 @@ func ScoreCandidate(c *shared.Candidate, now time.Time) {
 		// Cap score for plain SSH
 		if c.Score > 25 {
 			c.Score = 25
+		}
+	}
+
+	// SSH server (sshd): demote ANY malicious role to listener.
+	// SSH daemons accepting inbound connections are legitimate infrastructure.
+	// Persistent inbound SSH sessions from admin workstations are not C2 beacons.
+	if isSSHServer && IsMaliciousRole(c.Role) {
+		c.Role = "listener"
+		c.ActiveProxying = false
+		c.Reasons = append(c.Reasons, "SSH server (sshd) accepting inbound connections — infrastructure, not C2")
+		// Cap score for SSH servers
+		if c.Score > 20 {
+			c.Score = 20
 		}
 	}
 
